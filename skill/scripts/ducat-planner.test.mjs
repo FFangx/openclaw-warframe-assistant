@@ -6,7 +6,7 @@ import {
   optimizeDucatTarget,
   parseDucatSpec,
 } from './ducat-planner.mjs';
-import { traderShopping } from './trader-shopping.mjs';
+import { normalizeTraderLocation, summarizeTradeStatistics, traderShopping } from './trader-shopping.mjs';
 import { buildTraderShoppingCard } from './warframe-cards.mjs';
 import { primeWarframePartIconPath } from './wfdata.mjs';
 
@@ -81,7 +81,7 @@ const traderFixture = (inventoryCount = 10, traderInventory = defaultTraderInven
 }, {
   traderState: {
     character: "Baro Ki'Teer",
-    location: '土星 Kronia 中继站',
+    location: 'Kronia Relay (Saturn)',
     activation: '2026-08-07T00:00:00.000Z',
     expiry: '2026-08-09T00:00:00.000Z',
     inventory: traderInventory,
@@ -90,7 +90,10 @@ const traderFixture = (inventoryCount = 10, traderInventory = defaultTraderInven
     primedtest: { slug: 'primed_test', zh: '测试 Prime', thumb: null },
     primedtesttwo: { slug: 'primed_test_two', zh: '测试 Prime 二', thumb: null },
   },
-  priceFetcher: async () => ({ data: { sell: [{ platinum: 25, visible: true }] } }),
+  statisticsFetcher: async () => ({ payload: { statistics_closed: {
+    '48hours': [{ datetime: new Date().toISOString(), median: 25, volume: 8, mod_rank: 0 }],
+    '90days': [{ datetime: '2026-08-06T00:00:00.000Z', median: 24, volume: 90, mod_rank: 0 }],
+  } } }),
   detailFetcher: async () => ({ data: { tradingTax: 1_000_000 } }),
   inventoryValuation: [part({ count: inventoryCount })],
   ducatCatalog: {
@@ -99,7 +102,7 @@ const traderFixture = (inventoryCount = 10, traderInventory = defaultTraderInven
   ducatQuoteFetcher: async () => 3,
 });
 
-test('奸商联动使用 0 级市场价、准确交易税和安全库存机会成本', async () => {
+test('奸商联动使用 0 级成交中位价、准确交易税和安全库存机会成本', async () => {
   const result = await traderFixture();
   const [row] = result.rows;
   assert.equal(row.tradingTax, 1_000_000);
@@ -110,6 +113,33 @@ test('奸商联动使用 0 级市场价、准确交易税和安全库存机会�
   assert.equal(row.advice.tag, 'strong');
   assert.equal(result.safeDucatAvailable, 405);
   assert.equal(result.ducatShortfall, 195);
+});
+
+test('奸商地点使用游戏内中继站格式', async () => {
+  assert.equal(normalizeTraderLocation('Kronia Relay (Saturn)'), 'Kronia 中继站（土星）');
+  assert.equal(normalizeTraderLocation('土星 Kronia 中继站'), 'Kronia 中继站（土星）');
+  assert.equal((await traderFixture()).location, 'Kronia 中继站（土星）');
+});
+
+test('成交统计优先今日中位且样本不足回退 90 天中位', () => {
+  const now = Date.parse('2026-08-07T12:00:00.000Z');
+  const payload = { payload: { statistics_closed: {
+    '48hours': [
+      { datetime: '2026-08-07T02:00:00.000Z', median: 20, volume: 1, mod_rank: 0 },
+      { datetime: '2026-08-07T03:00:00.000Z', median: 30, volume: 4, mod_rank: 0 },
+      { datetime: '2026-08-07T04:00:00.000Z', median: 999, volume: 1, mod_rank: 10 },
+    ],
+    '90days': [
+      { datetime: '2026-08-05T00:00:00.000Z', median: 24, volume: 90, mod_rank: 0 },
+      { datetime: '2026-08-06T00:00:00.000Z', median: 26, volume: 90, mod_rank: 0 },
+    ],
+  } } };
+  assert.deepEqual(summarizeTradeStatistics(payload, true, now), {
+    platinum: 30, basis: 'today', todayVolume: 5, median90: 24, dailyVolume: 2,
+  });
+  payload.payload.statistics_closed['48hours'][1].volume = 1;
+  assert.equal(summarizeTradeStatistics(payload, true, now).basis, '90days');
+  assert.equal(summarizeTradeStatistics(payload, true, now).platinum, 24);
 });
 
 test('奸商每件商品独立使用当前余额，不按展示顺序累扣', async () => {
@@ -140,4 +170,9 @@ test('安全库存无法补足时不会误报奸商路线划算', async () => {
   const result = await traderFixture(2);
   assert.equal(result.rows[0].advice.tag, 'need');
   assert.equal(result.rows[0].ducatPlanShortfall, 150);
+  const card = buildTraderShoppingCard(result);
+  assert.match(card.html, /今日成交中位/u);
+  assert.match(card.html, /90日均/u);
+  assert.match(card.html, /市场行情仍可参考/u);
+  assert.match(card.html, /Kronia 中继站（土星）/u);
 });

@@ -569,15 +569,17 @@ export function buildTraderShoppingCard(data) {
   const body = rows.map((row, index) => {
     const advice = ADVICE_STYLE[row.advice?.tag] || ADVICE_STYLE.skip;
     const name = row.zhName || (row.tradable ? row.nameEn : (row.nameEn || '未收录物品'));
+    const basis = row.marketBasis === 'today' ? '今日成交中位' : '90天成交中位';
     const priceText = !row.tradable ? '独占 · 无市场价'
-      : row.platinum == null ? '暂无在线卖单'
-        : row.ducatOpportunityPlat != null
-          ? `补足 ${currency('ducat', row.ducatNeed, { size: 10, weight: 760 })}≈${currency('plat', row.ducatOpportunityPlat, { size: 10, weight: 760 })} · 市场 ${currency('plat', row.platinum, { size: 10, weight: 760 })}`
-          : row.ducatPlanShortfall ? `安全库存无法补足 · 还差 ${currency('ducat', row.ducatPlanShortfall, { size: 10, weight: 760 })}`
-          : `市价 ${currency('plat', row.platinum, { size: 11, weight: 800 })}${row.ratio != null ? ` · ${currency('ducat', 1, { size: 9, weight: 760 })}=${currency('plat', row.ratio, { size: 9, weight: 760 })}` : ''}`;
-    const cashText = row.ducatOpportunityPlat != null
-      ? `奸商 ${currency('credit', row.credits, { size: 9, weight: 700 })} · 交易税 ${row.tradingTax != null ? currency('credit', row.tradingTax, { size: 9, weight: 700 }) : '未知'}`
-      : '';
+      : row.platinum == null ? '暂无成交统计'
+        : `${basis} ${currency('plat', row.platinum, { size: 10, weight: 800 })} · 90日均 ${escapeHtml(row.dailyVolume ?? 0)} 笔/天${row.marketStatsStale ? ' · 缓存' : ''}`;
+    const routeText = row.ducatOpportunityPlat != null
+      ? `补足 ${currency('ducat', row.ducatNeed, { size: 9, weight: 760 })}≈${currency('plat', row.ducatOpportunityPlat, { size: 9, weight: 760 })} · 奸商 ${currency('credit', row.credits, { size: 9, weight: 700 })} · 税 ${row.tradingTax != null ? currency('credit', row.tradingTax, { size: 9, weight: 700 }) : '未知'}`
+      : row.ducatPlanShortfall
+        ? `安全库存还差 ${currency('ducat', row.ducatPlanShortfall, { size: 9, weight: 760 })} · 市场行情仍可参考`
+        : row.platinum != null && row.ratio != null
+          ? `${currency('ducat', 1, { size: 9, weight: 760 })}=${currency('plat', row.ratio, { size: 9, weight: 760 })} · 奸商 ${currency('credit', row.credits, { size: 9, weight: 700 })}`
+          : '';
     // 插画列：有图用图，查无（Baro 饰品类未收录）留空保持对齐
     const iconCell = row.iconDataUri
       ? `<div style="width:40px;height:40px;border-radius:8px;display:grid;place-items:center;background:rgba(255,255,255,.07);overflow:hidden"><img src="${row.iconDataUri}" style="max-width:36px;max-height:36px;object-fit:contain"></div>`
@@ -586,7 +588,7 @@ export function buildTraderShoppingCard(data) {
       <div style="width:54px;height:26px;border-radius:7px;display:grid;place-items:center;background:${advice.color};color:#14181d;font-size:12px;font-weight:900">${advice.zh}</div>
       ${iconCell}
       <div style="min-width:0;padding-left:10px"><div style="font-size:15px;font-weight:820;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(name)}${row.owned ? ' <span style="font-size:10px;color:#8f9aa6;font-weight:700">已有</span>' : ''}</div>
-        <div style="margin-top:3px;font-size:10px;color:#8995a1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${priceText}</div>${cashText ? `<div style="margin-top:2px;font-size:9px;color:#788592;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${cashText}</div>` : ''}</div>
+        <div style="margin-top:3px;font-size:10px;color:#8995a1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${priceText}</div>${routeText ? `<div style="margin-top:2px;font-size:9px;color:#788592;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${routeText}</div>` : ''}</div>
       <div style="text-align:left;padding-left:18px"><div style="font-size:16px">${currency('ducat', row.ducats, { size: 15 })}</div><div style="margin-top:3px;font-size:10px">${row.platSaving == null ? currency('credit', row.credits, { size: 10, weight: 700 }) : row.platSaving >= 0 ? `<span style="color:#75dcca">省 ${currency('plat', row.platSaving, { size: 10, color: '#75dcca', weight: 760 })}</span>` : `<span style="color:#e07777">多 ${currency('plat', Math.abs(row.platSaving), { size: 10, color: '#e07777', weight: 760 })}</span>`}</div></div>
     </div>`;
   }).join('');
@@ -599,8 +601,8 @@ export function buildTraderShoppingCard(data) {
   const content = `<div class="card"><div class="header" style="height:86px">${headerIcon('baro')}<div style="min-width:0"><div class="kicker">奸商购物推荐 · 仅用户私聊</div><div class="title" style="font-size:23px">${escapeHtml(data.location || '虚空商人')}</div></div><div class="header-meta"><strong>余额 ${currency('ducat', balance, { size: 14 })}</strong><span>${escapeHtml(localTime(data.fetchedAt))}</span></div></div>
     <div class="section"><span class="section-badge">${rows.length}/${allRows.length} 件</span>奸商兑换路线 vs 玩家市场路线<small>${data.arrived ? `当前 ${currency('ducat', balance, { size: 10, weight: 760 })}${data.safeDucatAvailable != null ? ` · 安全库存最多 ${currency('ducat', `+${data.safeDucatAvailable}`, { size: 10, weight: 760 })}` : ''} · 各商品独立判断` : '未到货'}</small></div>
     ${body || empty}
-    <div class="footer" style="height:34px"><span>${affordText}</span><span>MOD 按 0 级 · 税值取 wm · 仅供参考</span></div></div>`;
-  const keySeed = `trader-shop5|${data.fetchedAt}|${allRows.map((row) => `${row.uniqueName}:${row.advice?.tag}:${row.ducatOpportunityPlat ?? ''}:${row.tradingTax ?? ''}`).join('|')}`;
+    <div class="footer" style="height:34px"><span>${affordText}</span><span>MOD 按 0 级 · 成交中位价 · 仅供参考</span></div></div>`;
+  const keySeed = `trader-shop6|${data.fetchedAt}|${allRows.map((row) => `${row.uniqueName}:${row.advice?.tag}:${row.platinum ?? ''}:${row.marketBasis ?? ''}:${row.dailyVolume ?? ''}:${row.ducatOpportunityPlat ?? ''}:${row.tradingTax ?? ''}`).join('|')}`;
   return { html: documentShell(content, height), width: 600, height, key: `trader-shop-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 

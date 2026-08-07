@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 // 奸商购物助手：到货单 × 本机库存 × 杜卡德余额 → 双路线购买建议，零 AI 判断。
-// 路线 A：安全兑换 Prime 部件的白金机会成本 + 奸商现金；路线 B：市场卖价 + 准确交易税。
-// 口径：Prime MOD 用 rank 0 卖单价（奸商卖 0 级，满级价含 4 万 Endo 虚高）；
+// 路线 A：安全兑换 Prime 部件的白金机会成本 + 奸商现金；路线 B：成交中位价 + 准确交易税。
+// 口径：Prime MOD 用 rank 0 成交统计（奸商卖 0 级，满级价含 4 万 Endo 虚高）；
 //      不可交易品标「独占无市场价」三态，绝不当 0 白金沉底。
 import { readFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -13,16 +13,38 @@ const OFFICIAL_WORLDSTATE_URL = 'https://api.warframe.com/cdn/worldState.php';
 const MARKET_BASE = 'https://api.warframe.market';
 const TIMEOUT_MS = 20_000;
 const CATALOG_CACHE_TTL_MS = 60 * 60 * 1000;
+const STATISTICS_CACHE_TTL_MS = 15 * 60 * 1000;
 const PRICE_CONCURRENCY = 3;
+const TODAY_MIN_VOLUME = 3;
 
 // 巴洛到访中继站（ExportRegions + dict.zh 实证，专名官方保留英文）
 const RELAY_ZH = Object.freeze({
-  MercuryHUB: '水星 Larunda 中继站',
-  EarthHUB: '地球 Strata 中继站',
-  SaturnHUB: '土星 Kronia 中继站',
-  PlutoHUB: '冥王星 Orcus 中继站',
-  TradeHUB1: '火星 Maroo 的市集',
+  MercuryHUB: 'Larunda 中继站（水星）',
+  EarthHUB: 'Strata 中继站（地球）',
+  SaturnHUB: 'Kronia 中继站（土星）',
+  PlutoHUB: 'Orcus 中继站（冥王星）',
+  TradeHUB1: "Maroo 的市集（火星）",
 });
+
+const RELAY_BY_NAME = Object.freeze({
+  larunda: RELAY_ZH.MercuryHUB,
+  strata: RELAY_ZH.EarthHUB,
+  kronia: RELAY_ZH.SaturnHUB,
+  orcus: RELAY_ZH.PlutoHUB,
+  maroo: RELAY_ZH.TradeHUB1,
+});
+
+// warframestat 的 location 目前仍可能返回英文；统一成游戏内「节点 中继站（星球）」顺序。
+export function normalizeTraderLocation(value) {
+  const raw = String(value ?? '').normalize('NFKC').trim();
+  if (!raw) return '未知中继站';
+  if (RELAY_ZH[raw]) return RELAY_ZH[raw];
+  const lower = raw.toLowerCase();
+  for (const [name, translated] of Object.entries(RELAY_BY_NAME)) {
+    if (lower.includes(name)) return translated;
+  }
+  return raw;
+}
 
 // 快照里代表「已拥有」的库存组（探针实测：升过级的 MOD 在 Upgrades，不在 RawUpgrades）
 const OWNED_GROUPS = [
@@ -94,7 +116,7 @@ export function mergeTraderStates(official, wfstat) {
   const nameByPath = new Map((wfstat.inventory || []).map((item) => [stripStoreItem(item.uniqueName), item.item]).filter(([, name]) => name));
   return {
     ...official,
-    location: wfstat.location || official.location,
+    location: normalizeTraderLocation(wfstat.location || official.location),
     inventory: (official.inventory || []).map((item) => ({ ...item, item: nameByPath.get(item.uniqueName) || item.item })),
   };
 }
@@ -138,29 +160,76 @@ export function readDucatBalance(inventory) {
   return Number.isFinite(count) ? count : 0;
 }
 
-// —— 单件估值：MOD 类按 rank 0（奌商卖 0 级），其余不带 rank；失败回放价格记忆（标 stale） ——
-async function fetchLowestSell(slug, isMod, priceFetcher) {
-  const rank = isMod ? 0 : '-';
+const round1 = (value) => Math.round(Number(value) * 10) / 10;
+const dailyAverage = (total) => {
+  const average = Number(total) / 90;
+  return average > 0 && average < 0.1 ? Math.round(average * 100) / 100 : round1(average);
+};
+
+const beijingDayKey = (value) => {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date(value));
+  const part = (type) => parts.find((entry) => entry.type === type)?.value;
+  return `${part('year')}-${part('month')}-${part('day')}`;
+};
+
+const validStatisticRows = (rows, isMod) => (Array.isArray(rows) ? rows : []).filter((row) => {
+  if (isMod && Number(row?.mod_rank) !== 0) return false;
+  return Number.isFinite(Number(row?.median)) && Number(row?.volume) > 0 && !Number.isNaN(new Date(row?.datetime).getTime());
+});
+
+// statistics 只给小时/日聚合，按成交量对各桶中位数再做加权中位，避免低成交时段与高成交时段等权。
+const weightedMedian = (rows) => {
+  const ordered = rows
+    .map((row) => ({ median: Number(row.median), volume: Number(row.volume) }))
+    .sort((a, b) => a.median - b.median);
+  const total = ordered.reduce((sum, row) => sum + row.volume, 0);
+  if (!total) return null;
+  let cumulative = 0;
+  for (const row of ordered) {
+    cumulative += row.volume;
+    if (cumulative >= total / 2) return round1(row.median);
+  }
+  return round1(ordered.at(-1).median);
+};
+
+export function summarizeTradeStatistics(payload, isMod, now = Date.now()) {
+  const closed = payload?.payload?.statistics_closed || payload?.statistics_closed || {};
+  const hourly = validStatisticRows(closed['48hours'], isMod);
+  const daily = validStatisticRows(closed['90days'], isMod);
+  const todayKey = beijingDayKey(now);
+  const todayRows = hourly.filter((row) => beijingDayKey(row.datetime) === todayKey);
+  const todayVolume = todayRows.reduce((sum, row) => sum + Number(row.volume), 0);
+  const total90Volume = daily.reduce((sum, row) => sum + Number(row.volume), 0);
+  const todayMedian = weightedMedian(todayRows);
+  const median90 = weightedMedian(daily);
+  const useToday = todayMedian != null && todayVolume >= TODAY_MIN_VOLUME;
+  const platinum = useToday ? todayMedian : median90;
+  if (platinum == null) return null;
+  return {
+    platinum,
+    basis: useToday ? 'today' : '90days',
+    todayVolume,
+    median90,
+    dailyVolume: dailyAverage(total90Volume),
+  };
+}
+
+// —— 单件估值：优先今日真实成交中位（至少 3 笔），样本不足回退 90 天成交中位；失败退统计缓存 ——
+async function fetchTradeStatistics(slug, isMod, statisticsFetcher) {
   try {
-    const rankParam = isMod ? '?rank=0' : '';
-    const payload = priceFetcher
-      ? await priceFetcher(slug, isMod)
-      : await getJson(`${MARKET_BASE}/v2/orders/item/${slug}/top${rankParam}`, { Platform: 'pc', Crossplay: 'true' });
-    // ⚠ wm /top 列表不按价格排序，真实最低卖价要自己算
-    const sell = (payload.data?.sell || []).filter((order) => order.visible !== false);
-    const prices = sell.map((order) => Number(order.platinum)).filter(Number.isFinite);
-    const price = prices.length ? Math.min(...prices) : null;
-    // 注入 priceFetcher（测试/打桩）时不碰真实价格记忆
-    if (price != null && !priceFetcher) {
-      const { rememberPrice } = await import('./wfdata.mjs');
-      await rememberPrice(slug, rank, price);
-    }
-    return price != null ? { platinum: price, stale: false } : null;
+    if (statisticsFetcher) return summarizeTradeStatistics(await statisticsFetcher(slug, isMod), isMod);
+    const { staleCachedJson } = await import('./wfdata.mjs');
+    const result = await staleCachedJson(`market-statistics-${slug}`, {
+      ttlMs: STATISTICS_CACHE_TTL_MS, version: 1,
+    }, () => getJson(`${MARKET_BASE}/v1/items/${slug}/statistics`, {
+      Platform: 'pc', Crossplay: 'true', Language: 'zh-hans',
+    }));
+    const summary = summarizeTradeStatistics(result.data, isMod);
+    return summary ? { ...summary, stale: result.stale, cachedAt: result.cachedAt } : null;
   } catch {
-    if (priceFetcher) return null;
-    const { recallPrice } = await import('./wfdata.mjs');
-    const memory = await recallPrice(slug, rank);
-    return memory ? { platinum: memory.platinum, stale: true, at: memory.at } : null;
+    return null;
   }
 }
 
@@ -212,7 +281,7 @@ export function decideEconomicRoute(row) {
   return { tag: 'market', zh: '市场买' };
 }
 
-// goods: [{uniqueName,item,ducats,credits}]；options 可注入 catalog/owned/ducatBalance/priceFetcher/zhOf 打桩
+// goods: [{uniqueName,item,ducats,credits}]；options 可注入 catalog/owned/statisticsFetcher/zhOf 打桩
 export async function appraiseTraderGoods(goods, options = {}) {
   const catalog = options.catalog ?? await loadMarketCatalog();
   const owned = options.owned ?? new Set();
@@ -223,7 +292,7 @@ export async function appraiseTraderGoods(goods, options = {}) {
     const zhLocal = entry.zhLocal ?? options.zhOf?.(entry.uniqueName) ?? null;
     const meta = catalog[compact(entry.item)] || (zhLocal ? catalogByZh.get(compact(zhLocal)) : null) || null;
     const [quote, tradingTax] = meta ? await Promise.all([
-      fetchLowestSell(meta.slug, isMod, options.priceFetcher),
+      fetchTradeStatistics(meta.slug, isMod, options.statisticsFetcher),
       fetchTradingTax(meta.slug, options.detailFetcher),
     ]) : [null, null];
     const platinum = quote?.platinum ?? null;
@@ -241,7 +310,12 @@ export async function appraiseTraderGoods(goods, options = {}) {
       owned: owned.has(stripStoreItem(entry.uniqueName)),
       tradable: Boolean(meta),
       platinum,
-      priceStale: Boolean(quote?.stale),
+      marketBasis: quote?.basis ?? null,
+      marketStatsStale: Boolean(quote?.stale),
+      marketStatsCachedAt: quote?.cachedAt ?? null,
+      todayVolume: quote?.todayVolume ?? null,
+      median90: quote?.median90 ?? null,
+      dailyVolume: quote?.dailyVolume ?? null,
       ratio: ratio != null ? Math.round(ratio * 100) / 100 : null,
       tradingTax: tradingTax ?? meta?.tradingTax ?? null,
     };
@@ -253,7 +327,7 @@ export async function appraiseTraderGoods(goods, options = {}) {
   return rows;
 }
 
-// 主入口：inventory=解密后的快照库存对象；traderState/officialTrader/catalog/priceFetcher/zhOf 可注入
+// 主入口：inventory=解密后的快照库存对象；traderState/officialTrader/catalog/statisticsFetcher/zhOf 可注入
 export async function traderShopping(inventory, options = {}) {
   // 双源并发：官方源权威（到货瞬间无镜像延迟），warframestat 补英文名；全挂才报错
   let state = options.traderState ?? null;
@@ -273,7 +347,7 @@ export async function traderShopping(inventory, options = {}) {
     kind: 'trader-shopping',
     fetchedAt,
     character: state.character || "Baro Ki'Teer",
-    location: state.location || '未知中继站',
+    location: normalizeTraderLocation(state.location),
     activation: state.activation,
     expiry: state.expiry,
     ducatBalance: readDucatBalance(inventory),
@@ -285,7 +359,7 @@ export async function traderShopping(inventory, options = {}) {
   const rows = await appraiseTraderGoods(state.inventory, { ...options, owned });
   let safeDucatAvailable = null;
   // 双路线经济性：奸商=兑换杜卡德的 Prime 部件机会成本+现金标价；
-  // 玩家市场=当前 0 级卖价+物品交易税。现金不硬折白金，保留双轴结论。
+  // 玩家市场=今日/90 天成交中位价+物品交易税。现金不硬折白金，保留双轴结论。
   if (Array.isArray(options.inventoryValuation) && options.inventoryValuation.length) {
     try {
       const { parseDucatSpec, buildDucatCandidates, refreshDucatPrices, optimizeDucatTarget } = await import('./ducat-planner.mjs');
@@ -360,7 +434,8 @@ export function formatTraderShopping(result) {
   const lines = [`【奸商购物推荐】${result.location}｜杜卡德余额 ${result.ducatBalance.toLocaleString('zh-CN')}`];
   for (const row of result.rows.slice(0, 16)) {
     const name = row.zhName || (row.tradable ? row.nameEn : '未收录物品');
-    const price = row.tradable ? (row.platinum != null ? `市价${row.platinum}p${row.priceStale ? '（离线快照）' : ''}` : '暂无卖单') : '独占无市场价';
+    const basis = row.marketBasis === 'today' ? '今日成交中位' : '90天成交中位';
+    const price = row.tradable ? (row.platinum != null ? `${basis}${row.platinum}p${row.marketStatsStale ? '（缓存）' : ''}，日均${row.dailyVolume ?? 0}笔` : '暂无成交统计') : '独占无市场价';
     const ratio = row.ratio != null ? `｜1杜=${row.ratio}p` : '';
     const route = row.ducatOpportunityPlat != null
       ? `｜补足${row.ducatNeed}杜机会成本${row.ducatOpportunityPlat}p｜交易税${row.tradingTax?.toLocaleString('zh-CN') ?? '未知'}现金`
@@ -368,6 +443,6 @@ export function formatTraderShopping(result) {
     lines.push(`${row.advice.zh}｜${name}｜${row.ducats}杜+${row.credits.toLocaleString('zh-CN')}现金｜${price}${route}${ratio}${row.owned ? '｜已有' : ''}`);
   }
   if (result.rows.length > 16) lines.push(`其余 ${result.rows.length - 16} 件已在卡片中省略，优先保留会影响购买决策的项目。`);
-  lines.push(`经济性推荐合计 ${result.wantDucats} 杜卡德${result.affordable ? '，余额够用' : `，还差 ${result.ducatShortfall} 杜卡德，可发「杜卡德 ${result.ducatShortfall}」生成兑换方案`}。价格为当前在线最低卖单，仅供参考。`);
+  lines.push(`经济性推荐合计 ${result.wantDucats} 杜卡德${result.affordable ? '，余额够用' : `，还差 ${result.ducatShortfall} 杜卡德，可发「杜卡德 ${result.ducatShortfall}」生成兑换方案`}。价格优先取今日成交中位，样本不足回退 90 天成交中位；仅供参考。`);
   return lines.join('\n');
 }

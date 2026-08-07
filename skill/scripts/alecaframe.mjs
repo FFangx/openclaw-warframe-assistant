@@ -928,7 +928,7 @@ export async function runAlecaMessage(message, options = {}) {
     } catch { mediaUrl = null; }
     return {
       handled: true, ok: data.ok, command: 'trader-shopping', query: '', data, mediaUrl,
-      followupText: mediaUrl ? '按当前杜卡德余额比较“补足杜卡德的部件机会成本＋奸商现金”与“0 级市场价＋准确交易税”；仅供参考。' : null,
+      followupText: mediaUrl ? '按当前杜卡德余额比较“补足杜卡德的部件机会成本＋奸商现金”与“今日/90 天成交中位价＋准确交易税”；仅供参考。' : null,
       text: formatTraderShopping(data),
     };
   }
