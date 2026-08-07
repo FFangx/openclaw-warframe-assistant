@@ -976,8 +976,9 @@ function cardDocument(content, height, width = 600) {
     .eyebrow{font-size:14px;color:#95d6ac;font-weight:700;letter-spacing:.5px}.title{font-size:28px;line-height:38px;font-weight:800;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .chips{position:absolute;right:22px;top:20px;display:flex;gap:8px}.chip{background:#34343c;border:1px solid #5a5360;border-radius:8px;padding:4px 8px;text-align:center;color:#f3d188;font-weight:700}.chip small{display:block;color:#a7aab1;font-size:10px;font-weight:500}
     table{width:100%;border-collapse:collapse;table-layout:fixed}th{height:30px;background:#d7dbdb;color:#205264;font-size:15px;font-weight:500}td{height:36px;padding:5px 10px;border-bottom:1px solid rgba(181,117,45,.55);font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    tbody tr:nth-child(even){background:rgba(255,255,255,.035)}.name{color:#f6f2ef;font-weight:650}.rep{text-align:center;color:#91d8d1}.qty{text-align:center;color:#d6d8dc}.price{text-align:center;color:#ff87b4;font-weight:800}.buy .price{color:#61e0b5}.status{font-size:11px;color:#8dd7ae;margin-left:5px}
+    tbody tr:nth-child(even){background:rgba(255,255,255,.035)}.name{color:#f6f2ef;font-weight:650}.rep{text-align:center;color:#91d8d1}.qty{text-align:center;color:#d6d8dc}.price{text-align:center;color:#ff87b4;font-weight:800}.market-price-value{display:inline-flex;align-items:center;justify-content:flex-start}.buy .price{color:#61e0b5}.status{font-size:11px;color:#8dd7ae;margin-left:5px}
     .market-head .seller-col,.section .seller-col{text-align:left;padding-left:10px}.market-head .rep-col,.section .rep-col{text-align:center}.market-head .qty-col,.section .qty-col{text-align:center}.market-head .price-col,.section .price-col{text-align:center}
+    .market-parts-head{padding:5px 14px 4px;background:#cbd0d0;color:#215064;font-size:13px;font-weight:700;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:14px}.market-parts-summary{display:inline-flex;align-items:center;justify-content:flex-end;gap:5px;white-space:nowrap}.market-part-row{height:30px;display:grid;grid-template-columns:78% 22%;align-items:center;border-bottom:1px solid rgba(181,117,45,.35);font-size:13.5px}.market-part-name{padding-left:14px;color:#e8e6e3;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.market-part-price{display:flex;align-items:center;justify-content:center;min-width:0}
     .section td{height:28px;background:#cbd0d0;color:#215064;font-weight:700;border:0}.foot{height:34px;padding:8px 12px;color:#a9adb4;font-size:11px;border-top:1px solid #3e3b43;display:flex;justify-content:space-between}
     .relic-head{height:92px;padding:16px 20px;background:linear-gradient(110deg,#323038,#24262c);border-bottom:1px solid #9e6a2d}.relic-badge{display:inline-block;background:#93c7a5;color:white;border-radius:4px;padding:4px 10px;font-size:20px;font-weight:800}.relic-title{font-size:15px;color:#9ce4b5;font-weight:800}.relic-code{font-size:27px;font-weight:850;margin-top:3px}.relic-note{position:absolute;right:18px;top:20px;color:#dce0e3;text-align:right;font-size:12px;line-height:18px}
     .reward td{height:47px;font-size:16px}.rarity{width:58px;text-align:center;font-size:12px;font-weight:800}.common{color:#ddd}.uncommon{color:#d7cf8e}.rare{color:#e9b879}.reward-name{font-weight:750}.ducat,.eff{text-align:center;color:#f0d48e;font-weight:800}.plat{text-align:center;color:#e8d58c;font-weight:800}
@@ -1000,8 +1001,15 @@ function buildMarketCard(data) {
       .map((part) => part.trim().replace(/[。；]$/u, '')).filter(Boolean).slice(0, 4);
   }
   const rankCell = (order) => ranked ? `<td class="qty">${escapeHtml(order.rank ?? item.rank)}/${escapeHtml(item.maxRank)}</td>` : '';
-  const sellerRows = data.sell.slice(0, 5).map((order) => `<tr><td class="name">${escapeHtml(order.user)} <span class="status">${escapeHtml(statusLabel(order.status))}</span></td><td class="rep">${escapeHtml(order.reputation ?? '—')}</td><td class="qty">${escapeHtml(order.quantity)}</td>${rankCell(order)}<td class="price">${currency('plat', order.platinum, { size: 13, color: '#ff87b4' })}</td></tr>`).join('');
-  const buyerRows = data.buy.slice(0, 3).map((order) => `<tr class="buy"><td class="name">${escapeHtml(order.user)} <span class="status">${escapeHtml(statusLabel(order.status))}</span></td><td class="rep">${escapeHtml(order.reputation ?? '—')}</td><td class="qty">${escapeHtml(order.quantity)}</td>${rankCell(order)}<td class="price">${currency('plat', order.platinum, { size: 13, color: '#61e0b5' })}</td></tr>`).join('');
+  // 每组用首条价格的实际字符数定宽：首条整体居中对齐表头，其余条目沿同一图标起点左对齐。
+  const priceAnchorWidth = (value, iconSize) => {
+    const chars = Math.max(1, Number(value).toLocaleString('zh-CN').length);
+    return `calc(${iconSize + 3}px + ${chars}ch)`;
+  };
+  const sellerPriceWidth = priceAnchorWidth(data.sell[0]?.platinum ?? 0, 13);
+  const buyerPriceWidth = priceAnchorWidth(data.buy[0]?.platinum ?? 0, 13);
+  const sellerRows = data.sell.slice(0, 5).map((order) => `<tr><td class="name">${escapeHtml(order.user)} <span class="status">${escapeHtml(statusLabel(order.status))}</span></td><td class="rep">${escapeHtml(order.reputation ?? '—')}</td><td class="qty">${escapeHtml(order.quantity)}</td>${rankCell(order)}<td class="price"><span class="market-price-value" style="width:${sellerPriceWidth}">${currency('plat', order.platinum, { size: 13, color: '#ff87b4' })}</span></td></tr>`).join('');
+  const buyerRows = data.buy.slice(0, 3).map((order) => `<tr class="buy"><td class="name">${escapeHtml(order.user)} <span class="status">${escapeHtml(statusLabel(order.status))}</span></td><td class="rep">${escapeHtml(order.reputation ?? '—')}</td><td class="qty">${escapeHtml(order.quantity)}</td>${rankCell(order)}<td class="price"><span class="market-price-value" style="width:${buyerPriceWidth}">${currency('plat', order.platinum, { size: 13, color: '#61e0b5' })}</span></td></tr>`).join('');
   const columns = ranked
     ? '<col style="width:40%"><col style="width:15%"><col style="width:12%"><col style="width:13%"><col style="width:20%">'
     : '<col style="width:46%"><col style="width:18%"><col style="width:14%"><col style="width:22%">';
@@ -1012,7 +1020,7 @@ function buildMarketCard(data) {
     : Math.abs(stats.deviationPct) < 5 ? ` · 当前卖价与90天行情持平`
       : ` · 当前卖价${stats.deviationPct > 0 ? '高于' : '低于'}中位 ${Math.abs(stats.deviationPct)}%`;
   // 90天中位不占 chip（长名标题会被三 chip 挤断），并进 footer 统计行
-  const footLeft = stats ? `90天成交中位 ${stats.median}P · 日均 ${stats.dailyVolume} 笔${devText}` : '当前在线挂单 · 仅供参考';
+  const footLeft = stats ? `90天成交中位 ${currency('plat', stats.median, { size: 10, color: '#cfe4f0', weight: 750 })} · 日均 ${escapeHtml(stats.dailyVolume)} 笔${devText}` : '当前在线挂单 · 仅供参考';
   // 头部：有物品图时左侧放 84px 图（MOD 是完整卡面竖图，contain 收进方盒），词条效果行跟在标题下
   const effectsHtml = effectLines.length
     ? `<div style="margin-top:5px;display:flex;flex-wrap:wrap;column-gap:14px;row-gap:2px;overflow:hidden">${effectLines.map((line) => `<span style="font-size:12.5px;color:#9fd6b8;font-weight:600">${escapeHtml(line)}</span>`).join('')}</div>`
@@ -1039,16 +1047,18 @@ function buildMarketCard(data) {
   const priced = setParts.filter((part) => part.lowestSell != null);
   const partsTotal = priced.reduce((sum, part) => sum + part.lowestSell * (part.quantity || 1), 0);
   const setLowest = data.sell[0]?.platinum ?? null;
+  const missingPartNote = priced.length < setParts.length ? `（缺 ${setParts.length - priced.length} 件报价）` : '';
+  const partPriceWidth = priceAnchorWidth(priced[0]?.lowestSell ?? 0, 12);
   const partsSummary = priced.length
-    ? `散件合计 ≈${partsTotal}p${priced.length < setParts.length ? `（缺 ${setParts.length - priced.length} 件报价）` : ''}${setLowest != null ? ` · 整套最低 ${setLowest}p` : ''}`
-    : '散件均无在线报价';
-  const partsBlock = setParts.length ? `<div style="padding:5px 14px 4px;background:#cbd0d0;color:#215064;font-size:13px;font-weight:700;display:flex;justify-content:space-between"><span>散件单价</span><span>${escapeHtml(partsSummary)}</span></div>${setParts.map((part) => `<div style="height:30px;display:flex;align-items:center;justify-content:space-between;padding:0 14px;border-bottom:1px solid rgba(181,117,45,.35);font-size:13.5px"><span style="color:#e8e6e3;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(part.zhName)}${(part.quantity || 1) > 1 ? ` ×${part.quantity}` : ''}</span><span style="flex:0 0 auto">${part.lowestSell == null ? '<span style="color:#9aa3ad">无卖单</span>' : currency('plat', part.lowestSell, { size: 12, color: '#e8d58c', weight: 800 })}</span></div>`).join('')}` : '';
+    ? `<span>散件合计 ≈</span>${currency('plat', partsTotal, { size: 12, color: '#215064', weight: 800 })}${missingPartNote ? `<span>${escapeHtml(missingPartNote)}</span>` : ''}${setLowest != null ? `<span>· 整套最低</span>${currency('plat', setLowest, { size: 12, color: '#215064', weight: 800 })}` : ''}`
+    : '<span>散件均无在线报价</span>';
+  const partsBlock = setParts.length ? `<div class="market-parts-head"><span>散件单价</span><span class="market-parts-summary">${partsSummary}</span></div>${setParts.map((part) => `<div class="market-part-row"><span class="market-part-name">${escapeHtml(part.zhName)}${(part.quantity || 1) > 1 ? ` ×${part.quantity}` : ''}</span><span class="market-part-price">${part.lowestSell == null ? '<span style="color:#9aa3ad">无卖单</span>' : `<span class="market-price-value" style="width:${partPriceWidth}">${currency('plat', part.lowestSell, { size: 12, color: '#e8d58c', weight: 800 })}</span>`}</span></div>`).join('')}` : '';
   const partsH = setParts.length ? 27 + setParts.length * 30 : 0;
   const height = headH + partsH + 30 + sellCount * 37 + 28 + buyCount * 37 + 32;
   // chips 收进 flex 流且固定右上（垂直居中时多行词条会撞框，2026-08-06 赋能·速攻实锤）
   const content = `<div class="card"><div class="head" style="height:${headH}px;display:flex;gap:14px;align-items:center">${iconHtml}<div style="min-width:0;flex:1"><div class="eyebrow">星际战甲市场 · 跨平台交易</div><div class="title" style="font-size:${titleSize}px">${escapeHtml(item.zhName)}</div>${effectsHtml}</div><div class="chips" style="position:static;flex:0 0 auto;align-self:flex-start;margin-top:16px"><div class="chip"><small>杜卡德</small>${item.ducats == null ? '—' : currency('ducat', item.ducats, { size: 12, color: '#f3d188', weight: 700 })}</div><div class="chip"><small>交易税</small>${item.tradingTax == null ? '—' : currency('credit', item.tradingTax, { size: 12, color: '#f3d188', weight: 700 })}</div></div></div>${partsBlock}<table><colgroup>${columns}</colgroup><thead class="market-head"><tr><th class="seller-col">卖家</th><th class="rep-col">信誉</th><th class="qty-col">数量</th>${rankHeader}<th class="price-col">价格</th></tr></thead><tbody>${sellerRows || emptySellRow}<tr class="section"><td class="seller-col">买家</td><td class="rep-col">信誉</td><td class="qty-col">数量</td>${ranked ? '<td class="qty-col">等级</td>' : ''}<td class="price-col">价格</td></tr>${buyerRows || emptyBuyRow}</tbody></table><div class="foot"><span>${footLeft}</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
-  // key 带 v6 + 图/词条/行数/散件特征：模板改版必须打散渲染缓存，否则吃陈旧图
-  return { html: cardDocument(content, height), width: 600, height, key: `market-v6-${item.slug}-${stats ? 's' : 'ns'}-${item.iconDataUri ? 'i' : 'x'}${effectLines.length}e${effRows}-r${sellCount}${buyCount}-sp${setParts.length}.${priced.length}` };
+  // key 带 v8 + 图/词条/行数/散件特征：模板改版必须打散渲染缓存，否则吃陈旧图
+  return { html: cardDocument(content, height), width: 600, height, key: `market-v8-${item.slug}-${stats ? 's' : 'ns'}-${item.iconDataUri ? 'i' : 'x'}${effectLines.length}e${effRows}-r${sellCount}${buyCount}-sp${setParts.length}.${priced.length}` };
 }
 
 function buildRelicCard(data) {
