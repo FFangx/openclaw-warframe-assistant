@@ -1,6 +1,30 @@
-# OpenClaw Warframe 助手
+<div align="center">
 
-Warframe 国际服 QQ 机器人助手，跑在 [OpenClaw](https://openclaw.ai) 上：短命令秒出图片卡，自然语言由 AI 路由到确定性脚本，数据不经模型编造。
+# 🎴 OpenClaw Warframe 助手
+
+**Warframe 国际服 QQ 机器人：短命令秒出精美卡片，AI 只做路由和点评，数据不经模型编造**
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/Node.js-20%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org)
+[![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows&logoColor=white)](FAQ.md)
+[![OpenClaw](https://img.shields.io/badge/Runs%20on-OpenClaw-orange)](https://openclaw.ai)
+[![Game](https://img.shields.io/badge/Warframe-国际服-8b5cf6)](https://www.warframe.com)
+
+[安装](INSTALL.md) · [配置](CONFIG.md) · [FAQ](FAQ.md) · [能力详单](skill/references/capabilities.md)
+
+</div>
+
+---
+
+## 长什么样
+
+| `wm 悟空p` — 实时市价+散件比价 | `裂缝` — 组合筛选 |
+|:---:|:---:|
+| <img src="img/card-market.png" width="420"/> | <img src="img/card-fissure.png" width="420"/> |
+| **`仲裁` — 场地评级+下轮预告** | **`赏金` — 六区轮换索引** |
+| <img src="img/card-arbitration.png" width="420"/> | <img src="img/card-bounty.png" width="420"/> |
+
+深色卡片 · 官方中文译名 · 货币带游戏图标 · 2x 高清渲染 · 90 天行情标注
 
 ## 能干什么
 
@@ -14,11 +38,19 @@ Warframe 国际服 QQ 机器人助手，跑在 [OpenClaw](https://openclaw.ai) �
 
 所有回答生成 600~800px 深色图片卡，官方中文译名，货币带游戏图标。
 
-## 架构一句话
+## 架构一眼看懂
 
-```
-QQ 消息 → OpenClaw 插件（短命令硬拦截，不经模型）→ 脚本直出图
-        ↘ 自然语言 → AI 按五级决策树路由 → dispatch.mjs / lookup.mjs → 同一批脚本
+```mermaid
+flowchart LR
+    QQ[QQ 消息] --> P{OpenClaw 插件}
+    P -->|短命令<br/>硬拦截| S[确定性脚本<br/>22 个 .mjs]
+    P -->|自然语言| AI[AI 模型]
+    AI -->|五级决策树路由| D[dispatch.mjs / lookup.mjs]
+    D --> S
+    S --> C[🎴 图片卡]
+    S -.只读.-> A[(AlecaFrame<br/>本机快照)]
+    S --> API[(warframestat<br/>warframe.market<br/>browse.wf)]
+    CRON[OpenClaw cron] -->|订阅蹲守| S
 ```
 
 - `skill/`：22 个 Node 脚本（零 npm 强依赖，`sharp` 可选）+ SKILL.md（AI 行为契约）+ 素材
