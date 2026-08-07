@@ -458,7 +458,9 @@ export function buildDucatPlanCard(data) {
     <div class="section"><span class="section-badge">${escapeHtml(shown)} 项</span>${sectionText}<small>机会成本=成交中位 · 最低卖单仅参考</small></div>
     ${body}
     <div class="footer" style="height:36px;font-size:9px"><span>命令：杜卡德 600｜杜卡德 清仓｜杜卡德 清仓 保留1</span><span>${allRows.length > shown ? `显示 ${shown}/${allRows.length}` : escapeHtml(localTime(data.syncedAt || data.fetchedAt))}</span></div></div>`;
-  const keySeed = `ducat-plan-v5|${data.mode}|${data.target}|${data.reserveLabel}|${data.syncedAt}|${allRows.map((row) => `${row.uniqueName}:${row.exchangeQty}:${row.unitPlat}:${row.lowestSell ?? ''}:${row.reserve}:${row.reserveState || ''}`).join('|')}`;
+  // 名称来自会独立更新的 Aleca 游戏目录。缓存键必须包含名称，否则目录纠正译名后
+  // 仍会复用同一物品路径对应的旧图片，造成“数量/图标正确、名称串到旧物品”的假象。
+  const keySeed = `ducat-plan-v6|${data.mode}|${data.target}|${data.reserveLabel}|${data.syncedAt}|${allRows.map((row) => `${row.uniqueName}:${row.name}:${row.englishName || ''}:${row.exchangeQty}:${row.unitPlat}:${row.lowestSell ?? ''}:${row.reserve}:${row.reserveState || ''}`).join('|')}`;
   return { html: documentShell(content, height), width: 600, height, key: `ducat-plan-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 

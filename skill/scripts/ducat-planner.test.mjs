@@ -9,7 +9,7 @@ import {
 } from './ducat-planner.mjs';
 import { annotateParentOwnership } from './alecaframe.mjs';
 import { normalizeTraderLocation, selectTraderGoal, summarizeTradeStatistics, traderShopping } from './trader-shopping.mjs';
-import { buildTraderShoppingCard } from './warframe-cards.mjs';
+import { buildDucatPlanCard, buildTraderShoppingCard } from './warframe-cards.mjs';
 import { primeWarframePartIconPath } from './wfdata.mjs';
 
 const part = (overrides = {}) => ({
@@ -238,6 +238,34 @@ test('奸商卡片用杜卡德图标展示行内缺口和顶部摘要', async ()
   assert.match(card.html, /各商品独立判断/u);
   assert.doesNotMatch(card.html, /补足\s+195\s+杜/u);
   assert.doesNotMatch(card.html, /当前\s+105\s+杜/u);
+});
+
+test('杜卡德卡片名称变化时不会复用旧图片缓存', () => {
+  const row = {
+    uniqueName: '/Lotus/Types/Recipes/Weapons/WeaponParts/PrimeFangHandle',
+    name: '狼牙 Prime 握柄',
+    englishName: 'Fang Prime Handle',
+    owned: 2,
+    reserve: 1,
+    reserveReason: '未持有',
+    reserveState: 'unowned',
+    exchangeQty: 1,
+    ducatsEach: 45,
+    totalDucats: 45,
+    unitPlat: 3,
+    totalPlat: 3,
+    marketBasis: 'today',
+    dailyVolume: 10,
+  };
+  const data = {
+    mode: 'target', target: 300, reserveLabel: '智能保留', reserveExplicit: false,
+    reserveSets: null, complete: true, totalDucats: 45, totalPlat: 3,
+    syncedAt: '2026-08-07T23:05:34.000Z', rows: [row],
+  };
+  const corrected = buildDucatPlanCard(data);
+  const stale = buildDucatPlanCard({ ...data, rows: [{ ...row, name: '帕里斯 Prime 握柄' }] });
+  assert.notEqual(corrected.key, stale.key);
+  assert.match(corrected.html, /狼牙 Prime 握柄/u);
 });
 
 test('安全库存无法补足时不会误报奸商路线划算', async () => {
