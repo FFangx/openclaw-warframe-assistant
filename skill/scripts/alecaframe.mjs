@@ -636,8 +636,8 @@ function parseSquad(query) {
 export function parseAlecaMessage(message) {
   const text = normalize(message).replace(/^\//u, '');
   if (/^(?:我的账号|账号状态|我的状态)$/u.test(text)) return { command: 'account', query: '' };
-  // 读库存做推荐 = 个人数据命令，走主人私聊判定通道；后缀可组合币种、队伍与任务偏好。
-  const recommend = text.match(/^(?:裂缝推荐|推荐裂缝|开什么遗物|开什么)(?:\s+(.+))?$/u);
+  // 遗物先行推荐 = 个人数据命令；「裂缝/裂缝推荐」已合并为任务先行的公开卡（主人私聊自动附库存推荐）。
+  const recommend = text.match(/^(?:开遗物|遗物推荐|开什么遗物|开什么)(?:\s+(.+))?$/u);
   if (recommend) return { command: 'recommend', query: (recommend[1] || '').trim() };
   // 精炼推荐：库存全扫哪些遗物值得花光体（同属个人数据通道）
   const refine = text.match(/^(?:精炼推荐|遗物精炼|值得精炼|精炼什么)(?:\s+(.+))?$/u);
@@ -988,11 +988,11 @@ export async function runAlecaMessage(message, options = {}) {
     let mediaUrl = null;
     try {
       const { buildFissureRecommendCard } = await import('./warframe-cards.mjs');
-      mediaUrl = await renderWarframeCard(buildFissureRecommendCard(data), options.cardDir || process.env.WARFRAME_CARD_DIR);
+      if (!options.skipCard) mediaUrl = await renderWarframeCard(buildFissureRecommendCard(data), options.cardDir || process.env.WARFRAME_CARD_DIR);
     } catch { mediaUrl = null; }
     return {
       handled: true, ok: data.ok, command: 'recommend', query: parsed.query, data, mediaUrl,
-      followupText: mediaUrl ? `当前为${mode === 'ducat' ? (ducatGoal ? `奸商对标·${ducatGoal.name}` : '普通杜卡德') : '赚白金'}·${FISSURE_PREFERENCES[preference].zh}·${RELIC_VAULT_FILTERS[vaultFilter].zh}·${squad > 1 ? `${squad}人组队` : '单人'}口径；「裂缝推荐 杜卡德」看毛杜卡德期望，「裂缝推荐 杜卡德 奸商」自动对标，「裂缝推荐 杜卡德 商品名」指定目标。` : null,
+      followupText: mediaUrl ? `当前为${mode === 'ducat' ? (ducatGoal ? `奸商对标·${ducatGoal.name}` : '普通杜卡德') : '赚白金'}·${FISSURE_PREFERENCES[preference].zh}·${RELIC_VAULT_FILTERS[vaultFilter].zh}·${squad > 1 ? `${squad}人组队` : '单人'}口径；「开遗物 杜卡德」看毛杜卡德期望，「开遗物 杜卡德 奸商」自动对标，「开遗物 杜卡德 商品名」指定目标。` : null,
       text: formatRecommend(data),
     };
   }

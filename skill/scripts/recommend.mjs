@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// 裂缝推荐：库存交集 → 双币期望 → 可选任务偏好，零 AI 判断。
+// 开遗物/裂缝库存增强：库存交集 → 双币期望 → 可选任务偏好，零 AI 判断。
 // 知识依据见 references/game-knowledge.md：全能裂缝可开除安魂外任意遗物，绝不按「无对应遗物」过滤。
 // 估值数据源（学 AlecaFrame 双指标思路）：
 //   奖励表+概率 = 本地 Relics.json（离线）；白金均价+杜卡德 = market /v1/tools/ducats 整表（1 请求，缓存 1h）
@@ -328,6 +328,7 @@ function splitNode(value) {
 // relics: alecaframe loadRelics 的输出；options.mode: 'plat'（默认）| 'ducat'；options.squad: 4（默认组队）| 1（单人）；options.preference: balanced|speed|comfort|yield；options.vaultFilter: all|unvaulted|vaulted
 export async function recommendFissures(relics, options = {}) {
   const mode = options.mode === 'ducat' ? 'ducat' : 'plat';
+  const perspective = options.perspective === 'fissure' ? 'fissure' : 'relic';
   const squad = Number(options.squad) >= 1 ? Math.min(Number(options.squad), 4) : 4;
   const preference = FISSURE_PREFERENCES[options.preference] ? options.preference : parseFissurePreference(options.preference);
   const vaultFilter = RELIC_VAULT_FILTERS[options.vaultFilter] ? options.vaultFilter : parseRelicVaultFilter(options.vaultFilter);
@@ -357,8 +358,9 @@ export async function recommendFissures(relics, options = {}) {
 
   // 2) 裂缝 + 奖励表 + 价格整表
   const worldState = options.worldState || await getJson(`${ITEMS_BASE}/pc`);
+  const minRemainMs = Number.isFinite(Number(options.minRemainMs)) ? Math.max(0, Number(options.minRemainMs)) : MIN_REMAIN_MS;
   const fissures = (Array.isArray(worldState.fissures) ? worldState.fissures : [])
-    .filter((f) => !f.expired && Date.parse(f.expiry) - now > MIN_REMAIN_MS);
+    .filter((f) => !f.expired && Date.parse(f.expiry) - now > minRemainMs);
   if (!fissures.length) {
     return { ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, error: 'no_fissures', fetchedAt: new Date().toISOString() };
   }
@@ -374,14 +376,15 @@ export async function recommendFissures(relics, options = {}) {
 
   // 3) 全量离线估值（组队口径）+ 精炼建议
   const priceOf = (reward) => (reward.slug ? prices[reward.slug] : null);
-  const appraised = [];
-  for (const entry of owned.filter((item) => item.era !== 'Requiem')) {
+  const appraisedAll = [];
+  for (const entry of owned) {
     const rewards = localDb.rewardsByBase.get(entry.base);
     if (!rewards) continue;
     const refine = appraiseRefinements(rewards, priceOf, { squad, mode });
     const targetEconomy = ducatGoal ? appraiseTraderTarget(rewards, prices, squad, ducatGoal) : null;
-    appraised.push({ ...entry, refinements: [...entry.refinements], ...appraiseOffline(rewards, prices, squad), refine, targetEconomy });
+    appraisedAll.push({ ...entry, refinements: [...entry.refinements], ...appraiseOffline(rewards, prices, squad), refine, targetEconomy });
   }
+  const appraised = appraisedAll.filter((entry) => entry.era !== 'Requiem');
 
   // 4) 先按遗物价值排，再为每枚遗物挑最多两条当前路线。
   // 全能=可承载全部非安魂候选（game-knowledge：全能可开除安魂外任意遗物）。
@@ -424,6 +427,44 @@ export async function recommendFissures(relics, options = {}) {
   const requiemFissures = fissures.filter((fissure) => fissure.tier === 'Requiem').length;
   const runnableFissures = fissures.filter((fissure) => fissure.tier !== 'Requiem');
   const eligibleRelics = ducatGoal ? appraised.filter((entry) => valueOf(entry) > 0) : appraised;
+
+  // 裂缝先行：每条当前裂缝只出现一次，再从兼容库存中挑价值最高的遗物。
+  // 用于主人私聊的「裂缝」库存增强；排序由裂缝查询卡负责，这里不再混入旧任务权重。
+  if (perspective === 'fissure') {
+    const eligibleAll = ducatGoal ? appraisedAll.filter((entry) => valueOf(entry) > 0) : appraisedAll;
+    const bestForTier = (tier) => {
+      const pool = tier === 'Omnia'
+        ? eligibleAll.filter((entry) => entry.era !== 'Requiem')
+        : eligibleAll.filter((entry) => entry.era === tier);
+      return [...pool].sort((a, b) => valueOf(b) - valueOf(a) || String(a.base).localeCompare(String(b.base)))[0] || null;
+    };
+    const rows = fissures.flatMap((fissure) => {
+      const relic = bestForTier(fissure.tier);
+      return relic ? [makeRow(fissure, relic)] : [];
+    });
+    return {
+      ok: true,
+      kind: 'fissure-recommend',
+      perspective,
+      mode,
+      preference,
+      vaultFilter,
+      ducatStrategy,
+      ducatGoal,
+      squad,
+      fetchedAt: new Date().toISOString(),
+      priceStaleAt,
+      rows,
+      matchedCount: rows.length,
+      matchedRelicCount: new Set(rows.map((row) => row.relic.base)).size,
+      totalFissures: fissures.length,
+      appraisedCount: appraisedAll.length,
+      economicallyViableCount: ducatGoal ? eligibleAll.length : null,
+      error: null,
+      requiem: requiemFissures > 0 && requiemCount > 0 ? { fissures: requiemFissures, relics: requiemCount } : null,
+    };
+  }
+
   const routeGroups = [];
   for (const relic of eligibleRelics) {
     const routes = runnableFissures
@@ -448,6 +489,7 @@ export async function recommendFissures(relics, options = {}) {
   return {
     ok: rows.length > 0,
     kind: 'fissure-recommend',
+    perspective,
     mode,
     preference,
     vaultFilter,
@@ -579,7 +621,7 @@ export function formatRecommend(data) {
   const preferenceZh = FISSURE_PREFERENCES[data.preference]?.zh || FISSURE_PREFERENCES.balanced.zh;
   const vaultFilterZh = RELIC_VAULT_FILTERS[data.vaultFilter]?.zh || RELIC_VAULT_FILTERS.all.zh;
   const modeZh = ducatMode ? (data.ducatGoal ? `奸商对标：${data.ducatGoal.name}` : '赚杜卡德') : '赚白金';
-  const lines = [`🎯 裂缝推荐 · ${modeZh} · ${preferenceZh} · ${vaultFilterZh} · ${squadZh}口径（库存 × 双币期望）`];
+  const lines = [`🎯 开遗物 · ${modeZh} · ${preferenceZh} · ${vaultFilterZh} · ${squadZh}口径（库存 × 双币期望）`];
   if (data.ducatGoal) lines.push(`目标 ${data.ducatGoal.ducats} 杜 / 市场 ${data.ducatGoal.marketPlat}p｜盈亏线 1p≈${data.ducatGoal.ducatsPerPlat} 杜｜${data.ducatGoal.marketBasis === 'today' ? '今日中位' : '90天中位'}｜日均 ${data.ducatGoal.dailyVolume ?? '—'} 件`);
   lines.push(`可立即开 ${data.matchedRelicCount ?? 0} 种遗物；每种最多列两条当前路线。`);
   const stale = staleLine(data.priceStaleAt);

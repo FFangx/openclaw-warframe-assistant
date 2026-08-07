@@ -22,6 +22,7 @@ function isShortcut(content: string): boolean {
   const text = String(content || '').normalize('NFKC').trim();
   return /^\/?wm(?![a-z])/iu.test(text)
     || /^\/?遗物(?:\s+|$)/u.test(text)
+    || /^\/?(?:裂缝推荐|推荐裂缝)(?:\s+|$)/u.test(text)
     || /^\/?(?:(?:钢铁|普通|全能|安魂)(?:虚空)?|虚空)?裂缝(?:\s+|$)/iu.test(text)
     || /^\/?(?:帮助|help|菜单|功能|功能列表|命令列表|使用说明|说明书|怎么用)$/iu.test(text)
     // 哪里买：全商人反查（非个人）；「哪里买 X」与「X哪里买」两种句式
@@ -38,8 +39,8 @@ function isShortcut(content: string): boolean {
 function isPersonalAccountCommand(content: string): boolean {
   const text = String(content || '').normalize('NFKC').trim().replace(/^\//u, '');
   return /^(?:我的账号|账号状态|我的状态|账号周常|我的周常状态|周常同步状态|刷新账号|刷新库存)$/u.test(text)
-    // 裂缝推荐要读本机遗物库存；尾部可组合入库状态、币种、奸商/商品名、队伍与偏好。
-    || /^(?:裂缝推荐|推荐裂缝|开什么遗物|开什么)(?:\s+.*)?$/u.test(text)
+    // 「开遗物」是遗物先行的个人库存推荐；「裂缝/裂缝推荐」走公开任务卡，主人私聊自动增强。
+    || /^(?:开遗物|遗物推荐|开什么遗物|开什么)(?:\s+.*)?$/u.test(text)
     // 精炼推荐：库存全扫哪些遗物值得花光体（同属个人数据）
     || /^(?:精炼推荐|遗物精炼|值得精炼|精炼什么)(?:\s+\S+){0,2}$/u.test(text)
     // 杜卡德兑换：Prime 部件库存 × 当前行情，属于个人数据

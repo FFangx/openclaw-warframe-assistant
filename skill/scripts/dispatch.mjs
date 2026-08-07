@@ -25,7 +25,7 @@ export const TEMPLATE_CATALOG = Object.freeze([
   { kind: 'help', example: '帮助', personal: false, intents: '功能/命令/怎么用/你能干什么' },
   { kind: 'market', example: 'wm 悟空p [满级|N级]', personal: false, intents: '问价/多少钱/市价' },
   { kind: 'relic', example: '遗物 前x1｜遗物 战刃', personal: false, intents: '遗物正查/某物哪里出' },
-  { kind: 'fissure', example: '裂缝 [钢铁|普通|全能|安魂|任务词|推荐]', personal: false, intents: '现在有什么裂缝' },
+  { kind: 'fissure', example: '裂缝 [钢铁|普通|全能|安魂|任务词|速刷]（主人私聊自动推荐库存遗物）', personal: false, intents: '全部当前裂缝/任务标签/每条裂缝开什么' },
   { kind: 'arbitration', example: '仲裁', personal: false, intents: '当前仲裁' },
   { kind: 'alert', example: '警报', personal: false, intents: '当前警报' },
   { kind: 'invasion', example: '入侵', personal: false, intents: '入侵/稀有入侵奖励' },
@@ -36,7 +36,7 @@ export const TEMPLATE_CATALOG = Object.freeze([
   { kind: 'trader', example: '虚空商人', personal: false, intents: '奸商在哪/什么时候来' },
   { kind: 'weekly', example: '周常｜完成 1 3｜撤销 2｜跳过 5｜取消跳过 全部｜清空周常', personal: true, intents: '周常清单/打卡' },
   { kind: 'account', example: '我的账号｜我的库存 X｜我的遗物 前N11｜我的赋能 X｜账号周常', personal: true, intents: '个人账号快照' },
-  { kind: 'recommend', example: '裂缝推荐 [未入库|已入库] [白金|杜卡德 [奸商|商品名]] [速刷|舒适|收益] [单人]', personal: true, intents: '开什么遗物划算/按毛杜卡德期望/按奸商或指定商品机会成本/只看未入库或已入库/任务偏好' },
+  { kind: 'recommend', example: '开遗物 [未入库|已入库] [白金|杜卡德 [奸商|商品名]] [速刷|舒适|收益] [单人]', personal: true, intents: '按遗物价值找当前路线/按毛杜卡德期望/按奸商或指定商品机会成本/只看未入库或已入库' },
   { kind: 'refine', example: '精炼推荐 [杜卡德|单人]', personal: true, intents: '哪些遗物值得精炼' },
   { kind: 'ducat-plan', example: '杜卡德｜杜卡德 600｜杜卡德 清仓 保留1', personal: true, intents: '哪些 Prime 部件适合兑换/按目标生成最低白金损失方案' },
   { kind: 'trader-shopping', example: '奸商推荐', personal: true, intents: '奸商买什么' },
@@ -54,7 +54,7 @@ const normalize = (value) => String(value ?? '').normalize('NFKC').trim().replac
 // 与插件 isPersonalAccountCommand 同一套判定（改动要双侧同步）
 function isPersonalCommand(text) {
   return /^(?:我的账号|账号状态|我的状态|账号周常|我的周常状态|周常同步状态|刷新账号|刷新库存)$/u.test(text)
-    || /^(?:裂缝推荐|推荐裂缝|开什么遗物|开什么)(?:\s+.*)?$/u.test(text)
+    || /^(?:开遗物|遗物推荐|开什么遗物|开什么)(?:\s+.*)?$/u.test(text)
     || /^(?:精炼推荐|遗物精炼|值得精炼|精炼什么)(?:\s+\S+){0,2}$/u.test(text)
     || /^(?:杜卡德|杜卡德推荐|杜卡德兑换)(?:\s+.*)?$/u.test(text)
     || /^(?:奸商推荐|奸商买什么|奸商购物|虚空商人推荐|虚空商人买什么)$/u.test(text)

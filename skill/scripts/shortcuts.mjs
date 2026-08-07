@@ -10,7 +10,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { buildFissureQueryCard, compressCardPng, currency, pruneOldCards, renderWarframeCard, RELIC_ICON_DATA } from './warframe-cards.mjs';
-import { appraiseRefinements } from './recommend.mjs';
+import { appraiseRefinements, classifyFissure } from './recommend.mjs';
 import { stripDataUriReplacer } from './wfdata.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -42,8 +42,6 @@ const PLANET_ZH = {
   'Earth Proxima': '地球比邻星', 'Venus Proxima': '金星比邻星', 'Saturn Proxima': '土星比邻星',
   'Neptune Proxima': '海王星比邻星', 'Pluto Proxima': '冥王星比邻星', 'Veil Proxima': '面纱比邻星', Veil: '面纱比邻星',
 };
-const FAST_FISSURE_MISSIONS = new Set(['Capture', 'Extermination', 'Rescue']);
-
 const ERA_ALIASES = [
   ['requiem', 'Requiem'], ['安魂', 'Requiem'],
   ['omnia', 'Omnia'], ['全能', 'Omnia'],
@@ -777,13 +775,13 @@ function parseFissureFilters(rawQuery) {
   const query = normalizeUnicode(rawQuery).toLowerCase();
   const hardOnly = /钢铁|steel/iu.test(query);
   const normalOnly = /普通|normal/iu.test(query);
-  const recommendedOnly = /推荐|高效|速刷/iu.test(query);
+  const speedOnly = /高效|速刷/iu.test(query);
   const stormOnly = /九重天|航道星舰|storm/iu.test(query);
   const era = ERA_ALIASES.find(([alias]) => query.includes(alias.toLowerCase()))?.[1] || null;
   const missions = Object.entries(FISSURE_MISSION_ZH)
     .filter(([english, chinese]) => query.includes(english.toLowerCase()) || query.includes(chinese))
     .map(([english]) => english);
-  return { query, hardOnly: hardOnly && !normalOnly, normalOnly: normalOnly && !hardOnly, recommendedOnly, stormOnly, era, missions };
+  return { query, hardOnly: hardOnly && !normalOnly, normalOnly: normalOnly && !hardOnly, speedOnly, stormOnly, era, missions };
 }
 
 function splitFissureNode(value) {
@@ -812,7 +810,7 @@ async function queryFissures(rawQuery = '', platform = DEFAULT_PLATFORM) {
         expiry: item.expiry,
         hard: Boolean(item.isHard),
         storm: Boolean(item.isStorm),
-        recommended: FAST_FISSURE_MISSIONS.has(item.missionType),
+        tags: classifyFissure(item),
       };
     });
 
@@ -820,19 +818,48 @@ async function queryFissures(rawQuery = '', platform = DEFAULT_PLATFORM) {
   if (filters.normalOnly) fissures = fissures.filter((item) => !item.hard);
   if (filters.era) fissures = fissures.filter((item) => item.tier === filters.era);
   if (filters.missions.length) fissures = fissures.filter((item) => filters.missions.includes(item.missionType));
-  if (filters.recommendedOnly) fissures = fissures.filter((item) => item.recommended);
+  if (filters.speedOnly) fissures = fissures.filter((item) => item.tags.some((tag) => tag.key === 'speed'));
   if (filters.stormOnly) fissures = fissures.filter((item) => item.storm);
 
   const tierOrder = { Lith: 1, Meso: 2, Neo: 3, Axi: 4, Requiem: 5, Omnia: 6 };
-  fissures.sort((a, b) => Number(b.recommended) - Number(a.recommended)
-    || (tierOrder[a.tier] || 99) - (tierOrder[b.tier] || 99)
+  fissures.sort((a, b) => (tierOrder[a.tier] || 99) - (tierOrder[b.tier] || 99)
     || Date.parse(a.expiry) - Date.parse(b.expiry));
+
+  // 主人私聊增强：同一张公开裂缝卡，为每条任务补一枚兼容库存遗物；失败时安全降级为纯公开列表。
+  let personalized = false;
+  let recommendationModeZh = null;
+  if (process.env.WARFRAME_PERSONAL_OK === '1') {
+    try {
+      const { runAlecaMessage } = await import('./alecaframe.mjs');
+      const recommendation = await runAlecaMessage(`开遗物 ${rawQuery}`.trim(), {
+        skipCard: true,
+        recommendOptions: { worldState: state, perspective: 'fissure', minRemainMs: 0 },
+      });
+      if (recommendation.ok && recommendation.data?.perspective === 'fissure') {
+        const byId = new Map(recommendation.data.rows.map((row) => [row.id, row]));
+        for (const item of fissures) {
+          const row = byId.get(item.id);
+          if (!row) continue;
+          item.recommendation = {
+            relic: row.relic,
+            expectedValue: row.expectedValue,
+            expectedDucats: row.expectedDucats,
+            targetEconomy: row.targetEconomy,
+            refineZh: row.refineZh,
+          };
+        }
+        personalized = true;
+        recommendationModeZh = recommendation.data.mode === 'ducat'
+          ? (recommendation.data.ducatGoal ? `奸商对标·${recommendation.data.ducatGoal.name}` : '杜卡德')
+          : '白金';
+      }
+    } catch { /* 库存/行情不可用时保持公开裂缝卡 */ }
+  }
 
   const normalAll = fissures.filter((item) => !item.hard);
   const hardAll = fissures.filter((item) => item.hard);
-  const oneSection = filters.hardOnly || filters.normalOnly;
-  const normal = normalAll.slice(0, oneSection ? 8 : 4);
-  const hard = hardAll.slice(0, oneSection ? 8 : 4);
+  const normal = normalAll;
+  const hard = hardAll;
   const eraTitle = filters.era ? ERA_ZH[filters.era] : '';
   const title = filters.hardOnly ? `${eraTitle}钢铁虚空裂缝`
     : filters.normalOnly ? `${eraTitle}普通虚空裂缝`
@@ -849,7 +876,9 @@ async function queryFissures(rawQuery = '', platform = DEFAULT_PLATFORM) {
     normalTotal: normalAll.length,
     hardTotal: hardAll.length,
     total: fissures.length,
-    truncated: normal.length + hard.length < fissures.length,
+    truncated: false,
+    personalized,
+    recommendationModeZh,
     fetchedAt: new Date().toISOString(),
     sourceTimestamp: state.timestamp || null,
     error: fissures.length ? null : 'no_matches',
@@ -860,7 +889,9 @@ function formatFissures(result) {
   if (!result.ok) return `当前没有符合“${result.query || '裂缝'}”的活动裂缝。`;
   const lines = [`当前裂缝：${result.total} 条`];
   for (const item of [...result.normal, ...result.hard]) {
-    lines.push(`• ${item.hard ? '钢铁 ' : ''}${ERA_ZH[item.tier] || item.tier} ${item.mission} · ${item.planet} ${item.node} · ${formatTime(item.expiry)}`);
+    const tags = (item.tags || []).map((tag) => tag.zh).join('/');
+    const rec = item.recommendation?.relic ? ` · 推荐 ${item.recommendation.relic.zh} ×${item.recommendation.relic.count}（${item.recommendation.relic.vaulted ? '已入库' : '未入库'}）` : '';
+    lines.push(`• ${item.hard ? '钢铁' : '普通'} · ${ERA_ZH[item.tier] || item.tier} ${item.mission} · ${item.planet} ${item.node}${tags ? ` · ${tags}` : ''}${rec} · ${formatTime(item.expiry)}`);
   }
   lines.push(`来源：世界状态 · ${formatTime(result.fetchedAt)}`);
   return lines.join('\n');
@@ -1142,8 +1173,8 @@ const HELP_SECTIONS = [
   ['遗物 & 裂缝', [
     ['遗物 前x1', '正查：六奖励·价格·精炼建议'],
     ['遗物 战刃', '反查：哪些遗物出它'],
-    ['裂缝 钢铁 生存', '当前裂缝，筛选词可组合'],
-    ['裂缝推荐 🔒', '杜卡德可加奸商/商品名；另可组合入库状态、任务偏好、单人'],
+    ['裂缝 [筛选]', '全部当前任务＋标签；主人私聊自动推荐库存遗物'],
+    ['开遗物 🔒', '遗物价值榜；每枚最多匹配两条当前路线'],
     ['精炼推荐 🔒', '哪些值得花光体；加「单人」换口径'],
   ]],
   ['世界状态', [
@@ -1196,7 +1227,7 @@ function formatHelp() {
     '【Warframe 助手功能总览】',
     '查价：wm 悟空p ｜ wm 赋能充沛 满级 ｜ 或直接问「悟空p多少钱」',
     '遗物：遗物 前x1（正查）｜ 遗物 战刃（反查哪里出）',
-    '裂缝：裂缝 [钢铁 生存 …] ｜ 裂缝推荐 [未入库|已入库] [白金|杜卡德 [奸商|商品名]] [速刷|舒适|收益] [单人]（推荐类仅用户私聊）｜ 精炼推荐 [单人]',
+    '裂缝：裂缝 [钢铁 生存 速刷 …]（主人私聊自动配库存遗物）｜ 开遗物 [未入库|已入库] [白金|杜卡德 [奸商|商品名]] [速刷|舒适|收益] [单人]｜ 精炼推荐 [单人]',
     '世界：仲裁 ｜ 警报 ｜ 入侵 ｜ 活动 ｜ 赏金 [地点|物品] ｜ 虚空商人/奸商 ｜ 奸商推荐（仅用户私聊）',
     '商店：商店 [序号|商人名]（仅用户私聊）｜ 本周好货 ｜ 哪里买 <物品> ｜ 轮换日历（仅用户私聊）',
     '周常：周常 ｜ 完成 1 3 ｜ 撤销 2 ｜ 清空周常',
@@ -1426,13 +1457,13 @@ export function parseNaturalWorldQuestion(message) {
     return { kind: 'ducat-plan', command: ['杜卡德', target, clearance, reserve].filter(Boolean).join(' '), personal: true };
   }
 
-  // 精炼推荐：「哪些遗物值得精炼」「精炼什么」；先于裂缝推荐判定（都含「值得」类词）
+  // 精炼推荐：「哪些遗物值得精炼」「精炼什么」；先于开遗物判定（都含「值得」类词）
   if (/遗物.{0,4}(?:值得|该|要)精炼/u.test(text) || /精炼(?:什么|啥|哪个)/u.test(text) || /(?:值得|该)精炼/u.test(text)) {
     const solo = /单人|单排|solo/iu.test(text);
     return { kind: 'refine', command: solo ? '精炼推荐 单人' : '精炼推荐', personal: true };
   }
 
-  // 裂缝推荐：「有啥值得开的」「开什么好」「哪个遗物值钱」
+  // 开遗物：「有啥值得开的」「开什么好」「哪个遗物值钱」
   if (/值得开|开.{0,2}(?:划算|赚|值)/u.test(text)
     || /^(?:现在)?开(?:点)?(?:什么|啥)好/u.test(text)
     || /(?:什么|啥|哪个)遗物(?:值得开|值钱|划算|好)/u.test(text)
@@ -1442,7 +1473,7 @@ export function parseNaturalWorldQuestion(message) {
       : /舒适|轻松|挂机/u.test(text) ? '舒适'
         : /收益|额外|长线/u.test(text) ? '收益' : '';
     const squad = /单人|单排|solo/iu.test(text) ? '单人' : '';
-    return { kind: 'recommend', command: ['裂缝推荐', mode, preference, squad].filter(Boolean).join(' '), personal: true };
+    return { kind: 'recommend', command: ['开遗物', mode, preference, squad].filter(Boolean).join(' '), personal: true };
   }
 
   // 虚空商人：提到奸商/虚空商人且带疑问要素；「买什么/值得买」走购物推荐（个人通道）
@@ -1536,6 +1567,9 @@ export function parseShortcutMessage(message) {
   const market = text.match(/^\/?wm(?![a-z])\s*(.*)$/iu);
   if (market) return { command: 'market', query: market[1].trim() };
   if (text.startsWith('遗物')) return { command: 'relic', query: text.slice(2).trim() };
+  // 旧「裂缝推荐」兼容为任务先行的「裂缝」；主人私聊会在同一卡片自动附库存遗物。
+  const fissureRecommend = text.match(/^\/?(?:裂缝推荐|推荐裂缝)(?:\s+|$)(.*)$/u);
+  if (fissureRecommend) return { command: 'fissure', query: (fissureRecommend[1] || '').trim() };
   const prefixedFissure = text.match(/^\/?(钢铁|普通|全能|安魂)(?:虚空)?裂缝(?:\s+|$)(.*)$/iu);
   if (prefixedFissure) return { command: 'fissure', query: `${prefixedFissure[1]} ${prefixedFissure[2]}`.trim() };
   const fissure = text.match(/^\/?(?:虚空)?裂缝(?:\s+|$)(.*)$/iu);

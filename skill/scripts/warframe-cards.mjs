@@ -136,7 +136,7 @@ export function documentShell(content, height, width = 600) {
   .kicker{font-size:11px;line-height:14px;letter-spacing:1.5px;color:#72ded3;font-weight:800}.title{font-size:25px;line-height:31px;font-weight:850;letter-spacing:.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .header-meta{margin-left:auto;text-align:right}.header-meta strong{display:block;font-size:13px;color:#dfe6ec}.header-meta span{font-size:11px;color:#8f9aa6}
   .section{height:30px;padding:6px 14px 5px;display:flex;align-items:center;background:#293039;border-bottom:1px solid #48525d;font-size:12px;font-weight:800;color:#dce3e8}.section-badge{padding:2px 7px;margin-right:7px;border-radius:4px;background:#56616d;color:#fff}.section small{margin-left:auto;color:#8f9aa6;font-weight:500}
-  .f-row{height:54px;display:grid;grid-template-columns:46px 82px minmax(0,1fr) 116px;align-items:center;padding:0 14px;border-bottom:1px solid rgba(176,123,55,.42);background:rgba(255,255,255,.014)}.f-row:nth-child(odd){background:rgba(255,255,255,.035)}.f-row.recommended{box-shadow:inset 3px 0 0 #f0c765}
+  .f-row{height:62px;display:grid;grid-template-columns:46px 110px minmax(0,1fr) 108px;align-items:center;padding:0 14px;border-bottom:1px solid rgba(176,123,55,.42);background:rgba(255,255,255,.014)}.f-row:nth-child(odd){background:rgba(255,255,255,.035)}
   .era{width:34px;height:34px;border-radius:7px;display:grid;place-items:center;color:#13171b;font-size:11px;font-weight:900;line-height:11px;text-align:center}.era small{display:block;font-size:8px}.mission{font-size:15px;font-weight:800}.mission small{display:block;margin-top:2px;font-size:9px;font-weight:600;color:#8f9aa6}
   .place{min-width:0}.place strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:16px}.place span{display:block;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:#8f9aa6}
   .time{text-align:right;font-size:17px;font-weight:850;font-variant-numeric:tabular-nums;color:#eef1f4}.time small{display:block;font-size:9px;color:#7f8b97;font-weight:600;letter-spacing:.5px}.time.urgent{color:#ff6d78}
@@ -151,14 +151,26 @@ for (const [tier, file] of [['Lith', 'lith.png'], ['Meso', 'meso.png'], ['Neo', 
   try { RELIC_ICON_DATA[tier] = `data:${mime};base64,${readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'relics', file)).toString('base64')}`; } catch { RELIC_ICON_DATA[tier] = null; }
 }
 
-function fissureRow(item) {
+function fissureRow(item, data) {
   const era = ERA[item.tier] || { zh: '未知纪元', color: '#8995a1' };
   const remainingMs = Date.parse(item.expiry) - Date.now();
   const urgent = remainingMs > 0 && remainingMs < 15 * 60 * 1000;
   const eraCell = RELIC_ICON_DATA[item.tier]
     ? `<div style="width:38px;text-align:center"><img src="${RELIC_ICON_DATA[item.tier]}" width="30" height="30" style="object-fit:contain"><div style="font-size:9px;font-weight:800;color:${era.color};line-height:9px">${escapeHtml(era.zh)}</div></div>`
     : `<div class="era" style="background:${era.color}">${escapeHtml(era.zh)}</div>`;
-  return `<div class="f-row${item.recommended ? ' recommended' : ''}">${eraCell}<div class="mission">${escapeHtml(item.mission)}<small>${escapeHtml(item.faction)}</small></div><div class="place"><strong>${escapeHtml(item.planet)} · ${escapeHtml(item.node)}</strong><span>${item.recommended ? '★ 高效任务' : item.storm ? '九重天裂缝' : '当前可用'}</span></div><div class="time${urgent ? ' urgent' : ''}">${escapeHtml(countdown(item.expiry))}<small>${urgent ? '即将结束' : '剩余时间'}</small></div></div>`;
+  const tagColors = { speed: '#57c98b', comfort: '#8ab8ec', endless: '#c39ae8', bonus: '#f0c765' };
+  const tags = (item.tags || []).map((tag) => `<span style="display:inline-flex;align-items:center;height:16px;padding:0 5px;margin-right:4px;border:1px solid ${tagColors[tag.key] || '#8f9aa6'};border-radius:4px;color:${tagColors[tag.key] || '#8f9aa6'};font-size:9px;font-weight:800">${escapeHtml(tag.zh)}</span>`).join('');
+  const rec = item.recommendation;
+  const recValue = !rec ? ''
+    : rec.targetEconomy
+      ? ` · 预计省 ${currency('plat', rec.targetEconomy.expectedSaving || 0, { size: 9 })}`
+      : data.recommendationModeZh === '杜卡德'
+        ? ` · 期望 ${currency('ducat', rec.expectedDucats || 0, { size: 9 })}`
+        : ` · 期望 ${currency('plat', rec.expectedValue || 0, { size: 9 })}`;
+  const recText = rec?.relic
+    ? `<b style="color:#75dcca">推荐 ${escapeHtml(rec.relic.zh)} ×${escapeHtml(rec.relic.count)}</b> · <b style="color:${rec.relic.vaulted ? '#d7a46d' : '#8ee3ad'}">${rec.relic.vaulted ? '已入库' : '未入库'}</b>${recValue}${rec.refineZh ? ` · <b style="color:#e8a5c0">${escapeHtml(rec.refineZh)}</b>` : ''}`
+    : '<span style="color:#7f8b97">未匹配库存遗物</span>';
+  return `<div class="f-row">${eraCell}<div class="mission">${escapeHtml(item.mission)}<small>${item.hard ? '钢铁' : '普通'} · ${escapeHtml(item.faction)}</small></div><div class="place"><strong>${escapeHtml(item.planet)} · ${escapeHtml(item.node)}</strong><span>${tags}${data.personalized ? recText : ''}</span></div><div class="time${urgent ? ' urgent' : ''}">${escapeHtml(countdown(item.expiry))}<small>${urgent ? '即将结束' : '剩余时间'}</small></div></div>`;
 }
 
 export function buildFissureQueryCard(data) {
@@ -166,12 +178,13 @@ export function buildFissureQueryCard(data) {
   if (data.normal?.length) sections.push({ label: '普通', color: '#56616d', rows: data.normal, total: data.normalTotal ?? data.normal.length });
   if (data.hard?.length) sections.push({ label: '钢铁', color: '#536f8f', rows: data.hard, total: data.hardTotal ?? data.hard.length });
   const rowsCount = sections.reduce((sum, section) => sum + section.rows.length, 0);
-  const height = 84 + sections.length * 30 + rowsCount * 54 + 32;
-  const body = sections.map((section) => `<div class="section"><span class="section-badge" style="background:${section.color}">${section.label}</span>${section.label === '钢铁' ? '钢铁之路裂缝' : '推荐与临期优先'}<small>${section.total} 条</small></div>${section.rows.map(fissureRow).join('')}`).join('');
+  const height = 84 + sections.length * 30 + rowsCount * 62 + 32;
+  const body = sections.map((section) => `<div class="section"><span class="section-badge" style="background:${section.color}">${section.label}</span>${section.label === '钢铁' ? '钢铁之路裂缝' : '普通虚空裂缝'}<small>${section.total} 条</small></div>${section.rows.map((row) => fissureRow(row, data)).join('')}`).join('');
   const shown = rowsCount;
   const total = sections.reduce((sum, section) => sum + section.total, 0);
-  const content = `<div class="card"><div class="header">${headerIcon('fissure')}<div><div class="kicker">虚空裂缝 · 裂缝雷达</div><div class="title">${escapeHtml(data.title || '当前虚空裂缝')}</div></div><div class="header-meta"><strong>实时轮换</strong><span>${escapeHtml(localTime(data.fetchedAt))}</span></div></div>${body}<div class="footer"><span>来源：世界状态</span><span>显示 ${shown}/${total}${data.truncated ? ' · 可加筛选词' : ''}</span></div></div>`;
-  return { html: documentShell(content, height), width: 600, height, key: `fissure-v4-${data.key || 'all'}` };
+  const content = `<div class="card"><div class="header">${headerIcon('fissure')}<div><div class="kicker">虚空裂缝 · 全任务雷达</div><div class="title">${escapeHtml(data.title || '当前虚空裂缝')}</div></div><div class="header-meta"><strong>${data.personalized ? `库存推荐 · ${escapeHtml(data.recommendationModeZh || '白金')}` : '公开任务'}</strong><span>${escapeHtml(localTime(data.fetchedAt))}</span></div></div>${body}<div class="footer"><span>普通/钢铁分区 · 速刷/舒适/长线/额外收益标签${data.personalized ? ' · 每条裂缝推荐一枚库存遗物' : ''}</span><span>显示 ${shown}/${total}</span></div></div>`;
+  const keySeed = `fissure|v5|${data.key || 'all'}|${data.personalized ? data.recommendationModeZh || 'personal' : 'public'}|${sections.flatMap((section) => section.rows).map((row) => `${row.id}:${row.recommendation?.relic?.base || ''}`).join('|')}`;
+  return { html: documentShell(content, height, 800), width: 800, height, key: `fissure-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 
 export function buildFissureAlertCard(item, condition, fetchedAt = new Date().toISOString()) {
@@ -437,7 +450,7 @@ export function buildDucatPlanCard(data) {
 }
 
 // 掉落提醒卡：账号快照同步后新入库的物品，含数量与当前卖单价
-// 裂缝推荐卡：遗物双币期望与任务偏好分开展示，不把主观体验混进价值数字。
+// 开遗物卡：遗物双币期望与任务偏好分开展示，不把主观体验混进价值数字。
 export function buildFissureRecommendCard(data) {
   const rows = Array.isArray(data.rows) ? data.rows : [];
   const ducatMode = data.mode === 'ducat';
@@ -496,7 +509,7 @@ export function buildFissureRecommendCard(data) {
   const targetCosts = ducatGoal
     ? `奸商 ${currency('credit', ducatGoal.credits, { size: 9, weight: 700 })} · 市场税 ${ducatGoal.tradingTax != null ? currency('credit', ducatGoal.tradingTax, { size: 9, weight: 700 }) : '未知'}`
     : '钢铁 +1 精华 · 九重天有额外结算';
-  const content = `<div class="card"><div class="header">${headerIcon('fissure')}<div style="min-width:0"><div class="kicker">裂缝推荐 · ${ducatGoal ? '奸商对标' : modeZh} · ${preferenceZh} · ${vaultFilterZh}</div><div class="title">${title}</div></div><div class="header-meta">${headerMeta}</div></div>
+  const content = `<div class="card"><div class="header">${headerIcon('fissure')}<div style="min-width:0"><div class="kicker">开遗物 · ${ducatGoal ? '奸商对标' : modeZh} · ${preferenceZh} · ${vaultFilterZh}</div><div class="title">${title}</div></div><div class="header-meta">${headerMeta}</div></div>
     <div class="section"><span class="section-badge">TOP ${rows.length}</span>可立即开 ${escapeHtml(data.matchedRelicCount ?? 0)} 种 · 每种最多 2 条路线<small>${targetSummary}</small></div>
     ${body || empty}
     <div class="footer" style="font-size:9px"><span>${requiemNote}完整·${squadZh}${ducatGoal ? '·逐次开奖比较兑杜/卖白金·不读取实时奖励' : ducatMode ? '·按毛杜卡德期望' : ''}｜${preferenceNote}</span><span>${targetCosts}</span></div></div>`;

@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { classifyFissure, formatRecommend, parseDucatRecommendTarget, parseFissurePreference, parseRelicVaultFilter, recommendFissures, recommendRefinement } from './recommend.mjs';
-import { buildFissureRecommendCard, buildRefineRecommendCard } from './warframe-cards.mjs';
+import { parseAlecaMessage } from './alecaframe.mjs';
+import { parseShortcutMessage } from './shortcuts.mjs';
+import { buildFissureQueryCard, buildFissureRecommendCard, buildRefineRecommendCard } from './warframe-cards.mjs';
 
 const relics = [{ baseName: 'Lith T1', count: 7, refinement: 'Intact', vaulted: true }];
 const rewards = [
@@ -218,6 +220,51 @@ test('ranks distinct relics by value before expanding each to at most two routes
     assert.equal(new Set(routes.map((row) => row.id)).size, 2);
   }
   assert.match(buildFissureRecommendCard(data).html, /每种最多 2 条路线/u);
+});
+
+test('fissure-first perspective keeps every fissure once and may repeat its best compatible relic', async () => {
+  const data = await recommendFissures(relics, { perspective: 'fissure', minRemainMs: 0, worldState, localDb, prices });
+  assert.equal(data.perspective, 'fissure');
+  assert.equal(data.rows.length, worldState.fissures.length);
+  assert.equal(new Set(data.rows.map((row) => row.id)).size, worldState.fissures.length);
+  assert.equal(data.rows.every((row) => row.relic.base === 'Lith T1'), true);
+});
+
+test('fissure-first perspective also recommends owned Requiem relics for Requiem fissures', async () => {
+  const requiemRelics = [{ baseName: 'Requiem I', count: 2, refinement: 'Intact', vaulted: false }];
+  const requiemDb = { rewardsByBase: new Map([['Requiem I', rewards]]) };
+  const requiemFissure = fissure('requiem', 'Survival', { tier: 'Requiem' });
+  const data = await recommendFissures(requiemRelics, {
+    perspective: 'fissure', minRemainMs: 0, worldState: { fissures: [requiemFissure] }, localDb: requiemDb, prices,
+  });
+  assert.equal(data.rows[0].relic.base, 'Requiem I');
+});
+
+test('裂缝推荐兼容到任务卡，开遗物进入遗物先行个人模式', () => {
+  assert.deepEqual(parseShortcutMessage('裂缝推荐 杜卡德'), { command: 'fissure', query: '杜卡德' });
+  assert.deepEqual(parseAlecaMessage('开遗物 杜卡德'), { command: 'recommend', query: '杜卡德' });
+  assert.equal(parseAlecaMessage('裂缝推荐'), null);
+});
+
+test('merged fissure card shows all task labels and only exposes inventory in personalized data', () => {
+  const baseRow = {
+    id: 'capture', tier: 'Lith', mission: '捕获', missionType: 'Capture', faction: 'Corpus', planet: '地球', node: 'Hepit',
+    expiry: new Date(Date.now() + 60 * 60 * 1000).toISOString(), hard: false, storm: false,
+    tags: [{ key: 'speed', zh: '速刷' }],
+  };
+  const publicHtml = buildFissureQueryCard({
+    title: '当前虚空裂缝', normal: [baseRow], hard: [], normalTotal: 1, hardTotal: 0, total: 1, fetchedAt: new Date().toISOString(), personalized: false,
+  }).html;
+  assert.match(publicHtml, /普通/u);
+  assert.match(publicHtml, /速刷/u);
+  assert.doesNotMatch(publicHtml, /前纪 D8/u);
+
+  const personalHtml = buildFissureQueryCard({
+    title: '当前虚空裂缝', normal: [{ ...baseRow, recommendation: { relic: { zh: '古纪 T1', count: 7, vaulted: true }, expectedValue: 12, expectedDucats: 40, refineZh: '无瑕' } }],
+    hard: [], normalTotal: 1, hardTotal: 0, total: 1, fetchedAt: new Date().toISOString(), personalized: true, recommendationModeZh: '白金',
+  }).html;
+  assert.match(personalHtml, /推荐 古纪 T1/u);
+  assert.match(personalHtml, /已入库/u);
 });
 
 test('裂缝与精炼推荐保留并展示遗物入库状态', async () => {
