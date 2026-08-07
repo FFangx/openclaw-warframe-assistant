@@ -84,8 +84,9 @@ if (-not $AgentsOnly) {
   $extensionTarget = Join-Path $workspacePath '.openclaw\extensions\warframe-fast-commands'
   if ($PSCmdlet.ShouldProcess($skillTarget, 'Install or update Warframe skill')) { Copy-Tree (Join-Path $repoRoot 'skill') $skillTarget }
   if ($PSCmdlet.ShouldProcess($extensionTarget, 'Install or update Warframe plugin')) { Copy-Tree (Join-Path $repoRoot 'extension') $extensionTarget }
-  Write-Host "Skill and plugin synchronized to: $workspacePath"
+  if (-not $WhatIfPreference) { Write-Host "Skill and plugin synchronized to: $workspacePath" }
 }
 
 if (-not $SkipAgents) { Merge-AgentsBlock }
-Write-Host 'Install complete. Run: openclaw gateway restart'
+if ($WhatIfPreference) { Write-Host 'Preview complete. No files were changed.' }
+else { Write-Host 'Install complete. Run: openclaw.cmd gateway restart' }

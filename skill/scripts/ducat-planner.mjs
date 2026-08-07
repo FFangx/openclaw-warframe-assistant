@@ -46,6 +46,7 @@ export function parseDucatSpec(message) {
   const targetMatch = withoutReserve.match(/(?:^|\s)(\d[\d,]*)\s*(?:杜|杜卡德)?(?:\s|$)/u);
   const target = targetMatch ? Number(targetMatch[1].replace(/,/gu, '')) : 0;
   const clearance = /清仓/u.test(query);
+  const reserveExplicit = Boolean(setReserveMatch || itemReserveMatch);
   return {
     query,
     mode: target > 0 ? 'target' : clearance ? 'clearance' : 'recommend',
@@ -53,12 +54,24 @@ export function parseDucatSpec(message) {
     clearance,
     reserveCount: itemReserveMatch ? Math.max(0, Number(itemReserveMatch[1]) || 0) : 1,
     reserveSets: setReserveMatch ? Math.max(0, Number(setReserveMatch[1]) || 0) : null,
+    reserveExplicit,
   };
 }
 
 function reserveFor(entry, spec) {
   if (spec.reserveSets != null) return Math.max(0, spec.reserveSets * Math.max(1, Number(entry.setRequired) || 1));
-  return Math.max(0, spec.reserveCount);
+  if (spec.reserveExplicit) return Math.max(0, spec.reserveCount);
+  // 默认智能保留：当前已经拥有对应成品时，最后一件多余蓝图/部件也可换杜；
+  // 未拥有或快照无法确认时按配方保留一套，双持部件会正确保留 2 件。
+  if (entry.parentOwned === true) return 0;
+  return Math.max(1, Number(entry.setRequired) || 1);
+}
+
+function reserveReason(entry, spec) {
+  if (spec.reserveSets != null || spec.reserveExplicit) return null;
+  if (entry.parentOwned === true) return '已有成品';
+  if (entry.parentOwned === false) return '未拥有成品';
+  return '状态未知';
 }
 
 export function buildDucatCandidates(entries, spec) {
@@ -71,6 +84,7 @@ export function buildDucatCandidates(entries, spec) {
         ...entry,
         owned: Number(entry.count),
         reserve,
+        reserveReason: reserveReason(entry, spec),
         available,
         ducatsEach: Number(entry.ducats),
         unitPlat,
@@ -228,7 +242,9 @@ export async function buildDucatPlan(entries, spec, options = {}) {
       rows,
     };
   }
-  const reserveLabel = parsed.reserveSets != null ? `保留 ${parsed.reserveSets} 套` : `每种保留 ${parsed.reserveCount} 个`;
+  const reserveLabel = parsed.reserveSets != null ? `保留 ${parsed.reserveSets} 套`
+    : parsed.reserveExplicit ? `每种保留 ${parsed.reserveCount} 个`
+      : '智能保留：已有成品 0，其他 1 套';
   return {
     kind: 'ducat-plan',
     ok: true,
@@ -237,6 +253,7 @@ export async function buildDucatPlan(entries, spec, options = {}) {
     clearance: parsed.clearance,
     reserveCount: parsed.reserveCount,
     reserveSets: parsed.reserveSets,
+    reserveExplicit: parsed.reserveExplicit,
     reserveLabel,
     candidates: candidates.length,
     availableDucats,

@@ -40,6 +40,11 @@ const ACCOUNT_GROUPS = [
   'SentinelWeapons', 'SpaceGuns', 'SpaceMelee', 'SpaceSuits', 'OperatorAmps', 'OperatorSuits',
   'CrewShipWeapons', 'DrifterMelee', 'Horses', 'Motorcycles', 'KubrowPets',
 ];
+const EQUIPMENT_GROUPS = [
+  'LongGuns', 'Pistols', 'Melee', 'Suits', 'Sentinels', 'SentinelWeapons',
+  'SpaceGuns', 'SpaceMelee', 'SpaceSuits', 'OperatorAmps', 'OperatorSuits',
+  'CrewShipWeapons', 'DrifterMelee', 'Horses', 'Motorcycles', 'KubrowPets',
+];
 const CATALOG_FILES = [
   'Arcanes.json', 'Mods.json', 'Misc.json', 'Resources.json', 'Gear.json', 'Primary.json',
   'Secondary.json', 'Melee.json', 'Warframes.json', 'Sentinels.json', 'SentinelWeapons.json',
@@ -458,7 +463,20 @@ export async function assembleInventoryValuation(snapshot) {
       total: quote ? Math.round(quote.price * entry.count * 10) / 10 : 0,
     });
   }
-  return entries;
+  return annotateParentOwnership(entries, snapshot.inventory);
+}
+
+// Prime 部件 → 对应成品是否当前在库。快照缺少全部装备栏时返回 null，
+// 让杜卡德规划器走保守分支，绝不因无法确认而误换最后一套。
+export function annotateParentOwnership(entries, inventory) {
+  const known = EQUIPMENT_GROUPS.some((group) => Array.isArray(inventory?.[group]));
+  const owned = new Set(EQUIPMENT_GROUPS.flatMap((group) => (Array.isArray(inventory?.[group]) ? inventory[group] : []))
+    .map((item) => item?.ItemType)
+    .filter(Boolean));
+  return (entries || []).map((entry) => ({
+    ...entry,
+    parentOwned: entry.parentUniqueName ? (known ? owned.has(entry.parentUniqueName) : null) : null,
+  }));
 }
 
 // 行显示名：等级/精炼度并入名字（用户定：等级也要显示）

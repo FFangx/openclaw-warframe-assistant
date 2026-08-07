@@ -377,7 +377,7 @@ export async function traderShopping(inventory, options = {}) {
   if (Array.isArray(options.inventoryValuation) && options.inventoryValuation.length) {
     try {
       const { parseDucatSpec, buildDucatCandidates, refreshDucatPrices, optimizeDucatTarget } = await import('./ducat-planner.mjs');
-      const spec = parseDucatSpec('杜卡德 保留1');
+      const spec = parseDucatSpec('杜卡德');
       const ducatCandidates = await refreshDucatPrices(buildDucatCandidates(options.inventoryValuation, spec), {
         maxLiveQuotes: options.maxLiveDucatQuotes ?? 12,
         ...(options.ducatQuoteFetcher ? { quoteFetcher: options.ducatQuoteFetcher } : {}),

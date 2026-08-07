@@ -6,6 +6,7 @@ import {
   optimizeDucatTarget,
   parseDucatSpec,
 } from './ducat-planner.mjs';
+import { annotateParentOwnership } from './alecaframe.mjs';
 import { normalizeTraderLocation, selectTraderGoal, summarizeTradeStatistics, traderShopping } from './trader-shopping.mjs';
 import { buildTraderShoppingCard } from './warframe-cards.mjs';
 import { primeWarframePartIconPath } from './wfdata.mjs';
@@ -43,10 +44,41 @@ test('Prime 战甲三类部件统一使用游戏内通用原图', () => {
 test('短命令解析目标、清仓与按套保留', () => {
   assert.deepEqual(parseDucatSpec('杜卡德 600 保留1'), {
     query: '600 保留1', mode: 'target', target: 600, clearance: false,
-    reserveCount: 1, reserveSets: null,
+    reserveCount: 1, reserveSets: null, reserveExplicit: true,
   });
   assert.equal(parseDucatSpec('杜卡德 清仓').mode, 'clearance');
+  assert.equal(parseDucatSpec('杜卡德 清仓').reserveExplicit, false);
   assert.equal(parseDucatSpec('杜卡德兑换 清仓 保留2套').reserveSets, 2);
+});
+
+test('默认按成品拥有状态智能保留，显式保留参数优先覆盖', () => {
+  const smart = parseDucatSpec('杜卡德 清仓');
+  const candidates = buildDucatCandidates([
+    part({ name: '已有', count: 1, parentOwned: true }),
+    part({ name: '未有', count: 3, setRequired: 2, parentOwned: false }),
+    part({ name: '未知', count: 3, setRequired: 2, parentOwned: null }),
+  ], smart);
+  const byName = new Map(candidates.map((entry) => [entry.name, entry]));
+  assert.deepEqual([byName.get('已有').reserve, byName.get('已有').available, byName.get('已有').reserveReason], [0, 1, '已有成品']);
+  assert.deepEqual([byName.get('未有').reserve, byName.get('未有').available, byName.get('未有').reserveReason], [2, 1, '未拥有成品']);
+  assert.deepEqual([byName.get('未知').reserve, byName.get('未知').available, byName.get('未知').reserveReason], [2, 1, '状态未知']);
+
+  const [forced] = buildDucatCandidates([part({ count: 2, parentOwned: true })], parseDucatSpec('杜卡德 保留1'));
+  assert.equal(forced.reserve, 1);
+  assert.equal(forced.reserveReason, null);
+});
+
+test('本机装备栏为 Prime 部件标注对应成品拥有状态', () => {
+  const entries = [
+    part({ parentUniqueName: '/Lotus/Weapons/Tenno/LongGuns/OwnedPrime' }),
+    part({ name: '未拥有', parentUniqueName: '/Lotus/Weapons/Tenno/LongGuns/MissingPrime' }),
+  ];
+  const marked = annotateParentOwnership(entries, {
+    LongGuns: [{ ItemType: '/Lotus/Weapons/Tenno/LongGuns/OwnedPrime' }],
+  });
+  assert.equal(marked[0].parentOwned, true);
+  assert.equal(marked[1].parentOwned, false);
+  assert.equal(annotateParentOwnership(entries, {})[0].parentOwned, null);
 });
 
 test('保留一套会按配方数量保留双持部件', () => {

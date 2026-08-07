@@ -435,7 +435,7 @@ export function buildDucatPlanCard(data) {
     const unit = currency('plat', row.unitPlat, { size: 10, color: '#a9d7e4', weight: 760 });
     return `<div style="position:relative;z-index:1;height:${rowH}px;display:grid;grid-template-columns:46px minmax(0,1fr) 72px 126px;align-items:center;padding:0 16px;border-bottom:1px solid rgba(176,123,55,.40);background:${index % 2 ? 'rgba(255,255,255,.035)' : 'rgba(255,255,255,.014)'}">
       ${iconCell}
-      <div style="min-width:0;padding-left:8px"><div style="font-size:14px;font-weight:830;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(row.name)}</div><div style="margin-top:3px;font-size:10px;color:#8995a1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">库存 ×${escapeHtml(row.owned)} · 保留 ×${escapeHtml(row.reserve)} · ${escapeHtml(row.priceSource)} ${unit}</div></div>
+      <div style="min-width:0;padding-left:8px"><div style="font-size:14px;font-weight:830;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(row.name)}</div><div style="margin-top:3px;font-size:10px;color:#8995a1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">库存 ×${escapeHtml(row.owned)} · 保留 ×${escapeHtml(row.reserve)}${row.reserveReason ? `（${escapeHtml(row.reserveReason)}）` : ''} · ${escapeHtml(row.priceSource)} ${unit}</div></div>
       <div style="text-align:center"><div style="font-size:10px;color:#8995a1">兑换</div><div style="margin-top:3px;color:#75dcca;font-size:17px;font-weight:900;font-variant-numeric:tabular-nums">×${escapeHtml(row.exchangeQty)}</div></div>
       <div style="padding-left:8px"><div style="font-size:15px">${currency('ducat', `+${row.totalDucats}`, { size: 14 })}</div><div style="margin-top:3px;font-size:11px">${currency('plat', `−${row.totalPlat}`, { size: 11, color: '#a9d7e4', weight: 760 })}<span style="margin-left:4px;color:#6f7b86">机会成本</span></div></div>
     </div>`;
@@ -445,7 +445,7 @@ export function buildDucatPlanCard(data) {
     <div class="section"><span class="section-badge">${escapeHtml(shown)} 项</span>${sectionText}<small>${data.mode === 'target' ? `可安全兑换 ${escapeHtml(data.availableDucats)} 杜` : '效率=杜卡德÷白金单价，越高越优先'}</small></div>
     ${body}
     <div class="footer" style="height:36px;font-size:9px"><span>命令：杜卡德 600｜杜卡德 清仓｜杜卡德 清仓 保留1</span><span>${allRows.length > shown ? `显示 ${shown}/${allRows.length}` : escapeHtml(localTime(data.syncedAt || data.fetchedAt))}</span></div></div>`;
-  const keySeed = `ducat-plan-v2|${data.mode}|${data.target}|${data.reserveLabel}|${data.syncedAt}|${allRows.map((row) => `${row.uniqueName}:${row.exchangeQty}:${row.unitPlat}`).join('|')}`;
+  const keySeed = `ducat-plan-v3|${data.mode}|${data.target}|${data.reserveLabel}|${data.syncedAt}|${allRows.map((row) => `${row.uniqueName}:${row.exchangeQty}:${row.unitPlat}:${row.reserve}:${row.reserveReason || ''}`).join('|')}`;
   return { html: documentShell(content, height), width: 600, height, key: `ducat-plan-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 

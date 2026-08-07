@@ -1206,7 +1206,7 @@ const HELP_SECTIONS = [
   ]],
   ['我的账号 🔒', [
     ['我的账号 / 我的库存 X', '货币家底 / 快照只读查询'],
-    ['杜卡德 / 杜卡德 600', '部件兑换推荐 / 指定目标最低损失方案'],
+    ['杜卡德 / 杜卡德 600', '智能保留未拥有套装；已有成品可换最后一件'],
     ['我的遗物 前N11 / 账号周常', '遗物·赋能·周常核对'],
     ['我的紫卡 / 紫卡 3', '词条等级·神卡标·行情估价'],
   ]],
@@ -1220,7 +1220,7 @@ function buildHelpCard() {
   const rowCount = HELP_SECTIONS.reduce((n, [, cmds]) => n + cmds.length, 0);
   const height = 92 + HELP_SECTIONS.length * 29 + rowCount * 38 + 34 + 6;
   const content = `<div class="card"><div class="relic-head"><div class="relic-title">Warframe 助手</div><div class="relic-code">功能总览</div><div class="relic-note">发左列命令即可使用<br>说人话提问也能识别</div></div><table><colgroup><col style="width:38%"><col style="width:62%"></colgroup><tbody>${rows}</tbody></table><div class="foot"><span>🔒 = 仅主人私聊 · 多数命令支持简称：好货/周报/侵袭/悬赏/开什么</span><span>发「帮助」随时唤出</span></div></div>`;
-  return { html: cardDocument(content, height, 760), width: 760, height, key: 'help-v20' };
+  return { html: cardDocument(content, height, 760), width: 760, height, key: 'help-v21' };
 }
 
 function formatHelp() {
@@ -1233,7 +1233,7 @@ function formatHelp() {
     '商店：商店 [序号|商人名]（仅主人私聊）｜ 本周好货 ｜ 哪里买 <物品> ｜ 轮换日历（仅主人私聊）',
     '周常：周常 ｜ 完成 1 3 ｜ 撤销 2 ｜ 清空周常',
     '订阅：订阅 裂缝 钢铁 生存 ｜ 订阅 仲裁/警报/入侵/活动/虚空商人/周常/掉落 ｜ 我的订阅 ｜ 暂停/恢复/取消订阅 <编号>',
-    '账号（仅主人私聊）：我的账号 ｜ 我的库存 X ｜ 杜卡德 [600|清仓 保留1] ｜ 我的遗物 前N11 ｜ 我的赋能 充沛 ｜ 账号周常',
+    '账号（仅主人私聊）：我的账号 ｜ 我的库存 X ｜ 杜卡德 [600|清仓] [保留N|保留N套]（默认按成品拥有状态智能保留）｜ 我的遗物 前N11 ｜ 我的赋能 充沛 ｜ 账号周常',
     '说人话也行：「奸商来了吗」「这周还剩啥没做」「战刃哪里出」「我想买电冲弹药，怎么开遗物合适」',
   ].join('\n');
 }

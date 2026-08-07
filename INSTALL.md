@@ -18,8 +18,10 @@
 在仓库根目录运行：
 
 ```powershell
-.\install.ps1 -Workspace "$env:USERPROFILE\.openclaw\workspace"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
+
+`ExecutionPolicy Bypass` 只对这一次 PowerShell 进程生效，不会修改系统全局执行策略。脚本默认安装到 `%USERPROFILE%\.openclaw\workspace`；自定义工作区可在末尾追加 `-Workspace "D:\你的\workspace"`。
 
 脚本会完成三件事：
 
@@ -41,7 +43,7 @@
   .openclaw/extensions/warframe-fast-commands/   ← 本仓库 extension/ 整个拷进去
 ```
 
-然后还需要将 [`config/AGENTS.warframe.md`](config/AGENTS.warframe.md) 的受控片段追加到工作区 `AGENTS.md`；推荐仍使用 `install.ps1 -AgentsOnly`，避免复制遗漏或升级后产生重复片段。
+然后还需要将 [`config/AGENTS.warframe.md`](config/AGENTS.warframe.md) 的受控片段追加到工作区 `AGENTS.md`；推荐仍运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -AgentsOnly`，避免复制遗漏或升级后产生重复片段。
 
 ## 2. 配置（只有 1 个必填）
 
@@ -83,8 +85,8 @@ node skills/warframe-assistant/scripts/doctor.mjs
 
 ## 5. 重启 Gateway 并验证
 
-```bash
-openclaw gateway restart
+```powershell
+openclaw.cmd gateway restart
 ```
 
 Gateway 日志确认插件数量包含本插件（搜 `plugins:`）。然后 QQ 私聊机器人：
