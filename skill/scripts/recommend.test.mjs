@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { classifyFissure, formatRecommend, parseDucatRecommendTarget, parseFissurePreference, parseRelicVaultFilter, recommendFissures, recommendRefinement } from './recommend.mjs';
 import { parseAlecaMessage } from './alecaframe.mjs';
-import { parseShortcutMessage } from './shortcuts.mjs';
+import { parseNaturalWorldQuestion, parseShortcutMessage } from './shortcuts.mjs';
 import { buildFissureQueryCard, buildFissureRecommendCard, buildRefineRecommendCard } from './warframe-cards.mjs';
 
 const relics = [{ baseName: 'Lith T1', count: 7, refinement: 'Intact', vaulted: true }];
@@ -244,6 +244,15 @@ test('裂缝推荐兼容到任务卡，开遗物进入遗物先行个人模式',
   assert.deepEqual(parseShortcutMessage('裂缝推荐 杜卡德'), { command: 'fissure', query: '杜卡德' });
   assert.deepEqual(parseAlecaMessage('开遗物 杜卡德'), { command: 'recommend', query: '杜卡德' });
   assert.equal(parseAlecaMessage('裂缝推荐'), null);
+});
+
+test('自然语言购买奸商商品会进入指定商品的开遗物模式', () => {
+  assert.deepEqual(parseNaturalWorldQuestion('我先买电冲弹药，怎么开遗物合适'), {
+    kind: 'recommend', command: '开遗物 杜卡德 电冲弹药', personal: true,
+  });
+  assert.deepEqual(parseNaturalWorldQuestion('怎么开遗物合适'), {
+    kind: 'recommend', command: '开遗物', personal: true,
+  });
 });
 
 test('merged fissure card shows all task labels and only exposes inventory in personalized data', () => {

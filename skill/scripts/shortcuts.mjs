@@ -1173,8 +1173,9 @@ const HELP_SECTIONS = [
   ['遗物 & 裂缝', [
     ['遗物 前x1', '正查：六奖励·价格·精炼建议'],
     ['遗物 战刃', '反查：哪些遗物出它'],
-    ['裂缝 [筛选]', '全部当前任务＋标签；主人私聊自动推荐库存遗物'],
-    ['开遗物 🔒', '遗物价值榜；每枚最多匹配两条当前路线'],
+    ['裂缝 [筛选]', '任务先行：全部普通/钢铁＋标签；私聊逐任务配库存'],
+    ['开遗物 [条件] 🔒', '遗物先行：价值 TOP8；每枚最多两条路线'],
+    ['开遗物 杜卡德 商品名 🔒', '指定奸商商品：逐次比较兑杜/卖白金'],
     ['精炼推荐 🔒', '哪些值得花光体；加「单人」换口径'],
   ]],
   ['世界状态', [
@@ -1198,7 +1199,7 @@ const HELP_SECTIONS = [
   ]],
   ['订阅提醒', [
     ['订阅 裂缝 钢铁 生存', '新事件自动推图'],
-    ['订阅 类型词', '11 类：仲裁/警报/入侵/活动/突击/侵袭/赏金/商人/周常/掉落/商店'],
+    ['订阅 类型词', '13 类事件；支持商品上架与轮换提醒'],
     ['订阅 仲裁推荐', '只推 S/A 好场地'],
     ['订阅 商品 X / 订阅 轮换 X', '上架对账 / 轮到提醒一次'],
     ['我的订阅', '列表·暂停·恢复·取消'],
@@ -1218,8 +1219,8 @@ function buildHelpCard() {
   ).join('');
   const rowCount = HELP_SECTIONS.reduce((n, [, cmds]) => n + cmds.length, 0);
   const height = 92 + HELP_SECTIONS.length * 29 + rowCount * 38 + 34 + 6;
-  const content = `<div class="card"><div class="relic-head"><div class="relic-title">Warframe 助手</div><div class="relic-code">功能总览</div><div class="relic-note">发左列命令即可使用<br>说人话提问也能识别</div></div><table><colgroup><col style="width:38%"><col style="width:62%"></colgroup><tbody>${rows}</tbody></table><div class="foot"><span>🔒 = 仅用户私聊 · 多数命令支持简称：好货/周报/侵袭/悬赏/开什么</span><span>发「帮助」随时唤出</span></div></div>`;
-  return { html: cardDocument(content, height, 760), width: 760, height, key: 'help-v18' };
+  const content = `<div class="card"><div class="relic-head"><div class="relic-title">Warframe 助手</div><div class="relic-code">功能总览</div><div class="relic-note">发左列命令即可使用<br>说人话提问也能识别</div></div><table><colgroup><col style="width:38%"><col style="width:62%"></colgroup><tbody>${rows}</tbody></table><div class="foot"><span>🔒 = 仅主人私聊 · 多数命令支持简称：好货/周报/侵袭/悬赏/开什么</span><span>发「帮助」随时唤出</span></div></div>`;
+  return { html: cardDocument(content, height, 760), width: 760, height, key: 'help-v20' };
 }
 
 function formatHelp() {
@@ -1228,12 +1229,12 @@ function formatHelp() {
     '查价：wm 悟空p ｜ wm 赋能充沛 满级 ｜ 或直接问「悟空p多少钱」',
     '遗物：遗物 前x1（正查）｜ 遗物 战刃（反查哪里出）',
     '裂缝：裂缝 [钢铁 生存 速刷 …]（主人私聊自动配库存遗物）｜ 开遗物 [未入库|已入库] [白金|杜卡德 [奸商|商品名]] [速刷|舒适|收益] [单人]｜ 精炼推荐 [单人]',
-    '世界：仲裁 ｜ 警报 ｜ 入侵 ｜ 活动 ｜ 赏金 [地点|物品] ｜ 虚空商人/奸商 ｜ 奸商推荐（仅用户私聊）',
-    '商店：商店 [序号|商人名]（仅用户私聊）｜ 本周好货 ｜ 哪里买 <物品> ｜ 轮换日历（仅用户私聊）',
+    '世界：仲裁 ｜ 警报 ｜ 入侵 ｜ 活动 ｜ 突击 ｜ 钢铁侵袭 ｜ 赏金 [地点|物品] ｜ 虚空商人/奸商 ｜ 奸商推荐（仅主人私聊）',
+    '商店：商店 [序号|商人名]（仅主人私聊）｜ 本周好货 ｜ 哪里买 <物品> ｜ 轮换日历（仅主人私聊）',
     '周常：周常 ｜ 完成 1 3 ｜ 撤销 2 ｜ 清空周常',
     '订阅：订阅 裂缝 钢铁 生存 ｜ 订阅 仲裁/警报/入侵/活动/虚空商人/周常/掉落 ｜ 我的订阅 ｜ 暂停/恢复/取消订阅 <编号>',
-    '账号（仅用户私聊）：我的账号 ｜ 我的库存 X ｜ 杜卡德 [600|清仓 保留1] ｜ 我的遗物 前N11 ｜ 我的赋能 充沛 ｜ 账号周常',
-    '说人话也行：「奸商来了吗」「这周还剩啥没做」「战刃哪里出」「有啥值得开的」',
+    '账号（仅主人私聊）：我的账号 ｜ 我的库存 X ｜ 杜卡德 [600|清仓 保留1] ｜ 我的遗物 前N11 ｜ 我的赋能 充沛 ｜ 账号周常',
+    '说人话也行：「奸商来了吗」「这周还剩啥没做」「战刃哪里出」「我想买电冲弹药，怎么开遗物合适」',
   ].join('\n');
 }
 
@@ -1463,17 +1464,21 @@ export function parseNaturalWorldQuestion(message) {
     return { kind: 'refine', command: solo ? '精炼推荐 单人' : '精炼推荐', personal: true };
   }
 
-  // 开遗物：「有啥值得开的」「开什么好」「哪个遗物值钱」
+  // 开遗物：「有啥值得开的」「开什么好」「怎么开遗物合适」；“买 X 再开”自动对标指定奸商商品。
   if (/值得开|开.{0,2}(?:划算|赚|值)/u.test(text)
     || /^(?:现在)?开(?:点)?(?:什么|啥)好/u.test(text)
     || /(?:什么|啥|哪个)遗物(?:值得开|值钱|划算|好)/u.test(text)
-    || /有(?:什么|啥)好(?:裂缝|遗物)/u.test(text)) {
-    const mode = /杜卡德/u.test(text) ? '杜卡德' : '';
+    || /有(?:什么|啥)好(?:裂缝|遗物)/u.test(text)
+    || /(?:(?:该)?怎么|如何).{0,4}开遗物/u.test(text)
+    || /开遗物.{0,6}(?:怎么|如何|合适|划算|好)/u.test(text)) {
+    const buyTargetMatch = text.match(/(?:我)?(?:先|想|要|准备)?买(?:奸商|虚空商人)?(?:的)?[「『]?(.{1,20}?)[」』]?[，,。！？!?；;\s]+(?:(?:该)?怎么|如何).{0,4}开遗物/u);
+    const buyTarget = String(buyTargetMatch?.[1] || '').replace(/[「」『』]/gu, '').trim();
+    const mode = /杜卡德|奸商|虚空商人/u.test(text) || buyTarget ? '杜卡德' : '';
     const preference = /速刷|快速|快开|效率/u.test(text) ? '速刷'
       : /舒适|轻松|挂机/u.test(text) ? '舒适'
         : /收益|额外|长线/u.test(text) ? '收益' : '';
     const squad = /单人|单排|solo/iu.test(text) ? '单人' : '';
-    return { kind: 'recommend', command: ['开遗物', mode, preference, squad].filter(Boolean).join(' '), personal: true };
+    return { kind: 'recommend', command: ['开遗物', mode, buyTarget, preference, squad].filter(Boolean).join(' '), personal: true };
   }
 
   // 虚空商人：提到奸商/虚空商人且带疑问要素；「买什么/值得买」走购物推荐（个人通道）

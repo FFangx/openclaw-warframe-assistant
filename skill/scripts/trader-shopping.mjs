@@ -82,6 +82,20 @@ async function mapLimit(values, limit, mapper) {
 
 const compact = (value) => String(value ?? '').normalize('NFKC').trim().toLowerCase().replace(/[\s_\-:：·'’&]+/gu, '');
 
+function editDistance(left, right) {
+  const a = [...String(left || '')];
+  const b = [...String(right || '')];
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j += 1) {
+      current[j] = Math.min(current[j - 1] + 1, previous[j] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    previous = current;
+  }
+  return previous[b.length];
+}
+
 // —— 奸商到货单（warframestat.us，字段契约见 WFCD VoidTraderItem：uniqueName/item/ducats/credits） ——
 export async function fetchTraderState() {
   return getJson(`${WORLDSTATE_BASE}/pc/voidTrader/?language=zh`);
@@ -428,7 +442,12 @@ export function selectTraderGoal(result, target = { type: 'trader', query: '' })
     const needle = compact(target.query);
     const exact = tradable.filter((item) => [item.zhName, item.nameEn].some((name) => compact(name) === needle));
     const partial = tradable.filter((item) => [item.zhName, item.nameEn].some((name) => compact(name).includes(needle)));
-    row = exact[0] || partial[0] || null;
+    const fuzzy = needle.length >= 4
+      ? tradable.map((item) => ({ item, distance: Math.min(...[item.zhName, item.nameEn].filter(Boolean).map((name) => editDistance(compact(name), needle))) }))
+        .sort((a, b) => a.distance - b.distance)
+      : [];
+    const uniqueFuzzy = fuzzy[0]?.distance <= 1 && fuzzy[1]?.distance !== fuzzy[0].distance ? fuzzy[0].item : null;
+    row = exact[0] || partial[0] || uniqueFuzzy || null;
     if (!row) return { ok: false, error: 'trader_item_not_found', query: target.query };
   } else {
     const priority = { strong: 0, buy: 1, cash: 2, flip: 3, need: 4 };

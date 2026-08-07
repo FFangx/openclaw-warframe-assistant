@@ -13,13 +13,35 @@
 | Chrome 或 Edge | 🟢 低 | headless 截图渲卡；非标准路径设 `WARFRAME_BROWSER` |
 | AlecaFrame | ⚪ 可选 | 个人功能（库存/掉落/紫卡/打卡/购物推荐）必需；不装则这些功能不可用，公开查询不受影响 |
 
-## 1. 放置文件
+## 1. 一键安装或升级
+
+在仓库根目录运行：
+
+```powershell
+.\install.ps1 -Workspace "$env:USERPROFILE\.openclaw\workspace"
+```
+
+脚本会完成三件事：
+
+1. 将 `skill/` 同步到 `skills/warframe-assistant/`
+2. 将 `extension/` 同步到 `.openclaw/extensions/warframe-fast-commands/`
+3. 将 `config/AGENTS.warframe.md` 的受控安全片段追加到工作区 `AGENTS.md` 末尾；再次运行会原地更新，不会重复追加
+
+修改 `AGENTS.md` 前会保留 `AGENTS.md.warframe-assistant.bak`。只更新安全片段可加 `-AgentsOnly`；完全不改 `AGENTS.md` 可加 `-SkipAgents`；删除该受控片段可运行 `-RemoveAgents`。脚本不会覆盖片段以外的个人规则。
+
+需要预览动作时使用 PowerShell 通用参数 `-WhatIf`。
+
+### 手动安装
+
+如果不运行安装器，手动复制：
 
 ```
 <你的 OpenClaw workspace>/
   skills/warframe-assistant/     ← 本仓库 skill/ 整个拷进去
   .openclaw/extensions/warframe-fast-commands/   ← 本仓库 extension/ 整个拷进去
 ```
+
+然后还需要将 [`config/AGENTS.warframe.md`](config/AGENTS.warframe.md) 的受控片段追加到工作区 `AGENTS.md`；推荐仍使用 `install.ps1 -AgentsOnly`，避免复制遗漏或升级后产生重复片段。
 
 ## 2. 配置（只有 1 个必填）
 
@@ -69,9 +91,10 @@ Gateway 日志确认插件数量包含本插件（搜 `plugins:`）。然后 QQ 
 
 1. 发 `帮助` → 应秒回功能总览卡（不经模型，验证插件拦截）
 2. 发 `裂缝` → 应回当前裂缝卡（验证世界状态链路）
-3. 发 `wm 悟空p` → 应回价格卡（验证 market 链路）
-4. 发 `我的账号` → 装了 AlecaFrame 且 ownerOpenId 配对时回账号卡；否则拒绝（验证个人门）
-5. 发一句自然语言「悟空p多少钱」→ 应先出卡再补一句点评（验证两段式）
+3. 主人私聊发 `开遗物` → 应回遗物价值 TOP8；`裂缝`卡应逐任务附库存遗物（验证两套推荐逻辑）
+4. 发 `wm 悟空p` → 应回价格卡（验证 market 链路）
+5. 发 `我的账号` → 装了 AlecaFrame 且 ownerOpenId 配对时回账号卡；否则拒绝（验证个人门）
+6. 发一句自然语言「悟空p多少钱」→ 应先出卡再补一句点评（验证两段式）
 
 订阅推送依赖 cron：发 `订阅 裂缝 钢铁 生存` 后，用 `openclaw cron list` 确认生成了对应任务。
 

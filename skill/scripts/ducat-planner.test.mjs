@@ -115,7 +115,7 @@ test('奸商联动使用 0 级成交中位价、准确交易税和安全库存�
   assert.equal(result.ducatShortfall, 195);
 });
 
-test('裂缝推荐可从当前货单自动或按商品名建立动态盈亏目标', async () => {
+test('开遗物可从当前货单自动或按商品名建立动态盈亏目标', async () => {
   const result = await traderFixture();
   const automatic = selectTraderGoal(result, { type: 'trader', query: '' });
   assert.equal(automatic.ok, true);
@@ -128,6 +128,7 @@ test('裂缝推荐可从当前货单自动或按商品名建立动态盈亏目�
   const named = selectTraderGoal(result, { type: 'item', query: '测试 Prime' });
   assert.equal(named.ok, true);
   assert.equal(named.goal.source, 'item');
+  assert.equal(selectTraderGoal(result, { type: 'item', query: '测试 Prine' }).goal.name, '测试 Prime');
   assert.equal(selectTraderGoal(result, { type: 'item', query: '不存在' }).error, 'trader_item_not_found');
 });
 
