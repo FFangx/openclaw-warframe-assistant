@@ -1,0 +1,85 @@
+{
+  "_comment": "商人展示层元数据(2026-08-05 灰机 wiki 逐家查证)。购买条件的机器可读部分在 ExportVendors 的 syndicate/itemPrices 字段,此表只放 wiki 才有的身份/位置信息",
+  "/Lotus/Types/Game/VendorManifests/Duviri/AcrithisVendorManifest": {
+    "zhName": "言录使",
+    "npc": "Acrithis",
+    "faction": "双衍王境",
+    "location": "双衍王境(货箱位置随复眠螺旋移动;击败奥金魇龙后出现在王宫大门旁)/ 扎里曼居住舱塔柱旁",
+    "currency": "双衍王境资源(奥理刻珠、Kullervo 的灾刃、急行蛛外壳、各类植物/宝石)",
+    "rotation": "货架滚动轮换:装饰小时级、场景与赋能每日、稀有货每周(各限购1)",
+    "highlights": "催化剂/反应堆/Forma 蓝图、战甲与武器特殊功能槽连接器(全游戏唯一来源)、五类裂罅 Mod、赇能槽连接器、赤毒5000",
+    "predictable": false
+  },
+  "/Lotus/Types/Game/VendorManifests/Hubs/IronwakeDondaVendorManifest": {
+    "zhName": "圣言者(Palladino)",
+    "npc": "Palladino",
+    "faction": "血色面纱",
+    "location": "钢铁守望(地球星图独立节点,完成「Harrow 的枷锁」解锁),哨站右后方",
+    "currency": "裂罅碎块(Riven Sliver)",
+    "rotation": "每周一 08:00(北京时间)重置限购,商品固定",
+    "highlights": "紫卡包(每周2次)、裂罅转换器×3/破解器、安魂 I~IV 遗物(各限10)、赤毒35000、15万现金",
+    "predictable": true
+  },
+  "/Lotus/Types/Game/VendorManifests/EntratiLabs/EntratiLabVendorManifest": {
+    "zhName": "鸟三·璀璨珍宝",
+    "npc": "Bird 3",
+    "faction": "科维兽",
+    "location": "解剖圣所(火卫二阿尔布雷希特实验室,「墙中低语」解锁)",
+    "currency": "实验室资源(荧尘等,随机价)",
+    "rotation": "装饰每日轮换;执刑官源力石每周轮换",
+    "highlights": "三色执刑官源力石:需科维兽等级5(启迪者)+30,000 声望,各限购1,每周轮换上架",
+    "predictable": false
+  },
+  "/Lotus/Types/Game/VendorManifests/Hubs/TeshinHardModeVendorManifest": {
+    "zhName": "泰辛·钢铁之路荣誉",
+    "npc": "Teshin",
+    "faction": "钢铁之路",
+    "location": "任意中继站的泰辛处(钢铁之路荣誉商店)",
+    "currency": "钢铁精华",
+    "rotation": "常驻区固定;精选区每周轮换 2 件(社区排期表可预测未来周)",
+    "highlights": "Umbra Forma 蓝图(150精华,限1,周轮)、Forma×3、各类裂罅 Mod(75精华)、赤毒5万、登录奖励融合包",
+    "predictable": true
+  },
+  "/Lotus/Types/Game/VendorManifests/Hubs/EliteAlertVendorManifest": {
+    "zhName": "仲裁荣誉",
+    "npc": "仲裁庭(Arbiters of Hexis)",
+    "faction": "仲裁",
+    "location": "任意中继站的仲裁区",
+    "currency": "生息精华(Vitus Essence)",
+    "rotation": "固定货单,每日刷新限购",
+    "highlights": "赤毒1万(25精华)、曲翼枪械裂罅 Mod、琥珀星蓝图、赋能系列、镀层 MOD 系列",
+    "predictable": true
+  },
+  "/Lotus/Types/Game/VendorManifests/Kahl/ChipperVendorManifest": {
+    "zhName": "切片哥",
+    "npc": "Chipper",
+    "faction": "卡尔驻军",
+    "location": "漂泊者营地(执刑官猎杀入口旁)",
+    "currency": "存货储备(击溃合一众周任务挑战获得)",
+    "rotation": "固定货单,按卡尔驻军集团等级逐档解锁(2~5级)",
+    "highlights": "Styanax 全套部件、执刑官 MOD 系列(等级3+)、源力石诅咒/克星幻纹(等级5)、圣英/骇敌榴弹/屠煞蓝图",
+    "predictable": true
+  },
+  "/Lotus/Types/Game/VendorManifests/Hubs/HunhowVendorManifest": {
+    "zhName": "Hunhow 商店",
+    "npc": "Hunhow",
+    "faction": "待查证(新内容)",
+    "location": "待查证(货币=翠绿天赋/猩红天赋,卖 Sirius/Orion 战甲部件)",
+    "currency": "翠绿天赋 / 猩红天赋",
+    "rotation": "常驻为主,赤毒7000每周限7",
+    "highlights": "Sirius/Orion 战甲与镰刀部件、双阵营外观、场景",
+    "predictable": true,
+    "_todo": "wiki 待补:位置与解锁条件"
+  },
+  "/Lotus/Types/Game/VendorManifests/Solaris/NightcapVendorManifest": {
+    "zhName": "Nightcap 商店",
+    "npc": "待查证",
+    "faction": "NightcapJournal 集团(新内容)",
+    "location": "待查证(Solaris 路径,货币=铁离石)",
+    "currency": "铁离石",
+    "rotation": "每日轮换 3 件",
+    "highlights": "Nokko 战甲部件(集团等级4+)、Forma 姿态蓝图、赤毒7000",
+    "predictable": false,
+    "_todo": "wiki 待补:NPC 与位置"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "id": "warframe-fast-commands",
+  "name": "Warframe Fast Commands",
+  "description": "Handles deterministic Warframe market, relic, fissure, arbitration, world-state intel, weekly checklist and persistent subscription commands before the model runs.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "ownerOpenId": {
+        "type": "string",
+        "description": "QQ openid of the bot owner; required for personal account commands when channels.qqbot.allowFrom is a wildcard."
+      }
+    }
+  }
+}
