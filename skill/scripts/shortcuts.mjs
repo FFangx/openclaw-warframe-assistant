@@ -25,9 +25,9 @@ const DEFAULT_CROSSPLAY = true;
 const FISSURE_MISSION_ZH = {
   Extermination: '歼灭', Capture: '捕获', Sabotage: '破坏', Rescue: '救援', Spy: '间谍',
   Defense: '防御', 'Mobile Defense': '移动防御', Interception: '拦截', Survival: '生存',
-  Excavation: '挖掘', Disruption: '中断', 'Void Cascade': '虚空瀑流', 'Void Flood': '虚空洪流',
+  Excavation: '挖掘', Disruption: '中断', 'Void Cascade': '虚空覆涌', 'Void Flood': '虚空洪流',
   'Void Armageddon': '虚空决战', Orphix: '奥菲克斯', Assault: '强袭', Defection: '叛逃',
-  'Infested Salvage': '疫变回收', Volatile: '不稳定', Alchemy: '炼金术', Crossfire: '歼灭',
+  'Infested Salvage': '疫变回收', Volatile: '反应堆破坏', Alchemy: '炼金术', Crossfire: '歼灭',
   Skirmish: '前哨战',
 };
 const FISSURE_FACTION_ZH = {
@@ -1057,8 +1057,8 @@ function buildMarketCard(data) {
   const height = headH + partsH + 30 + sellCount * 37 + 28 + buyCount * 37 + 32;
   // chips 收进 flex 流且固定右上（垂直居中时多行词条会撞框，2026-08-06 赋能·速攻实锤）
   const content = `<div class="card"><div class="head" style="height:${headH}px;display:flex;gap:14px;align-items:center">${iconHtml}<div style="min-width:0;flex:1"><div class="eyebrow">星际战甲市场 · 跨平台交易</div><div class="title" style="font-size:${titleSize}px">${escapeHtml(item.zhName)}</div>${effectsHtml}</div><div class="chips" style="position:static;flex:0 0 auto;align-self:flex-start;margin-top:16px"><div class="chip"><small>杜卡德</small>${item.ducats == null ? '—' : currency('ducat', item.ducats, { size: 12, color: '#f3d188', weight: 700 })}</div><div class="chip"><small>交易税</small>${item.tradingTax == null ? '—' : currency('credit', item.tradingTax, { size: 12, color: '#f3d188', weight: 700 })}</div></div></div>${partsBlock}<table><colgroup>${columns}</colgroup><thead class="market-head"><tr><th class="seller-col">卖家</th><th class="rep-col">信誉</th><th class="qty-col">数量</th>${rankHeader}<th class="price-col">价格</th></tr></thead><tbody>${sellerRows || emptySellRow}<tr class="section"><td class="seller-col">买家</td><td class="rep-col">信誉</td><td class="qty-col">数量</td>${ranked ? '<td class="qty-col">等级</td>' : ''}<td class="price-col">价格</td></tr>${buyerRows || emptyBuyRow}</tbody></table><div class="foot"><span>${footLeft}</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
-  // key 带 v8 + 图/词条/行数/散件特征：模板改版必须打散渲染缓存，否则吃陈旧图
-  return { html: cardDocument(content, height), width: 600, height, key: `market-v8-${item.slug}-${stats ? 's' : 'ns'}-${item.iconDataUri ? 'i' : 'x'}${effectLines.length}e${effRows}-r${sellCount}${buyCount}-sp${setParts.length}.${priced.length}` };
+  // key 带 v9 + 图/词条/行数/散件特征：模板改版必须打散渲染缓存，否则吃陈旧图
+  return { html: cardDocument(content, height), width: 600, height, key: `market-v9-${item.slug}-${stats ? 's' : 'ns'}-${item.iconDataUri ? 'i' : 'x'}${effectLines.length}e${effRows}-r${sellCount}${buyCount}-sp${setParts.length}.${priced.length}` };
 }
 
 function buildRelicCard(data) {
@@ -1091,7 +1091,7 @@ function buildRelicCard(data) {
     ? `<img src="${RELIC_ICON_DATA[headTierKey]}" width="46" height="46" style="flex:0 0 auto;object-fit:contain">`
     : '';
   const content = `<div class="card"><div class="relic-head" style="display:flex;align-items:center;gap:14px">${headIcon}<div style="min-width:0"><div class="relic-title">${relic.vaulted ? '已入库遗物' : '未入库遗物'}</div><div class="relic-code">${escapeHtml(relic.zhName)}</div></div><div class="relic-note">价格 = 当前在线最低卖价<br>效率 = 杜卡德 ÷ 白金（越高越适合换杜）</div></div><table><colgroup><col style="width:10%"><col style="width:48%"><col style="width:16%"><col style="width:13%"><col style="width:13%"></colgroup><thead class="relic-table-head"><tr><th></th><th class="reward-col">奖励</th><th>价格</th><th>杜卡德</th><th>效率</th></tr></thead><tbody>${rows}${refineBlock}${sourceBlock}</tbody></table><div class="foot"><span>遗物资料＋星际战甲市场；发「遗物 编号 单人」换单人口径</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
-  return { html: cardDocument(content, height), width: 600, height, key: `relic6-${relic.name}-s${data.squad ?? 4}-i${relic.rewards.filter((reward) => reward.iconDataUri).length}-d${sources.length}` };
+  return { html: cardDocument(content, height), width: 600, height, key: `relic7-${relic.name}-s${data.squad ?? 4}-i${relic.rewards.filter((reward) => reward.iconDataUri).length}-d${sources.length}` };
 }
 
 function localizeRelicName(name) {
@@ -1129,7 +1129,7 @@ function buildRelicReverseCard(data) {
     ? `<img src="${data.headIconDataUri}" width="46" height="46" style="flex:0 0 auto;object-fit:contain">`
     : '';
   const content = `<div class="card"><div class="relic-head" style="display:flex;align-items:center;gap:14px">${headIcon}<div style="min-width:0"><div class="relic-title">反向遗物查询</div><div class="relic-code">${escapeHtml(data.query)}</div></div><div class="relic-note">${escapeHtml(data.total)} 个相关遗物<br>未入库 ${unvaultedCount} · 已入库 ${vaultedCount}</div></div><table><colgroup><col style="width:18%"><col style="width:28%"><col style="width:54%"></colgroup><thead class="reverse-head"><tr><th class="state-col">状态</th><th class="relic-col">遗物</th><th class="hit-col">命中奖励</th></tr></thead><tbody>${rows}</tbody></table><div class="foot"><span>遗物反向索引${anySource ? ' · 掉点=概率最高来源' : ''}</span><span>${visible.length < data.total ? `显示 ${visible.length}/${data.total}` : escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
-  return { html: cardDocument(content, height), width: 600, height, key: `relic-reverse5-${data.query}-${visible.length}-${data.headIconDataUri ? 'i' : 'x'}-${anySource ? 's' : 'n'}` };
+  return { html: cardDocument(content, height), width: 600, height, key: `relic-reverse6-${data.query}-${visible.length}-${data.headIconDataUri ? 'i' : 'x'}-${anySource ? 's' : 'n'}` };
 }
 
 // ---- 帮助卡：静态功能总览（零网络，内容改这里即可，无需重启 Gateway） ----
@@ -1143,7 +1143,7 @@ const HELP_SECTIONS = [
     ['遗物 前x1', '正查：六奖励·价格·精炼建议'],
     ['遗物 战刃', '反查：哪些遗物出它'],
     ['裂缝 钢铁 生存', '当前裂缝，筛选词可组合'],
-    ['裂缝推荐 🔒', '开什么最赚；简称「开什么」；加「杜卡德」换口径'],
+    ['裂缝推荐 🔒', '可加白金/杜卡德＋速刷/舒适/收益＋单人'],
     ['精炼推荐 🔒', '哪些值得花光体；加「单人」换口径'],
   ]],
   ['世界状态', [
@@ -1174,6 +1174,7 @@ const HELP_SECTIONS = [
   ]],
   ['我的账号 🔒', [
     ['我的账号 / 我的库存 X', '货币家底 / 快照只读查询'],
+    ['杜卡德 / 杜卡德 600', '部件兑换推荐 / 指定目标最低损失方案'],
     ['我的遗物 前N11 / 账号周常', '遗物·赋能·周常核对'],
     ['我的紫卡 / 紫卡 3', '词条等级·神卡标·行情估价'],
   ]],
@@ -1187,7 +1188,7 @@ function buildHelpCard() {
   const rowCount = HELP_SECTIONS.reduce((n, [, cmds]) => n + cmds.length, 0);
   const height = 92 + HELP_SECTIONS.length * 29 + rowCount * 38 + 34 + 6;
   const content = `<div class="card"><div class="relic-head"><div class="relic-title">Warframe 助手</div><div class="relic-code">功能总览</div><div class="relic-note">发左列命令即可使用<br>说人话提问也能识别</div></div><table><colgroup><col style="width:38%"><col style="width:62%"></colgroup><tbody>${rows}</tbody></table><div class="foot"><span>🔒 = 仅用户私聊 · 多数命令支持简称：好货/周报/侵袭/悬赏/开什么</span><span>发「帮助」随时唤出</span></div></div>`;
-  return { html: cardDocument(content, height, 760), width: 760, height, key: 'help-v17' };
+  return { html: cardDocument(content, height, 760), width: 760, height, key: 'help-v18' };
 }
 
 function formatHelp() {
@@ -1195,12 +1196,12 @@ function formatHelp() {
     '【Warframe 助手功能总览】',
     '查价：wm 悟空p ｜ wm 赋能充沛 满级 ｜ 或直接问「悟空p多少钱」',
     '遗物：遗物 前x1（正查）｜ 遗物 战刃（反查哪里出）',
-    '裂缝：裂缝 [钢铁 生存 …] ｜ 裂缝推荐 [杜卡德|单人] ｜ 精炼推荐 [单人]（推荐类仅用户私聊）',
+    '裂缝：裂缝 [钢铁 生存 …] ｜ 裂缝推荐 [白金|杜卡德] [速刷|舒适|收益] [单人]（推荐类仅用户私聊）｜ 精炼推荐 [单人]',
     '世界：仲裁 ｜ 警报 ｜ 入侵 ｜ 活动 ｜ 赏金 [地点|物品] ｜ 虚空商人/奸商 ｜ 奸商推荐（仅用户私聊）',
-    '商店：商店 [序号|商人名]（仅用户私聊）｜ 本周好货 ｜ 哪里买 <物品> ｜ 轮换日历（仅用户私聊）',,
+    '商店：商店 [序号|商人名]（仅用户私聊）｜ 本周好货 ｜ 哪里买 <物品> ｜ 轮换日历（仅用户私聊）',
     '周常：周常 ｜ 完成 1 3 ｜ 撤销 2 ｜ 清空周常',
     '订阅：订阅 裂缝 钢铁 生存 ｜ 订阅 仲裁/警报/入侵/活动/虚空商人/周常/掉落 ｜ 我的订阅 ｜ 暂停/恢复/取消订阅 <编号>',
-    '账号（仅用户私聊）：我的账号 ｜ 我的库存 X ｜ 我的遗物 前N11 ｜ 我的赋能 充沛 ｜ 账号周常',
+    '账号（仅用户私聊）：我的账号 ｜ 我的库存 X ｜ 杜卡德 [600|清仓 保留1] ｜ 我的遗物 前N11 ｜ 我的赋能 充沛 ｜ 账号周常',
     '说人话也行：「奸商来了吗」「这周还剩啥没做」「战刃哪里出」「有啥值得开的」',
   ].join('\n');
 }
@@ -1223,16 +1224,20 @@ async function renderCard(data, cardDir) {
   if (!browser) return null;
   if (data.kind === 'fissure') return renderWarframeCard(buildFissureQueryCard(data), cardDir);
   // 物品图在渲染前解析（下载+缓存+base64），失败保持 null 无图降级；放这里不进模型注入素材
-  if (data.kind === 'market' && data.item?.icon && data.item.iconDataUri === undefined) {
-    const { imageDataUri } = await import('./wfdata.mjs');
-    data.item.iconDataUri = await imageDataUri(`https://warframe.market/static/assets/${data.item.icon}`);
+  if (data.kind === 'market' && data.item && data.item.iconDataUri === undefined) {
+    const { imageDataUri, primeWarframePartIconDataUri } = await import('./wfdata.mjs');
+    data.item.iconDataUri = await primeWarframePartIconDataUri(null, data.item.name);
+    if (!data.item.iconDataUri && data.item.icon) {
+      data.item.iconDataUri = await imageDataUri(`https://warframe.market/static/assets/${data.item.icon}`);
+    }
   }
   // 遗物正查：六奖励行配 wm thumb（已全量预热本地缓存，零网络）；无 slug 奖励（Forma 蓝图）无图留空
   if (data.kind === 'relic' && data.mode === 'forward' && Array.isArray(data.relic?.rewards)) {
-    const { imageDataUri } = await import('./wfdata.mjs');
+    const { imageDataUri, primeWarframePartIconDataUri } = await import('./wfdata.mjs');
     for (const reward of data.relic.rewards) {
       if (reward.iconDataUri !== undefined) continue;
-      reward.iconDataUri = reward.thumb ? await imageDataUri(`https://warframe.market/static/assets/${reward.thumb}`) : null;
+      reward.iconDataUri = await primeWarframePartIconDataUri(null, reward.name);
+      if (!reward.iconDataUri && reward.thumb) reward.iconDataUri = await imageDataUri(`https://warframe.market/static/assets/${reward.thumb}`);
     }
     // wm 缺图（新 Prime 未上图，Vadarya 实锤）：AlecaFrame 目录英文名→imageName 兜底；无 AlecaFrame 静默降级
     if (data.relic.rewards.some((reward) => !reward.iconDataUri && reward.name)) {
@@ -1260,9 +1265,10 @@ async function renderCard(data, cardDir) {
     try {
       const firstName = data.matches?.[0]?.rewards?.[0]?.name;
       if (firstName) {
-        const [{ marketSlugMap, findMarketEntry }, { imageDataUri }] = await Promise.all([import('./drops.mjs'), import('./wfdata.mjs')]);
+        const [{ marketSlugMap, findMarketEntry }, { imageDataUri, primeWarframePartIconDataUri }] = await Promise.all([import('./drops.mjs'), import('./wfdata.mjs')]);
+        data.headIconDataUri = await primeWarframePartIconDataUri(null, firstName);
         const entry = findMarketEntry(await marketSlugMap(), firstName);
-        if (entry?.thumb) data.headIconDataUri = await imageDataUri(`https://warframe.market/static/assets/${entry.thumb}`);
+        if (!data.headIconDataUri && entry?.thumb) data.headIconDataUri = await imageDataUri(`https://warframe.market/static/assets/${entry.thumb}`);
       }
     } catch { /* 无图降级 */ }
   }
@@ -1412,6 +1418,14 @@ export function parseNaturalWorldQuestion(message) {
     return { kind: 'help', command: '帮助', personal: false };
   }
 
+  // 杜卡德兑换自然问法：「哪些部件适合换杜卡德」「帮我换 600 杜」
+  if (/杜卡德|杜卡德币/u.test(text) && /换|兑换|清仓|部件|推荐|方案|怎么/u.test(text)) {
+    const target = text.match(/(\d[\d,]*)\s*(?:杜|杜卡德|杜卡德币)/u)?.[1]?.replace(/,/gu, '') || '';
+    const reserve = text.match(/保留\s*\d+\s*套?/u)?.[0]?.replace(/\s+/gu, '') || '';
+    const clearance = /清仓/u.test(text) ? '清仓' : '';
+    return { kind: 'ducat-plan', command: ['杜卡德', target, clearance, reserve].filter(Boolean).join(' '), personal: true };
+  }
+
   // 精炼推荐：「哪些遗物值得精炼」「精炼什么」；先于裂缝推荐判定（都含「值得」类词）
   if (/遗物.{0,4}(?:值得|该|要)精炼/u.test(text) || /精炼(?:什么|啥|哪个)/u.test(text) || /(?:值得|该)精炼/u.test(text)) {
     const solo = /单人|单排|solo/iu.test(text);
@@ -1423,8 +1437,12 @@ export function parseNaturalWorldQuestion(message) {
     || /^(?:现在)?开(?:点)?(?:什么|啥)好/u.test(text)
     || /(?:什么|啥|哪个)遗物(?:值得开|值钱|划算|好)/u.test(text)
     || /有(?:什么|啥)好(?:裂缝|遗物)/u.test(text)) {
-    const ducat = /杜卡德/u.test(text);
-    return { kind: 'recommend', command: ducat ? '裂缝推荐 杜卡德' : '裂缝推荐', personal: true };
+    const mode = /杜卡德/u.test(text) ? '杜卡德' : '';
+    const preference = /速刷|快速|快开|效率/u.test(text) ? '速刷'
+      : /舒适|轻松|挂机/u.test(text) ? '舒适'
+        : /收益|额外|长线/u.test(text) ? '收益' : '';
+    const squad = /单人|单排|solo/iu.test(text) ? '单人' : '';
+    return { kind: 'recommend', command: ['裂缝推荐', mode, preference, squad].filter(Boolean).join(' '), personal: true };
   }
 
   // 虚空商人：提到奸商/虚空商人且带疑问要素；「买什么/值得买」走购物推荐（个人通道）

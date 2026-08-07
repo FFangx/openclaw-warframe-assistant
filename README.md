@@ -23,7 +23,7 @@
 | 「现在开什么遗物最值？」 | 「哪些遗物值得精炼？」 |
 |:---:|:---:|
 | <img src="img/card-recommend.png" width="440"/> | <img src="img/card-refine.png" width="440"/> |
-| *库存 × 期望价值 × 任务效率 三层打分* | *光辉 vs 完整的每 100 光体增益排序* |
+| *库存 × 双币期望；综合/速刷/舒适/收益四种偏好* | *光辉 vs 完整的每 100 光体增益排序* |
 
 **自然语言直接聊**（真实对话，AI 拿脚本数据做点评，数字从不编造）：
 
@@ -50,6 +50,8 @@
 - **世界状态**：裂缝（组合筛选）、仲裁（场地评级+预告）、警报、入侵、突击、钢铁侵袭、赏金（三开放世界+三挑战板）、虚空商人
 - **订阅推送**：十三类事件按边界蹲守去重推送（裂缝/仲裁好场/警报/虚空商人/掉落/周常……），不轰炸
 - **周常一图流**：11 项周常清单 + AlecaFrame 快照**自动打卡** + 回廊奖励轨道 + 电波赛季进度与满级预测
+- **杜卡德规划**（需 [AlecaFrame](https://alecaframe.com)）：`杜卡德 600` 自动找白金损失最低的兑换组合；`杜卡德 清仓 保留1` 安全清理；`保留1套` 按配方数量留件
+- **奸商路线比较**：Prime 部件机会成本＋奸商现金，对比 0 级市场价＋准确交易税，告诉你该换还是直接买
 - **个人数据**（需 [AlecaFrame](https://alecaframe.com)）：库存估值五分类、掉落监测推送、紫卡数值复算与行情估价、裂缝/精炼/奸商购物推荐、商店已购对账、本周好货
 - **自然语言**：「悟空p多少钱」「奸商来了吗」「这周还剩啥没做」——AI 只做意图路由和一两句点评，数字全部来自脚本
 
@@ -60,7 +62,7 @@
 ```mermaid
 flowchart LR
     QQ[QQ 消息] --> P{OpenClaw 插件}
-    P -->|短命令<br/>硬拦截| S[确定性脚本<br/>22 个 .mjs]
+    P -->|短命令<br/>硬拦截| S[确定性脚本<br/>23 个 .mjs]
     P -->|自然语言| AI[AI 模型]
     AI -->|五级决策树路由| D[dispatch.mjs / lookup.mjs]
     D --> S
@@ -70,7 +72,7 @@ flowchart LR
     CRON[OpenClaw cron] -->|订阅蹲守| S
 ```
 
-- `skill/`：22 个 Node 脚本（零 npm 强依赖，`sharp` 可选）+ SKILL.md（AI 行为契约）+ 素材
+- `skill/`：23 个运行脚本＋1 个自动测试（零 npm 强依赖，`sharp` 可选）+ SKILL.md（AI 行为契约）+ 素材
 - `extension/`：OpenClaw 插件（`before_dispatch` 硬拦截 + 两段式注入）
 
 数据源：api.warframestat.us、api.warframe.market v2、browse.wf（官方导出）、DE 官方 worldState、AlecaFrame 本机快照（只读）。详见 [NOTICE.md](NOTICE.md)。

@@ -34,6 +34,9 @@ const MAX_PRICED_ITEMS = 6;
 const MAX_CARD_ROWS = 12;
 // 投递欠账保留 48 小时：网络恢复后自动补投，超期丢弃防无限堆积
 const PENDING_TTL_MS = 48 * 60 * 60 * 1000;
+// cron 最长运行 120 秒；超过两分钟的锁不可能再属于正常任务，可安全回收。
+// 防止进程被 cron 强制终止后遗留 .lock，令后续监测永久报“状态正忙”。
+const LOCK_STALE_MS = 2 * 60 * 1000;
 // 与插件同源：本地脚本无权直调 gateway，发消息走 openclaw CLI；测试可用环境变量注入假 CLI
 const OPENCLAW_CLI = process.env.OPENCLAW_CLI_PATH
   || path.join(process.env.APPDATA || '', 'npm', 'node_modules', 'openclaw', 'openclaw.mjs');
@@ -176,6 +179,12 @@ async function loadCatalog(alecaDir) {
       // 目录自带杜卡德价值（与 primeSellingPrice 同值）；非 Prime 部件无此字段
       ducats: Number(component.ducats ?? component.primeSellingPrice) || null,
       imageName: component.imageName || item.imageName || null,
+      // 杜卡德安全清仓需要知道「保留 N 套」究竟要留几件；
+      // 双持/拳套等部件 itemCount=2，不能一律按 1 处理。
+      parentUniqueName: item.uniqueName || null,
+      parentEnglishName: item.name || null,
+      parentDisplayName: parent || item.name || null,
+      setRequired: Math.max(1, Number(component.itemCount) || 1),
     };
     byUniqueName.set(component.uniqueName, entry);
     // 遗物开出的是蓝图（…HelmetBlueprint），目录部件是成品（…HelmetComponent）——差一个后缀，
@@ -336,11 +345,25 @@ async function withLock(statePath, operation) {
     try { handle = await open(lockPath, 'wx'); break; }
     catch (error) {
       if (error?.code !== 'EEXIST') throw error;
+      try {
+        const lockStat = await stat(lockPath);
+        if (Date.now() - lockStat.mtimeMs > LOCK_STALE_MS) {
+          await unlink(lockPath).catch((unlinkError) => {
+            if (unlinkError?.code !== 'ENOENT') throw unlinkError;
+          });
+          continue;
+        }
+      } catch (statError) {
+        if (statError?.code !== 'ENOENT') throw statError;
+      }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
   }
   if (!handle) throw new Error('掉落监测状态正忙');
-  try { return await operation(); }
+  try {
+    await handle.writeFile(`${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`, 'utf8');
+    return await operation();
+  }
   finally {
     await handle.close().catch(() => {});
     await unlink(lockPath).catch(() => {});
@@ -461,12 +484,13 @@ async function monitorDrops({ statePath, ledgerPath, target, cardDir, alecaDir, 
     await attachPrices(matched);
     // 物品图降级链（用户定：风格向 wm 看齐）：wm 素材 → browse.wf 游戏原图（同源同风格） → AlecaFrame 插画 → 字母块
     try {
-      const { imageDataUri, gameIconDataUri } = await import('./wfdata.mjs');
+      const { imageDataUri, gameIconDataUri, primeWarframePartIconDataUri } = await import('./wfdata.mjs');
       let slugs = null;
       try { slugs = await marketSlugMap(); } catch { slugs = null; }
       await Promise.all(matched.slice(0, MAX_CARD_ROWS).map(async (drop) => {
         const wmEntry = slugs ? findMarketEntry(slugs, drop.englishName) : null;
-        if (wmEntry?.thumb) drop.iconDataUri = await imageDataUri(`https://warframe.market/static/assets/${wmEntry.thumb}`);
+        drop.iconDataUri = await primeWarframePartIconDataUri(drop.uniqueName, drop.englishName);
+        if (!drop.iconDataUri && wmEntry?.thumb) drop.iconDataUri = await imageDataUri(`https://warframe.market/static/assets/${wmEntry.thumb}`);
         if (!drop.iconDataUri) drop.iconDataUri = await gameIconDataUri(drop.uniqueName);
         if (!drop.iconDataUri && drop.imageName) drop.iconDataUri = await imageDataUri(`https://cdn.alecaframe.com/warframeData/img/${drop.imageName}`);
       }));
@@ -504,13 +528,21 @@ async function monitorDrops({ statePath, ledgerPath, target, cardDir, alecaDir, 
       lines.push('数据来自本机账号快照，价格为当前在线最低卖单，仅供参考。');
       message = lines.join('\n');
     }
-    // 自发并确认；失败入欠账队列等下轮补投。输出恒为 NO_REPLY，不再走 announce
+    // 先落盘再投递：即使 cron 在发送期间强杀进程，下一轮仍能从欠账队列补投。
+    const deliveryId = `${Date.now()}-${process.pid}`;
+    const queuedState = await readState(statePath);
+    queuedState.pendingDelivery = [...(Array.isArray(queuedState.pendingDelivery) ? queuedState.pendingDelivery : []), {
+      id: deliveryId, message, queuedAt: new Date().toISOString(),
+    }];
+    await writeState(statePath, queuedState);
+    // 自发并确认；输出恒为 NO_REPLY，不再走 announce
     if (await sendDirect(target, message)) {
+      const sentState = await readState(statePath);
+      sentState.pendingDelivery = (Array.isArray(sentState.pendingDelivery) ? sentState.pendingDelivery : [])
+        .filter((entry) => entry.id !== deliveryId);
+      await writeState(statePath, sentState);
       return { output: 'NO_REPLY\n', data: { ok: true, matched, delivered: 'direct' } };
     }
-    const queuedState = await readState(statePath);
-    queuedState.pendingDelivery = [...(Array.isArray(queuedState.pendingDelivery) ? queuedState.pendingDelivery : []), { message, queuedAt: new Date().toISOString() }];
-    await writeState(statePath, queuedState);
     return { output: 'NO_REPLY\n', data: { ok: true, matched, delivered: 'queued' } };
   });
 }
@@ -543,12 +575,15 @@ async function main() {
   process.exitCode = 1;
 }
 
-export { monitorDrops, dropMatches, countInventory, loadCatalog, describeDrop, defaultAlecaDir, marketSlugMap, findMarketEntry };
+export { monitorDrops, dropMatches, countInventory, loadCatalog, describeDrop, defaultAlecaDir, marketSlugMap, findMarketEntry, withLock };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
     // monitor 的 stdout 会被 cron 直接投递到 QQ，异常绝不能漏裸 JSON
-    if (process.argv[2] === 'monitor') process.stdout.write('NO_REPLY\n');
+    if (process.argv[2] === 'monitor') {
+      process.stderr.write(`[warframe-drops] ${String(error?.stack || error)}\n`);
+      process.stdout.write('NO_REPLY\n');
+    }
     else outputJson({ ok: false, error: String(error?.message || error) });
     process.exitCode = 1;
   });

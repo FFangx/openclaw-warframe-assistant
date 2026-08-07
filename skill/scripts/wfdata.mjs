@@ -155,6 +155,32 @@ export async function gameIconDataUri(uniqueName) {
   return icon ? imageDataUri(`https://browse.wf${icon}`) : null;
 }
 
+// Prime 战甲蓝图对象本身没有 icon，游戏图挂在 resultType 成品组件上；
+// Warframe.Market 缩略图又常用整甲立绘。这三类部件因此显式复用游戏的通用 Prime 部件原图。
+const PRIME_FRAME_PART_ICONS = Object.freeze({
+  chassis: '/Lotus/Interface/Icons/StoreIcons/Resources/CraftingComponents/GenericWarframePrimeChassis.png',
+  neuroptics: '/Lotus/Interface/Icons/StoreIcons/Resources/CraftingComponents/GenericWarframePrimeHelmet.png',
+  systems: '/Lotus/Interface/Icons/StoreIcons/Resources/CraftingComponents/GenericWarframePrimeSystem.png',
+});
+
+export function primeWarframePartIconPath(uniqueName, englishName = '') {
+  const unique = String(uniqueName || '');
+  const name = String(englishName || '');
+  const haystack = `${unique} ${name}`;
+  const primeFrameRecipe = /\/WarframeRecipes\//iu.test(unique) && /Prime/iu.test(unique);
+  const primeFrameName = /\bPrime\s+(?:Chassis|Neuroptics|Systems?)(?:\s+Blueprint)?\b/iu.test(name);
+  if (!primeFrameRecipe && !primeFrameName) return null;
+  if (/Chassis/iu.test(haystack)) return PRIME_FRAME_PART_ICONS.chassis;
+  if (/(?:Helmet|Neuroptics)/iu.test(haystack)) return PRIME_FRAME_PART_ICONS.neuroptics;
+  if (/Systems?/iu.test(haystack)) return PRIME_FRAME_PART_ICONS.systems;
+  return null;
+}
+
+export async function primeWarframePartIconDataUri(uniqueName, englishName = '') {
+  const icon = primeWarframePartIconPath(uniqueName, englishName);
+  return icon ? imageDataUri(`https://browse.wf${icon}`) : null;
+}
+
 // ==== AlecaFrame 本地数据统一入口（2026-08-07 开源迁移：6 处重复解析器收敛 + 无 AlecaFrame 在线兜底） ====
 // 本地 cachedData 优先（快、离线可用）；读不到时在线兜底，公开功能不再依赖装 AlecaFrame：
 //   - 目录 json（Relics/Warframes/Mods…/rivensV2）→ cdn.alecaframe.com（AlecaFrame 自己的分发源，同构零转换）
@@ -417,7 +443,7 @@ const DROP_MODE_ZH = {
   Survival: '生存', Defense: '防御', Excavation: '挖掘', Interception: '拦截', Capture: '捕获',
   Exterminate: '歼灭', Sabotage: '破坏', Rescue: '救援', Spy: '间谍', 'Mobile Defense': '移动防御',
   Disruption: '中断', Rush: '突袭', Assault: '强袭', 'Infested Salvage': '感染回收', Arena: '竞技场',
-  Defection: '叛逃', Hijack: '劫持', Skirmish: '前哨战', Volatile: '爆发', Orphix: 'Orphix',
+  Defection: '叛逃', Hijack: '劫持', Skirmish: '前哨战', Volatile: '反应堆破坏', Orphix: 'Orphix',
   Caches: '缓存箱', 'Pursuit (Archwing)': '追击', 'Assassination': '刺杀', Alchemy: '元素转换',
   Netracells: '衰退室', 'Sanctum Bounty': '圣所悬赏', Hive: '感染巢穴', 'Faceoff': '对峙',
 };

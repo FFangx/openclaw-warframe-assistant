@@ -104,9 +104,9 @@ function parseMonitorMode(args) {
 const ZH_MISSION = {
   Extermination: '歼灭', Capture: '捕获', Sabotage: '破坏', Rescue: '救援', Spy: '间谍',
   Defense: '防御', 'Mobile Defense': '移动防御', Interception: '拦截', Survival: '生存',
-  Excavation: '挖掘', Disruption: '中断', 'Void Cascade': '虚空瀑流', 'Void Flood': '虚空洪流',
+  Excavation: '挖掘', Disruption: '中断', 'Void Cascade': '虚空覆涌', 'Void Flood': '虚空洪流',
   'Void Armageddon': '虚空决战', Orphix: '奥菲克斯', Assault: '强袭', Defection: '叛逃',
-  'Infested Salvage': '疫变回收', Volatile: '不稳定', Alchemy: '炼金术', Crossfire: '歼灭',
+  'Infested Salvage': '疫变回收', Volatile: '反应堆破坏', Alchemy: '炼金术', Crossfire: '歼灭',
   Skirmish: '前哨战', Hijack: '劫持', Pursuit: '追击', Rush: '突袭', Assassination: '刺杀',
 };
 const ZH_FACTION = {

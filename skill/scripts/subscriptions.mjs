@@ -29,6 +29,12 @@ const ARBITRATION_DICT_EN_URL = 'https://browse.wf/warframe-public-export-plus/d
 const DEFAULT_STATE = path.resolve(process.cwd(), 'warframe-subscriptions.json');
 const FETCH_TIMEOUT_MS = 20_000;
 const UNPREDICTABLE_INTERVAL_MS = 15 * 60 * 1000;
+// warframestat.us occasionally lags behind a scheduled Baro transition.  Do
+// not turn that short data delay into a six-hour sleep (and a missed notice).
+const TRADER_SOURCE_STALE_MS = 10 * 60 * 1000;
+const TRADER_TRANSITION_RETRY_MS = 2 * 60 * 1000;
+const TRADER_TRANSITION_GRACE_MS = 5 * 60 * 1000;
+const TRADER_SCHEDULE_POLICY_VERSION = 2;
 
 const REWARD_ZH = Object.freeze({
   'Fieldron': '电磁力场装置',
@@ -93,13 +99,13 @@ const MISSION_ZH = {
   Extermination: '歼灭', Capture: '捕获', Sabotage: '破坏', Rescue: '救援', Spy: '间谍',
   Defense: '防御', 'Mobile Defense': '移动防御', Interception: '拦截', Survival: '生存',
   Assassination: '刺杀',
-  Excavation: '挖掘', Disruption: '中断', 'Void Cascade': '虚空瀑流', 'Void Flood': '虚空洪流',
+  Excavation: '挖掘', Disruption: '中断', 'Void Cascade': '虚空覆涌', 'Void Flood': '虚空洪流',
   'Void Armageddon': '虚空决战', Orphix: '奥菲克斯', Assault: '强袭', Defection: '叛逃',
-  'Infested Salvage': '疫变回收', Volatile: '不稳定', Alchemy: '炼金术', Crossfire: '歼灭',
+  'Infested Salvage': '疫变回收', Volatile: '反应堆破坏', Alchemy: '炼金术', Crossfire: '歼灭',
   Skirmish: '前哨战', Hijack: '劫持', Pursuit: '追击', Rush: '突袭',
   MT_SURVIVAL: '生存', MT_DEFENSE: '防御', MT_TERRITORY: '拦截', MT_EXCAVATE: '挖掘',
   MT_PURIFY: '中断', MT_EVACUATION: '叛逃', MT_ARTIFACT: '移动防御', MT_CORRUPTION: '生存',
-  MT_VOID_CASCADE: '虚空瀑流', MT_ARMAGEDDON: '虚空决战', MT_ALCHEMY: '炼金术',
+  MT_VOID_CASCADE: '虚空覆涌', MT_ARMAGEDDON: '虚空决战', MT_ALCHEMY: '炼金术',
 };
 const FACTION_ZH = {
   Grineer: 'Grineer', Corpus: 'Corpus', Infested: 'Infestation', Orokin: '奥罗金', Corrupted: '堕落者',
@@ -729,6 +735,31 @@ function rewardText(reward) {
   return [...new Set(parts.filter(Boolean))].join(' + ');
 }
 
+function traderWindow(trader, now = Date.now()) {
+  const activation = Date.parse(trader?.activation);
+  const expiry = Date.parse(trader?.expiry);
+  return {
+    activation,
+    expiry,
+    scheduledActive: Number.isFinite(activation) && Number.isFinite(expiry) && activation <= now && now < expiry,
+  };
+}
+
+function worldStateIsStale(state, now = Date.now()) {
+  const timestamp = Date.parse(state?.timestamp);
+  return !Number.isFinite(timestamp) || now - timestamp > TRADER_SOURCE_STALE_MS;
+}
+
+function traderEffectivelyActive(trader, state, now = Date.now()) {
+  if (trader?.active) return true;
+  const window = traderWindow(trader, now);
+  if (!window.scheduledActive) return false;
+  // Prefer the upstream flag, but trust the published activation/expiry window
+  // when the whole world-state snapshot is stale or the transition has been
+  // inconsistent for more than a short grace period.
+  return worldStateIsStale(state, now) || now - window.activation >= TRADER_TRANSITION_GRACE_MS;
+}
+
 function allCandidates(state) {
   const active = (items) => Array.isArray(items) ? items.filter((item) => !item.expired) : [];
   const result = { fissure: [], arbitration: [], alert: [], invasion: [], event: [], trader: [], sortie: [], incursion: [], bounty: [] };
@@ -807,7 +838,7 @@ function allCandidates(state) {
     result.bounty = state.bountyCandidates.filter((item) => !item.expiry || Date.parse(item.expiry) > Date.now());
   }
   const traders = Array.isArray(state.voidTraders) ? state.voidTraders : state.voidTrader ? [state.voidTrader] : [];
-  result.trader = traders.filter((item) => item?.active).map((item) => {
+  result.trader = traders.filter((item) => traderEffectivelyActive(item, state)).map((item) => {
     const rawLocation = item.location || '未知中继站';
     const place = parseNode(rawLocation);
     return {
@@ -908,12 +939,21 @@ function updateSchedule(ledger, target, state, activeTypes) {
   }
   if (activeTypes.has('trader')) {
     const trader = state.voidTrader || state.voidTraders?.[0];
-    const boundary = trader?.active ? trader?.expiry : trader?.activation;
-    // 商人在站时额外蹲一个「离开前 12 小时」检查点，支撑最后窗口播报
-    const closingAtMs = trader?.active ? Date.parse(trader?.expiry) - CLOSING_TRADER_MS : Number.NaN;
-    const checkpoints = [boundary];
-    if (Number.isFinite(closingAtMs)) checkpoints.push(new Date(closingAtMs).toISOString());
-    next.trader = futureIso(checkpoints, 6 * 60 * 60 * 1000);
+    const window = traderWindow(trader, now);
+    const effectivelyActive = traderEffectivelyActive(trader, state, now);
+    if (effectivelyActive) {
+      // 商人在站时额外蹲一个「离开前 12 小时」检查点，支撑最后窗口播报
+      const closingAtMs = window.expiry - CLOSING_TRADER_MS;
+      const checkpoints = [trader?.expiry];
+      if (Number.isFinite(closingAtMs)) checkpoints.push(new Date(closingAtMs).toISOString());
+      next.trader = futureIso(checkpoints, 6 * 60 * 60 * 1000);
+    } else if (window.scheduledActive) {
+      // 激活时间已到、active 尚未翻转：短暂复查，绝不能直接睡六小时。
+      next.trader = new Date(now + TRADER_TRANSITION_RETRY_MS).toISOString();
+    } else {
+      next.trader = futureIso([trader?.activation], 6 * 60 * 60 * 1000);
+    }
+    next.traderPolicyVersion = TRADER_SCHEDULE_POLICY_VERSION;
   }
   if ([...activeTypes].some((type) => ['alert', 'invasion', 'event'].includes(type))) {
     next.unpredictable = new Date(now + UNPREDICTABLE_INTERVAL_MS).toISOString();
@@ -953,6 +993,9 @@ function monitorIsDue(schedule, activeTypes) {
   if (activeTypes.has('incursion') && due('incursion')) return true;
   if (activeTypes.has('bounty') && due('bounty')) return true;
   if (activeTypes.has('rotation') && due('rotation')) return true;
+  // Force one immediate catch-up after this scheduling fix so ledgers that
+  // already contain the old six-hour sleep are repaired without manual edits.
+  if (activeTypes.has('trader') && schedule?.traderPolicyVersion !== TRADER_SCHEDULE_POLICY_VERSION) return true;
   if (activeTypes.has('trader') && due('trader')) return true;
   if (activeTypes.has('weekly') && due('weekly')) return true;
   if (activeTypes.has('shop') && due('shop')) return true;
@@ -1513,7 +1556,7 @@ async function main() {
   process.exitCode = 1;
 }
 
-export { manageCommand, monitorTarget, parseSubscriptionSpec, queryArbitration, queryIntel, seedDefaults, closingLabel, translateEventName, primeOracleEventMap, refreshArbitrationCache, refreshIncursionsCache, scheduledIncursions, arbitrationMatches };
+export { manageCommand, monitorTarget, parseSubscriptionSpec, queryArbitration, queryIntel, seedDefaults, closingLabel, translateEventName, primeOracleEventMap, refreshArbitrationCache, refreshIncursionsCache, scheduledIncursions, arbitrationMatches, allCandidates, monitorIsDue, traderEffectivelyActive, traderWindow, updateSchedule, worldStateIsStale };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {

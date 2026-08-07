@@ -44,7 +44,7 @@ const MISSION_ZH = Object.freeze({
   Spy: '间谍', Defense: '防御', Assassination: '刺杀', Survival: '生存', Disruption: '中断',
   Extermination: '歼灭', Exterminate: '歼灭', Capture: '捕获', Sabotage: '破坏', Rescue: '救援',
   'Mobile Defense': '移动防御', Interception: '拦截', Excavation: '挖掘', Alchemy: '炼金术',
-  Skirmish: '前哨战', Volatile: '不稳定', Corruption: '生存',
+  Skirmish: '前哨战', Volatile: '反应堆破坏', Corruption: '生存',
 });
 
 const PLANET_ZH = Object.freeze({

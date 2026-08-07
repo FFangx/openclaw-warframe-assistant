@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-// 奸商购物助手：到货单 × 本机库存 × 杜卡德余额 → 买什么/够不够，零 AI 判断。
-// 排序键 = 白金价 ÷ 杜卡德价（倒爷指标）：不管贵因实用还是稀有，都指向「这次该买」。
+// 奸商购物助手：到货单 × 本机库存 × 杜卡德余额 → 双路线购买建议，零 AI 判断。
+// 路线 A：安全兑换 Prime 部件的白金机会成本 + 奸商现金；路线 B：市场卖价 + 准确交易税。
 // 口径：Prime MOD 用 rank 0 卖单价（奸商卖 0 级，满级价含 4 万 Endo 虚高）；
 //      不可交易品标「独占无市场价」三态，绝不当 0 白金沉底。
 import { readFile } from 'node:fs/promises';
@@ -101,14 +101,19 @@ export function mergeTraderStates(official, wfstat) {
 // —— wm 目录（1 请求持久双层缓存 1h，wm 挂掉退陈旧快照）：英文名 compact → { slug, zh }，仅精确匹配零模糊 ——
 export async function loadMarketCatalog() {
   const { staleCachedJson } = await import('./wfdata.mjs');
-  // version 2：加 thumb 字段，旧缓存无此字段必须打散
-  const result = await staleCachedJson('market-catalog-compact', { ttlMs: CATALOG_CACHE_TTL_MS, version: 2 }, async () => {
+  // version 3：目录结构升级；交易税不在 /v2/items 中，另由单品详情精确读取。
+  const result = await staleCachedJson('market-catalog-compact', { ttlMs: CATALOG_CACHE_TTL_MS, version: 3 }, async () => {
     const items = await getJson(`${MARKET_BASE}/v2/items`, { Platform: 'pc', Crossplay: 'true', Language: 'zh-hans' });
     const catalog = {};
     for (const item of items.data || []) {
       const en = item.i18n?.en?.name;
       if (!en) continue;
-      catalog[compact(en)] = { slug: item.slug, zh: item.i18n?.['zh-hans']?.name || null, thumb: item.i18n?.en?.thumb || null };
+      catalog[compact(en)] = {
+        slug: item.slug,
+        zh: item.i18n?.['zh-hans']?.name || null,
+        thumb: item.i18n?.en?.thumb || null,
+        tradingTax: Number.isFinite(Number(item.tradingTax)) ? Number(item.tradingTax) : null,
+      };
     }
     if (!Object.keys(catalog).length) throw new Error('wm 目录为空');
     return catalog;
@@ -167,6 +172,46 @@ export function decide(row) {
   return ratio >= 0.25 ? { tag: 'flip', zh: '可囤倒卖' } : { tag: 'skip', zh: '跳过' };
 }
 
+// /v2/items 目录不含 tradingTax，必须查单品详情；税值基本静态，按物品缓存 7 天。
+async function fetchTradingTax(slug, detailFetcher) {
+  if (detailFetcher) {
+    const detail = await detailFetcher(slug);
+    const tax = Number(detail?.tradingTax ?? detail?.data?.tradingTax ?? detail);
+    return Number.isFinite(tax) ? tax : null;
+  }
+  try {
+    const { staleCachedJson } = await import('./wfdata.mjs');
+    const result = await staleCachedJson(`market-item-detail-${slug}`, { ttlMs: 7 * 24 * 60 * 60 * 1000, version: 1 }, async () => {
+      const payload = await getJson(`${MARKET_BASE}/v2/item/${slug}`, { Platform: 'pc', Crossplay: 'true', Language: 'zh-hans' });
+      return { tradingTax: payload.data?.tradingTax ?? null };
+    });
+    const tax = Number(result.data?.tradingTax);
+    return Number.isFinite(tax) ? tax : null;
+  } catch { return null; }
+}
+
+// 两条路线的双轴判断。现金不折算成白金：一边省白金、一边省现金时
+// 明确给出取舍与盈亏平衡提示，避免伪造个人「现金汇率」。
+export function decideEconomicRoute(row) {
+  if (!row.tradable) return row.owned ? { tag: 'skip', zh: '已拥有' } : { tag: 'exclusive', zh: '独占·看喜好' };
+  if (row.ducatOpportunityPlat == null || row.platinum == null) return decide(row);
+  const platSaving = Number(row.platSaving) || 0;
+  const creditKnown = row.creditSaving != null;
+  const creditSaving = Number(row.creditSaving) || 0;
+  if (row.owned) {
+    if (platSaving > 0 && (!creditKnown || creditSaving >= 0)) return { tag: 'flip', zh: '可囤倒卖' };
+    return { tag: 'skip', zh: '已有·跳过' };
+  }
+  if (platSaving >= 0 && (!creditKnown || creditSaving >= 0)) return { tag: 'strong', zh: '强烈买' };
+  if (platSaving >= 0) return { tag: 'buy', zh: '可以买' };
+  if (creditKnown && creditSaving > 0) {
+    const extraPlat = Math.abs(platSaving);
+    const modestPremium = extraPlat <= Math.max(3, Number(row.platinum) * 0.15);
+    return modestPremium ? { tag: 'cash', zh: '省现金' } : { tag: 'choice', zh: '看需求' };
+  }
+  return { tag: 'market', zh: '市场买' };
+}
+
 // goods: [{uniqueName,item,ducats,credits}]；options 可注入 catalog/owned/ducatBalance/priceFetcher/zhOf 打桩
 export async function appraiseTraderGoods(goods, options = {}) {
   const catalog = options.catalog ?? await loadMarketCatalog();
@@ -177,7 +222,10 @@ export async function appraiseTraderGoods(goods, options = {}) {
     const isMod = /\/Mods\//u.test(entry.uniqueName || '');
     const zhLocal = entry.zhLocal ?? options.zhOf?.(entry.uniqueName) ?? null;
     const meta = catalog[compact(entry.item)] || (zhLocal ? catalogByZh.get(compact(zhLocal)) : null) || null;
-    const quote = meta ? await fetchLowestSell(meta.slug, isMod, options.priceFetcher) : null;
+    const [quote, tradingTax] = meta ? await Promise.all([
+      fetchLowestSell(meta.slug, isMod, options.priceFetcher),
+      fetchTradingTax(meta.slug, options.detailFetcher),
+    ]) : [null, null];
     const platinum = quote?.platinum ?? null;
     const ducats = Number(entry.ducats) || 0;
     // 比值 = 白金/杜卡德：花同样杜卡德换回最多白金的货排最前
@@ -195,6 +243,7 @@ export async function appraiseTraderGoods(goods, options = {}) {
       platinum,
       priceStale: Boolean(quote?.stale),
       ratio: ratio != null ? Math.round(ratio * 100) / 100 : null,
+      tradingTax: tradingTax ?? meta?.tradingTax ?? null,
     };
     return { ...row, advice: decide(row) };
   });
@@ -234,10 +283,65 @@ export async function traderShopping(inventory, options = {}) {
   }
   const owned = buildOwnedIndex(inventory);
   const rows = await appraiseTraderGoods(state.inventory, { ...options, owned });
+  let safeDucatAvailable = null;
+  // 双路线经济性：奸商=兑换杜卡德的 Prime 部件机会成本+现金标价；
+  // 玩家市场=当前 0 级卖价+物品交易税。现金不硬折白金，保留双轴结论。
+  if (Array.isArray(options.inventoryValuation) && options.inventoryValuation.length) {
+    try {
+      const { parseDucatSpec, buildDucatCandidates, refreshDucatPrices, optimizeDucatTarget } = await import('./ducat-planner.mjs');
+      const spec = parseDucatSpec('杜卡德 保留1');
+      const ducatCandidates = await refreshDucatPrices(buildDucatCandidates(options.inventoryValuation, spec), {
+        maxLiveQuotes: options.maxLiveDucatQuotes ?? 12,
+        ...(options.ducatQuoteFetcher ? { quoteFetcher: options.ducatQuoteFetcher } : {}),
+        ...(options.ducatCatalog ? { catalog: options.ducatCatalog } : {}),
+      });
+      safeDucatAvailable = ducatCandidates.reduce((sum, entry) => sum + entry.available * entry.ducatsEach, 0);
+      const currentCredits = Number(inventory?.RegularCredits) || 0;
+      for (const row of rows) {
+        if (!row.tradable || row.platinum == null || row.ducats <= 0) continue;
+        // 行级结论表示「只买这一件」：已有杜卡德先抵扣，只为缺口找部件。
+        const immediateNeed = Math.max(0, row.ducats - base.ducatBalance);
+        const plan = immediateNeed > 0
+          ? optimizeDucatTarget(ducatCandidates, immediateNeed)
+          : { complete: true, target: 0, totalDucats: 0, totalPlat: 0, rows: [] };
+        row.ducatNeed = immediateNeed;
+        row.ducatPlanDucats = plan.totalDucats;
+        if (!plan.complete) {
+          row.ducatPlanShortfall = Math.max(0, immediateNeed - plan.totalDucats);
+          row.advice = { tag: 'need', zh: '库存不足' };
+          continue;
+        }
+        row.ducatOpportunityPlat = plan.totalPlat;
+        row.platSaving = Math.round((row.platinum - plan.totalPlat) * 10) / 10;
+        row.creditSaving = row.tradingTax == null ? null : row.tradingTax - row.credits;
+        row.vendorCreditPressure = currentCredits > 0 ? Math.round(row.credits / currentCredits * 1000) / 10 : null;
+        row.marketCreditPressure = row.tradingTax != null && currentCredits > 0 ? Math.round(row.tradingTax / currentCredits * 1000) / 10 : null;
+        if (row.platSaving < 0 && row.creditSaving > 0) {
+          row.breakEvenCreditsPerPlat = Math.round(row.creditSaving / Math.abs(row.platSaving));
+        }
+        row.advice = decideEconomicRoute(row);
+      }
+      // 先展示能改变购买决定的项目；独占装饰品放在经济结论之后，避免长货单淹没关键信息。
+      const economicRank = { strong: 0, buy: 1, cash: 2, flip: 3, choice: 4, need: 5, market: 6, exclusive: 7, skip: 8 };
+      rows.sort((a, b) => (economicRank[a.advice.tag] ?? 99) - (economicRank[b.advice.tag] ?? 99)
+        || (b.platSaving ?? -Infinity) - (a.platSaving ?? -Infinity)
+        || (b.ratio ?? -1) - (a.ratio ?? -1));
+    } catch { /* 兑换估值失败时保留原有白金/杜卡德比值推荐 */ }
+  }
   // 购物车口径：所有「建议买」的杜卡德合计 vs 余额
-  const wantDucats = rows.filter((row) => row.advice.tag === 'strong' || row.advice.tag === 'buy')
+  const wantDucats = rows.filter((row) => ['strong', 'buy', 'cash'].includes(row.advice.tag))
     .reduce((sum, row) => sum + row.ducats, 0);
-  return { ...base, ok: true, arrived: true, rows, wantDucats, affordable: base.ducatBalance >= wantDucats };
+  return {
+    ...base,
+    ok: true,
+    arrived: true,
+    rows,
+    currentCredits: Number(inventory?.RegularCredits) || 0,
+    safeDucatAvailable,
+    wantDucats,
+    ducatShortfall: Math.max(0, wantDucats - base.ducatBalance),
+    affordable: base.ducatBalance >= wantDucats,
+  };
 }
 
 // 本机系统时区不是北京时间，所有用户可见时间必须显式指定 Asia/Shanghai
@@ -254,12 +358,16 @@ export function formatTraderShopping(result) {
     return `奸商 ${result.character} 尚未到达。预计 ${beijingTime(result.activation)} 到 ${result.location}；到货后再来问「奸商买什么」。当前杜卡德余额 ${result.ducatBalance.toLocaleString('zh-CN')}。`;
   }
   const lines = [`【奸商购物推荐】${result.location}｜杜卡德余额 ${result.ducatBalance.toLocaleString('zh-CN')}`];
-  for (const row of result.rows) {
+  for (const row of result.rows.slice(0, 16)) {
     const name = row.zhName || (row.tradable ? row.nameEn : '未收录物品');
     const price = row.tradable ? (row.platinum != null ? `市价${row.platinum}p${row.priceStale ? '（离线快照）' : ''}` : '暂无卖单') : '独占无市场价';
     const ratio = row.ratio != null ? `｜1杜=${row.ratio}p` : '';
-    lines.push(`${row.advice.zh}｜${name}｜${row.ducats}杜+${row.credits.toLocaleString('zh-CN')}银｜${price}${ratio}${row.owned ? '｜已有' : ''}`);
+    const route = row.ducatOpportunityPlat != null
+      ? `｜补足${row.ducatNeed}杜机会成本${row.ducatOpportunityPlat}p｜交易税${row.tradingTax?.toLocaleString('zh-CN') ?? '未知'}现金`
+      : row.ducatPlanShortfall ? `｜安全库存还差${row.ducatPlanShortfall}杜` : '';
+    lines.push(`${row.advice.zh}｜${name}｜${row.ducats}杜+${row.credits.toLocaleString('zh-CN')}现金｜${price}${route}${ratio}${row.owned ? '｜已有' : ''}`);
   }
-  lines.push(`建议购入合计 ${result.wantDucats} 杜卡德${result.affordable ? '，余额够用' : '，余额不足——优先「强烈买」'}。价格为当前在线最低卖单，仅供参考。`);
+  if (result.rows.length > 16) lines.push(`其余 ${result.rows.length - 16} 件已在卡片中省略，优先保留会影响购买决策的项目。`);
+  lines.push(`经济性推荐合计 ${result.wantDucats} 杜卡德${result.affordable ? '，余额够用' : `，还差 ${result.ducatShortfall} 杜卡德，可发「杜卡德 ${result.ducatShortfall}」生成兑换方案`}。价格为当前在线最低卖单，仅供参考。`);
   return lines.join('\n');
 }

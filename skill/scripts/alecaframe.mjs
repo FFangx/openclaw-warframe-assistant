@@ -388,7 +388,7 @@ function categoryKeyOf(meta) {
 
 // 全库存统一估值条目：[{catKey, uniqueName, name, englishName, count, rank, refinement, unit, total, ducats}]
 // 价格分档：0 级/无档=p0；升过级的 MOD/赋能按满级档 pMax（wm 行情只有两档，非满级按满级算并在 detail 标注）
-async function assembleInventoryValuation(snapshot) {
+export async function assembleInventoryValuation(snapshot) {
   const [drops, { getMarketPriceIndex }] = await Promise.all([import('./drops.mjs'), import('./wfdata.mjs')]);
   const [catalog, priceIndex] = await Promise.all([drops.loadCatalog(snapshot.alecaDir), getMarketPriceIndex()]);
   const squash = (value) => String(value || '').normalize('NFKC').trim().toLowerCase().replace(/\s+/gu, '');
@@ -429,6 +429,10 @@ async function assembleInventoryValuation(snapshot) {
       refinement: REFINEMENT_ZH[refinement] || '',
       name: meta.displayName, englishName: meta.englishName,
       ducats: meta.ducats ?? null, meta,
+      parentUniqueName: meta.parentUniqueName || null,
+      parentEnglishName: meta.parentEnglishName || null,
+      parentDisplayName: meta.parentDisplayName || null,
+      setRequired: Math.max(1, Number(meta.setRequired) || 1),
     });
   };
   for (const group of ['MiscItems', 'Recipes', 'Consumables', 'RawUpgrades']) {
@@ -619,7 +623,7 @@ function parseSquad(query) {
 export function parseAlecaMessage(message) {
   const text = normalize(message).replace(/^\//u, '');
   if (/^(?:我的账号|账号状态|我的状态)$/u.test(text)) return { command: 'account', query: '' };
-  // 读库存做推荐 = 个人数据命令，走主人私聊判定通道；后缀选模式（杜卡德/白金/单人/N人）
+  // 读库存做推荐 = 个人数据命令，走主人私聊判定通道；后缀可组合币种、队伍与任务偏好。
   const recommend = text.match(/^(?:裂缝推荐|推荐裂缝|开什么遗物|开什么)(?:\s+(.+))?$/u);
   if (recommend) return { command: 'recommend', query: (recommend[1] || '').trim() };
   // 精炼推荐：库存全扫哪些遗物值得花光体（同属个人数据通道）
@@ -627,6 +631,9 @@ export function parseAlecaMessage(message) {
   if (refine) return { command: 'refine', query: (refine[1] || '').trim() };
   // 奸商购物推荐：读库存+杜卡德余额，同属个人数据通道
   if (/^(?:奸商推荐|奸商买什么|奸商购物|虚空商人推荐|虚空商人买什么)$/u.test(text)) return { command: 'trader-shopping', query: '' };
+  // 杜卡德兑换：统一短入口，支持目标/清仓/保留 N（套）
+  const ducat = text.match(/^(?:杜卡德|杜卡德推荐|杜卡德兑换)(?:\s+.*)?$/u);
+  if (ducat) return { command: 'ducat-plan', query: text };
   // 轮换日历：「已有」标读快照 = 个人数据通道（快照读失败降级无标照常出卡）
   if (/^(?:轮换日历|排期|日历|未来轮换)$/u.test(text)) return { command: 'rotation-calendar', query: '' };
   // 商店总览/单商人详情：已购标注读快照 = 个人数据通道（快照读失败降级为无已购标）
@@ -832,8 +839,48 @@ export async function runAlecaMessage(message, options = {}) {
     };
   }
   const snapshot = await readSnapshot(options.alecaDir);
+  if (parsed.command === 'ducat-plan') {
+    const { parseDucatSpec, buildDucatPlan, formatDucatPlan } = await import('./ducat-planner.mjs');
+    const spec = parseDucatSpec(parsed.query);
+    const entries = await assembleInventoryValuation(snapshot);
+    const data = await buildDucatPlan(entries, spec, { syncedAt: snapshot.syncedAt, ...(options.ducatOptions || {}) });
+    // 行内物品图沿用库存卡三层链；只给实际方案行拉图，避免清仓扫描打爆素材源
+    try {
+      const [{ imageDataUri, gameIconDataUri, primeWarframePartIconDataUri }, drops] = await Promise.all([import('./wfdata.mjs'), import('./drops.mjs')]);
+      let slugs = null;
+      try { slugs = await drops.marketSlugMap(); } catch { slugs = null; }
+      let catalog = null;
+      for (const row of (data.rows || []).slice(0, 15)) {
+        const wmEntry = slugs ? drops.findMarketEntry(slugs, row.englishName) : null;
+        row.iconDataUri = await primeWarframePartIconDataUri(row.uniqueName, row.englishName);
+        if (!row.iconDataUri && wmEntry?.thumb) row.iconDataUri = await imageDataUri(`https://warframe.market/static/assets/${wmEntry.thumb}`);
+        if (!row.iconDataUri) row.iconDataUri = await gameIconDataUri(row.uniqueName);
+        if (!row.iconDataUri) {
+          catalog ??= await drops.loadCatalog(snapshot.alecaDir).catch(() => new Map());
+          const meta = catalog.get(row.uniqueName);
+          if (meta?.imageName) row.iconDataUri = await imageDataUri(`https://cdn.alecaframe.com/warframeData/img/${meta.imageName}`);
+        }
+      }
+    } catch { /* 无图降级 */ }
+    try {
+      const { gameIconDataUri } = await import('./wfdata.mjs');
+      data.glyphDataUri = await gameIconDataUri(snapshot.inventory.ActiveAvatarImageType) || null;
+    } catch { data.glyphDataUri = null; }
+    let mediaUrl = null;
+    try {
+      const { buildDucatPlanCard } = await import('./warframe-cards.mjs');
+      mediaUrl = await renderWarframeCard(buildDucatPlanCard(data), options.cardDir || process.env.WARFRAME_CARD_DIR);
+    } catch { mediaUrl = null; }
+    return {
+      handled: true, ok: data.ok, command: 'ducat-plan', query: parsed.query, data, mediaUrl,
+      followupText: mediaUrl ? '按当前在线卖单优先、近日成交均价兜底估算；仅提供兑换建议，不会修改库存。' : null,
+      text: formatDucatPlan(data),
+    };
+  }
   if (parsed.command === 'trader-shopping') {
     const { traderShopping, formatTraderShopping } = await import('./trader-shopping.mjs');
+    let inventoryValuation = null;
+    try { inventoryValuation = await assembleInventoryValuation(snapshot); } catch { inventoryValuation = null; }
     // 官方源只给路径无英文名：lang 表中文名兑付（读不到静默降级，wm 目录中文名仍可匹配）
     let zhOf = null;
     try {
@@ -841,7 +888,12 @@ export async function runAlecaMessage(message, options = {}) {
       const lang = await getLangTable({ alecaDir: snapshot.alecaDir });
       zhOf = (uniq) => lang[uniq]?.zh?.name || null;
     } catch { zhOf = null; }
-    const data = await traderShopping(snapshot.inventory, { ...(zhOf ? { zhOf } : {}), ...(options.traderOptions || {}) });
+    const data = await traderShopping(snapshot.inventory, {
+      alecaDir: snapshot.alecaDir,
+      ...(inventoryValuation ? { inventoryValuation } : {}),
+      ...(zhOf ? { zhOf } : {}),
+      ...(options.traderOptions || {}),
+    });
     // 未到货时购物建议无意义：回退虚空商人查询卡（到达时间+地点信息量更大；2026-08-06 用户拍板并入方案）
     if (data.ok && !data.arrived && !options.traderOptions) {
       try {
@@ -859,10 +911,11 @@ export async function runAlecaMessage(message, options = {}) {
     }
     // 物品图降级链（用户定）：wm 素材 → browse.wf 游戏原图 → 本机目录插画；失败无图降级
     try {
-      const [{ loadCatalog }, { imageDataUri, gameIconDataUri }] = await Promise.all([import('./drops.mjs'), import('./wfdata.mjs')]);
+      const [{ loadCatalog }, { imageDataUri, gameIconDataUri, primeWarframePartIconDataUri }] = await Promise.all([import('./drops.mjs'), import('./wfdata.mjs')]);
       const catalog = await loadCatalog(snapshot.alecaDir).catch(() => new Map());
       await Promise.all((data.rows || []).map(async (row) => {
-        if (row.wmThumb) row.iconDataUri = await imageDataUri(`https://warframe.market/static/assets/${row.wmThumb}`);
+        row.iconDataUri = await primeWarframePartIconDataUri(row.uniqueName, row.englishName);
+        if (!row.iconDataUri && row.wmThumb) row.iconDataUri = await imageDataUri(`https://warframe.market/static/assets/${row.wmThumb}`);
         if (!row.iconDataUri) row.iconDataUri = await gameIconDataUri(row.uniqueName);
         const meta = catalog.get(row.uniqueName);
         if (!row.iconDataUri && meta?.imageName) row.iconDataUri = await imageDataUri(`https://cdn.alecaframe.com/warframeData/img/${meta.imageName}`);
@@ -875,17 +928,18 @@ export async function runAlecaMessage(message, options = {}) {
     } catch { mediaUrl = null; }
     return {
       handled: true, ok: data.ok, command: 'trader-shopping', query: '', data, mediaUrl,
-      followupText: mediaUrl ? '排序按〔1 杜卡德换多少白金〕；MOD 按 0 级市价估算，价格仅供参考。' : null,
+      followupText: mediaUrl ? '按当前杜卡德余额比较“补足杜卡德的部件机会成本＋奸商现金”与“0 级市场价＋准确交易税”；仅供参考。' : null,
       text: formatTraderShopping(data),
     };
   }
   if (parsed.command === 'recommend') {
-    const { recommendFissures, formatRecommend } = await import('./recommend.mjs');
+    const { recommendFissures, formatRecommend, parseFissurePreference, FISSURE_PREFERENCES } = await import('./recommend.mjs');
     const relics = await loadRelics(snapshot);
     // 杜卡德/金币/ducat → 赚杜卡德；单人/solo → squad 1，默认 4 人组队（对齐 AlecaFrame）
     const mode = /杜卡德|金币|ducat/iu.test(parsed.query) ? 'ducat' : 'plat';
     const squad = parseSquad(parsed.query);
-    const data = await recommendFissures(relics, { mode, squad, alecaDir: snapshot.alecaDir, ...(options.recommendOptions || {}) });
+    const preference = parseFissurePreference(parsed.query);
+    const data = await recommendFissures(relics, { mode, squad, preference, alecaDir: snapshot.alecaDir, ...(options.recommendOptions || {}) });
     let mediaUrl = null;
     try {
       const { buildFissureRecommendCard } = await import('./warframe-cards.mjs');
@@ -893,7 +947,7 @@ export async function runAlecaMessage(message, options = {}) {
     } catch { mediaUrl = null; }
     return {
       handled: true, ok: data.ok, command: 'recommend', query: parsed.query, data, mediaUrl,
-      followupText: mediaUrl ? `当前为${mode === 'ducat' ? '赚杜卡德' : '赚白金'}模式·${squad > 1 ? `${squad}人组队` : '单人'}口径；可发「裂缝推荐 杜卡德」「裂缝推荐 单人」切换。` : null,
+      followupText: mediaUrl ? `当前为${mode === 'ducat' ? '赚杜卡德' : '赚白金'}·${FISSURE_PREFERENCES[preference].zh}·${squad > 1 ? `${squad}人组队` : '单人'}口径；可组合「裂缝推荐 杜卡德 速刷」「裂缝推荐 白金 舒适」「裂缝推荐 收益」。` : null,
       text: formatRecommend(data),
     };
   }
@@ -923,7 +977,7 @@ export async function runAlecaMessage(message, options = {}) {
   try {
     const iconRows = (result.data.rows || []).filter((row) => row.era || row.uniqueName);
     if (result.data.kind === 'inventory' && iconRows.length) {
-      const [{ RELIC_ICON_DATA }, { imageDataUri, gameIconDataUri }, drops] = await Promise.all([
+      const [{ RELIC_ICON_DATA }, { imageDataUri, gameIconDataUri, primeWarframePartIconDataUri }, drops] = await Promise.all([
         import('./warframe-cards.mjs'), import('./wfdata.mjs'), import('./drops.mjs'),
       ]);
       let slugs = null;
@@ -932,7 +986,8 @@ export async function runAlecaMessage(message, options = {}) {
       for (const row of iconRows) {
         if (row.era) { row.iconDataUri = RELIC_ICON_DATA[row.era] || null; continue; }
         const wmEntry = slugs ? drops.findMarketEntry(slugs, row.englishName) : null;
-        if (wmEntry?.thumb) row.iconDataUri = await imageDataUri(`https://warframe.market/static/assets/${wmEntry.thumb}`);
+        row.iconDataUri = await primeWarframePartIconDataUri(row.uniqueName, row.englishName);
+        if (!row.iconDataUri && wmEntry?.thumb) row.iconDataUri = await imageDataUri(`https://warframe.market/static/assets/${wmEntry.thumb}`);
         if (!row.iconDataUri) row.iconDataUri = await gameIconDataUri(row.uniqueName);
         if (!row.iconDataUri) {
           catalog ??= await drops.loadCatalog(snapshot.alecaDir).catch(() => new Map());
@@ -973,7 +1028,7 @@ async function main() {
       out(await runAlecaMessage(rest.join(' ')));
       return;
     }
-    out({ handled: false, ok: false, error: '用法：parse <我的账号|我的库存|我的遗物|我的赋能|账号周常>' });
+    out({ handled: false, ok: false, error: '用法：parse <我的账号|我的库存|我的遗物|我的赋能|杜卡德|奸商推荐|账号周常>' });
     process.exitCode = 1;
   } catch (error) {
     out({ handled: true, ok: false, error: String(error?.message || error), text: `账号快照读取失败：${String(error?.message || error)}` });

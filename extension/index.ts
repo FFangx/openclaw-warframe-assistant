@@ -38,10 +38,12 @@ function isShortcut(content: string): boolean {
 function isPersonalAccountCommand(content: string): boolean {
   const text = String(content || '').normalize('NFKC').trim().replace(/^\//u, '');
   return /^(?:我的账号|账号状态|我的状态|账号周常|我的周常状态|周常同步状态|刷新账号|刷新库存)$/u.test(text)
-    // 裂缝推荐要读本机遗物库存，划入个人数据边界；尾部可选模式词（杜卡德/白金/单人/N人，可组合）
-    || /^(?:裂缝推荐|推荐裂缝|开什么遗物|开什么)(?:\s+\S+){0,2}$/u.test(text)
+    // 裂缝推荐要读本机遗物库存；尾部可组合币种、队伍与偏好（如「杜卡德 单人 速刷」）
+    || /^(?:裂缝推荐|推荐裂缝|开什么遗物|开什么)(?:\s+\S+){0,3}$/u.test(text)
     // 精炼推荐：库存全扫哪些遗物值得花光体（同属个人数据）
     || /^(?:精炼推荐|遗物精炼|值得精炼|精炼什么)(?:\s+\S+){0,2}$/u.test(text)
+    // 杜卡德兑换：Prime 部件库存 × 当前行情，属于个人数据
+    || /^(?:杜卡德|杜卡德推荐|杜卡德兑换)(?:\s+.*)?$/u.test(text)
     || /^(?:奸商推荐|奸商买什么|奸商购物|虚空商人推荐|虚空商人买什么)$/u.test(text)
     // 商店总览/详情：已购标注读快照 → 个人数据通道（与 dispatch.mjs isPersonalCommand 同步）
     || /^商店(?:\s+\S+)?$/u.test(text)
@@ -94,7 +96,7 @@ function maybeNaturalPriceQuestion(content: string): boolean {
 function maybeNaturalWorldQuestion(content: string): boolean {
   const text = String(content || '').normalize('NFKC').trim();
   if (!text || text.length > 40) return false;
-  return /(?:值得开|开什么|开啥|好裂缝|好遗物|好货|值得买|奸商|虚空商人|突击|侵袭|钢铁精华|悬赏|赏金|复刻|回廊|轮换|周常|这周|本周|哪里出|哪儿出|哪出|哪里掉|哪里刷|哪个遗物|功能|命令|怎么用|使用帮助|你能干|你会|你能做|本事|值得精炼|精炼什么|精炼啥|哪里买|哪儿买|哪买|在哪买|哪里换|商店|泰辛|瓦奇娅|圣言者|言录使|切片哥|璨璨珍宝|鸟三|达尔沃|特惠)/iu.test(text);
+  return /(?:值得开|开什么|开啥|好裂缝|好遗物|好货|值得买|奸商|虚空商人|杜卡德|突击|侵袭|钢铁精华|悬赏|赏金|复刻|回廊|轮换|周常|这周|本周|哪里出|哪儿出|哪出|哪里掉|哪里刷|哪个遗物|功能|命令|怎么用|使用帮助|你能干|你会|你能做|本事|值得精炼|精炼什么|精炼啥|哪里买|哪儿买|哪买|在哪买|哪里换|商店|泰辛|瓦奇娅|圣言者|言录使|切片哥|璨璨珍宝|鸟三|达尔沃|特惠)/iu.test(text);
 }
 
 // 通用点评素材：把脚本结果浓缩成注入文本；各功能取自己最有信息量的字段
@@ -257,7 +259,7 @@ async function ensureDropsCron(api: any, target: string): Promise<void> {
     '--session', 'isolated',
     '--command-argv', JSON.stringify(['node', dropsScript, 'monitor', '--state', dropsState, '--ledger', subscriptionState, '--target', target, '--card-dir', subscriptionCardDir]),
     '--output-max-bytes', '16384',
-    '--timeout-seconds', '60',
+    '--timeout-seconds', '120',
     '--announce', '--channel', 'qqbot', '--to', target,
     '--best-effort-deliver', '--json',
   ]);

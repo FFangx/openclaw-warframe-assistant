@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// 裂缝推荐：三层确定性逻辑（库存交集 → 期望价值 → 任务效率），零 AI 判断。
+// 裂缝推荐：库存交集 → 双币期望 → 可选任务偏好，零 AI 判断。
 // 知识依据见 references/game-knowledge.md：全能裂缝可开除安魂外任意遗物，绝不按「无对应遗物」过滤。
 // 估值数据源（学 AlecaFrame 双指标思路）：
 //   奖励表+概率 = 本地 Relics.json（离线）；白金均价+杜卡德 = market /v1/tools/ducats 整表（1 请求，缓存 1h）
@@ -22,27 +22,75 @@ const ERA_ZH = { Lith: '古纪', Meso: '前纪', Neo: '中纪', Axi: '后纪', R
 const MISSION_ZH = {
   Extermination: '歼灭', Capture: '捕获', Sabotage: '破坏', Rescue: '救援', Spy: '间谍',
   Defense: '防御', 'Mobile Defense': '移动防御', Interception: '拦截', Survival: '生存',
-  Excavation: '挖掘', Disruption: '中断', 'Void Cascade': '虚空瀑流', 'Void Flood': '虚空洪流',
-  Alchemy: '炼金术', Volatile: '不稳定', Skirmish: '前哨战', Crossfire: '混战歼灭', Hijack: '劫持',
+  Excavation: '挖掘', Disruption: '中断', 'Void Cascade': '虚空覆涌', 'Void Flood': '虚空洪流',
+  Alchemy: '炼金术', Volatile: '反应堆破坏', Skirmish: '前哨战', Crossfire: '混战歼灭', Hijack: '劫持',
 };
 const PLANET_ZH = {
   Mercury: '水星', Venus: '金星', Earth: '地球', Lua: '月球', Mars: '火星', Deimos: '火卫二',
   Phobos: '火卫一', Ceres: '谷神星', Jupiter: '木星', Europa: '欧罗巴', Saturn: '土星',
   Uranus: '天王星', Neptune: '海王星', Pluto: '冥王星', Eris: '阋神星', Sedna: '赛德娜',
-  Void: '虚空', Zariman: '扎里曼', 'Kuva Fortress': '赤毒要塞',
+  Void: '虚空', Zariman: '扎里曼', 'Kuva Fortress': '赤毒要塞', Veil: '面纱比邻星',
   'Earth Proxima': '地球比邻星', 'Venus Proxima': '金星比邻星', 'Saturn Proxima': '土星比邻星',
   'Neptune Proxima': '海王星比邻星', 'Pluto Proxima': '冥王星比邻星', 'Veil Proxima': '面纱比邻星',
 };
 
-// 任务效率系数（单遗物耗时共识，见 game-knowledge.md；无尽类可连开多遗物故不重罚）
-const MISSION_FACTOR = {
-  Capture: 1.0, Extermination: 0.95, Sabotage: 0.95, Rescue: 0.95, Crossfire: 0.95,
-  Spy: 0.85, 'Mobile Defense': 0.85, Hijack: 0.85,
-  Survival: 0.75, Disruption: 0.75, Excavation: 0.75, Interception: 0.7,
-  'Void Cascade': 0.75, 'Void Flood': 0.75, Alchemy: 0.75,
-  Defense: 0.6,
-};
-const FAST_MISSIONS = new Set(['Capture', 'Extermination', 'Sabotage', 'Rescue']);
+// 任务体验只做离散标签和优先级，不再伪装成精确耗时系数乘进遗物价值。
+const SPEED_MISSIONS = new Set(['Capture', 'Extermination']);
+const COMFORT_MISSIONS = new Set(['Defense', 'Survival']);
+const ENDLESS_MISSIONS = new Set([
+  'Defense', 'Survival', 'Interception', 'Excavation', 'Disruption',
+  'Void Cascade', 'Void Flood', 'Alchemy',
+]);
+
+export const FISSURE_PREFERENCES = Object.freeze({
+  balanced: { zh: '综合', command: '' },
+  speed: { zh: '速刷', command: '速刷' },
+  comfort: { zh: '舒适', command: '舒适' },
+  yield: { zh: '收益', command: '收益' },
+});
+
+export function parseFissurePreference(value) {
+  const text = String(value || '').normalize('NFKC');
+  if (/速刷|快速|快开|效率/iu.test(text)) return 'speed';
+  if (/舒适|轻松|挂机/iu.test(text)) return 'comfort';
+  if (/收益|额外|长线/iu.test(text)) return 'yield';
+  return 'balanced';
+}
+
+export function classifyFissure(fissure) {
+  const tags = [];
+  if (SPEED_MISSIONS.has(fissure.missionType)) tags.push({ key: 'speed', zh: '速刷' });
+  if (COMFORT_MISSIONS.has(fissure.missionType)) tags.push({ key: 'comfort', zh: '舒适' });
+  if (ENDLESS_MISSIONS.has(fissure.missionType)) tags.push({ key: 'endless', zh: '长线' });
+  if (fissure.isStorm || fissure.isHard) tags.push({ key: 'bonus', zh: '额外收益' });
+  return tags;
+}
+
+function preferenceRank(row, preference) {
+  const has = (key) => row.tags.some((tag) => tag.key === key);
+  if (preference === 'speed') return has('speed') ? 0 : 1;
+  if (preference === 'comfort') return has('comfort') ? 0 : 1;
+  if (preference === 'yield') {
+    if (row.storm) return 0;
+    if (row.hard) return 1;
+    if (has('endless')) return 2;
+    return 3;
+  }
+  return 0;
+}
+
+// 综合榜先看真实遗物收益；仅在收益完全相同时用离散体验标签打破平局。
+// 这样不会再制造“任务效率精确分数”，也不会让持续型扎里曼任务仅凭剩余时间排第一。
+function balancedTieRank(row) {
+  const has = (key) => row.tags.some((tag) => tag.key === key);
+  // 九重天实际效率对舰员等级、配置和熟练度更敏感，放在同收益候选的最后。
+  if (row.storm) return 5;
+  if (has('speed')) return 0;
+  if (has('comfort')) return 1;
+  if (row.hard) return 2;
+  if (has('endless')) return 4;
+  return 3;
+}
 
 async function getJson(url, headers = {}, attempt = 0) {
   const response = await fetch(url, { headers: { Accept: 'application/json', ...headers }, signal: AbortSignal.timeout(TIMEOUT_MS) });
@@ -202,10 +250,11 @@ function splitNode(value) {
   return { node: match[1], planet: PLANET_ZH[match[2]] || match[2] };
 }
 
-// relics: alecaframe loadRelics 的输出；options.mode: 'plat'（默认）| 'ducat'；options.squad: 4（默认组队）| 1（单人）
+// relics: alecaframe loadRelics 的输出；options.mode: 'plat'（默认）| 'ducat'；options.squad: 4（默认组队）| 1（单人）；options.preference: balanced|speed|comfort|yield
 export async function recommendFissures(relics, options = {}) {
   const mode = options.mode === 'ducat' ? 'ducat' : 'plat';
   const squad = Number(options.squad) >= 1 ? Math.min(Number(options.squad), 4) : 4;
+  const preference = FISSURE_PREFERENCES[options.preference] ? options.preference : parseFissurePreference(options.preference);
   const now = Date.now();
 
   // 1) 库存按遗物合并精炼度——全量进入估值，不做候选裁剪
@@ -224,14 +273,14 @@ export async function recommendFissures(relics, options = {}) {
   const fissures = (Array.isArray(worldState.fissures) ? worldState.fissures : [])
     .filter((f) => !f.expired && Date.parse(f.expiry) - now > MIN_REMAIN_MS);
   if (!fissures.length) {
-    return { ok: false, kind: 'fissure-recommend', mode, error: 'no_fissures', fetchedAt: new Date().toISOString() };
+    return { ok: false, kind: 'fissure-recommend', mode, preference, error: 'no_fissures', fetchedAt: new Date().toISOString() };
   }
   let localDb = options.localDb ?? null;
   if (!localDb && options.alecaDir) {
     try { localDb = await loadLocalRelicDb(options.alecaDir); } catch { localDb = null; }
   }
   if (!localDb) {
-    return { ok: false, kind: 'fissure-recommend', mode, error: 'no_local_relic_db', fetchedAt: new Date().toISOString() };
+    return { ok: false, kind: 'fissure-recommend', mode, preference, error: 'no_local_relic_db', fetchedAt: new Date().toISOString() };
   }
   const prices = options.prices || await loadPriceTable();
   const priceStaleAt = prices.__meta?.stale ? prices.__meta.cachedAt : null;
@@ -253,7 +302,7 @@ export async function recommendFissures(relics, options = {}) {
     : entry.expected;
   const bestFor = (tier) => {
     const pool = tier === 'Omnia' ? appraised : appraised.filter((entry) => entry.era === tier);
-    return pool.sort((a, b) => valueOf(b) - valueOf(a))[0] || null;
+    return [...pool].sort((a, b) => valueOf(b) - valueOf(a))[0] || null;
   };
   const rows = [];
   let requiemFissures = 0;
@@ -261,9 +310,8 @@ export async function recommendFissures(relics, options = {}) {
     if (fissure.tier === 'Requiem') { requiemFissures += 1; continue; }
     const relic = bestFor(fissure.tier);
     if (!relic) continue;
-    const factor = (MISSION_FACTOR[fissure.missionType] ?? 0.8) * (fissure.isStorm ? 0.7 : 1);
     const location = splitNode(fissure.node);
-    rows.push({
+    const row = {
       id: fissure.id,
       tier: fissure.tier,
       tierZh: ERA_ZH[fissure.tier] || fissure.tier,
@@ -271,7 +319,7 @@ export async function recommendFissures(relics, options = {}) {
       storm: Boolean(fissure.isStorm),
       missionType: fissure.missionType,
       missionZh: MISSION_ZH[fissure.missionType] || fissure.missionType || '未知任务',
-      fast: FAST_MISSIONS.has(fissure.missionType),
+      tags: classifyFissure(fissure),
       node: location.node,
       planet: location.planet,
       expiry: fissure.expiry,
@@ -282,15 +330,22 @@ export async function recommendFissures(relics, options = {}) {
       expectedDucats: relic.expectedDucats || 0,
       refineZh: relic.refine?.suggest?.zh || null,
       refineReason: relic.refine?.suggest?.reason || null,
-      score: Math.round(valueOf(relic) * factor * 10) / 10,
-    });
+      valueScore: Math.round(valueOf(relic) * 10) / 10,
+    };
+    row.preferenceRank = preferenceRank(row, preference);
+    row.balancedTieRank = balancedTieRank(row);
+    rows.push(row);
   }
-  rows.sort((a, b) => b.score - a.score || Date.parse(b.expiry) - Date.parse(a.expiry));
+  rows.sort((a, b) => a.preferenceRank - b.preferenceRank
+    || b.valueScore - a.valueScore
+    || (preference === 'balanced' ? a.balancedTieRank - b.balancedTieRank : 0)
+    || Date.parse(b.expiry) - Date.parse(a.expiry));
 
   return {
     ok: rows.length > 0,
     kind: 'fissure-recommend',
     mode,
+    preference,
     squad,
     fetchedAt: new Date().toISOString(),
     priceStaleAt,
@@ -402,18 +457,20 @@ export function formatRecommend(data) {
   }
   const ducatMode = data.mode === 'ducat';
   const squadZh = (data.squad ?? 4) > 1 ? `${data.squad ?? 4}人组队` : '单人';
-  const lines = [`🎯 裂缝推荐 · ${ducatMode ? '赚杜卡德' : '赚白金'}模式 · ${squadZh}口径（库存 × 价值 × 效率）`];
+  const preferenceZh = FISSURE_PREFERENCES[data.preference]?.zh || FISSURE_PREFERENCES.balanced.zh;
+  const lines = [`🎯 裂缝推荐 · ${ducatMode ? '赚杜卡德' : '赚白金'} · ${preferenceZh} · ${squadZh}口径（库存 × 双币期望）`];
   const stale = staleLine(data.priceStaleAt);
   if (stale) lines.push(stale);
   data.rows.forEach((row, index) => {
-    const flags = [row.hard ? '钢铁' : '', row.storm ? '九重天' : '', row.fast ? '快' : ''].filter(Boolean).join('/');
+    const flags = [row.hard ? '钢铁' : '', row.storm ? '九重天' : '', ...(row.tags || []).map((tag) => tag.zh)].filter(Boolean).join('/');
     lines.push(`${index + 1}. ${row.tierZh}${row.missionZh} ${row.planet}·${row.node}${flags ? `（${flags}）` : ''}`);
     const refineNote = row.refineZh ? `｜建议${row.refineZh}` : '';
     lines.push(ducatMode
-      ? `   配 ${row.relic.zh} ×${row.relic.count}｜期望 ${row.expectedDucats} 杜卡德｜白金仅 ${row.expectedValue}p${refineNote}`
-      : `   配 ${row.relic.zh} ×${row.relic.count}｜顶奖 ${row.topReward?.zhName || '—'} ${row.topReward?.price ? `${row.topReward.price}p` : ''}｜期望 ${row.expectedValue}p${refineNote}`);
+      ? `   配 ${row.relic.zh} ×${row.relic.count}｜重点奖励 ${row.topDucat?.zhName || '—'} ${row.topDucat?.ducats || 0} 杜卡德｜期望 ${row.expectedDucats} 杜卡德 / ${row.expectedValue} 白金${refineNote}`
+      : `   配 ${row.relic.zh} ×${row.relic.count}｜重点奖励 ${row.topReward?.zhName || '—'} ${row.topReward?.price || 0} 白金｜期望 ${row.expectedValue} 白金 / ${row.expectedDucats} 杜卡德${refineNote}`);
   });
   if (data.requiem) lines.push(`另有安魂裂缝 ${data.requiem.fissures} 条，你有安魂遗物 ${data.requiem.relics} 个。`);
-  lines.push(ducatMode ? '杜卡德模式优先推「杜卡德高、白金不值钱」的遗物；换杜卡德前留意白金高的部件。' : `期望按完整精炼度·${squadZh}开奖取最优·市场加权均价估算，仅供参考。`);
+  const preferenceNote = data.preference === 'speed' ? '速刷优先捕获/歼灭' : data.preference === 'comfort' ? '舒适优先防御/生存' : data.preference === 'yield' ? '收益优先九重天→钢铁→无尽' : '默认按遗物期望收益，同收益时速刷/舒适优先';
+  lines.push(`${preferenceNote}；${ducatMode ? '杜卡德排序会扣除白金机会成本' : `期望按完整精炼度·${squadZh}开奖取最优·市场加权均价估算`}，仅供参考。`);
   return lines.join('\n');
 }

@@ -36,8 +36,9 @@ export const TEMPLATE_CATALOG = Object.freeze([
   { kind: 'trader', example: '虚空商人', personal: false, intents: '奸商在哪/什么时候来' },
   { kind: 'weekly', example: '周常｜完成 1 3｜撤销 2｜跳过 5｜取消跳过 全部｜清空周常', personal: true, intents: '周常清单/打卡' },
   { kind: 'account', example: '我的账号｜我的库存 X｜我的遗物 前N11｜我的赋能 X｜账号周常', personal: true, intents: '个人账号快照' },
-  { kind: 'recommend', example: '裂缝推荐 [杜卡德|单人]', personal: true, intents: '开什么遗物划算' },
+  { kind: 'recommend', example: '裂缝推荐 [白金|杜卡德] [速刷|舒适|收益] [单人]', personal: true, intents: '开什么遗物划算/想速刷/想挂机/想要附加收益' },
   { kind: 'refine', example: '精炼推荐 [杜卡德|单人]', personal: true, intents: '哪些遗物值得精炼' },
+  { kind: 'ducat-plan', example: '杜卡德｜杜卡德 600｜杜卡德 清仓 保留1', personal: true, intents: '哪些 Prime 部件适合兑换/按目标生成最低白金损失方案' },
   { kind: 'trader-shopping', example: '奸商推荐', personal: true, intents: '奸商买什么' },
   { kind: 'shop', example: '商店｜商店 泰辛｜商店 瓦奇娅', personal: true, intents: '商店总览/某商人卖什么/本周精选/已购' },
   { kind: 'weekly-deals', example: '本周好货', personal: true, intents: '这周商店有什么值得买/好货清单（泰辛/圣言者必抢与周货+瓦奇娅复刻）' },
@@ -53,8 +54,9 @@ const normalize = (value) => String(value ?? '').normalize('NFKC').trim().replac
 // 与插件 isPersonalAccountCommand 同一套判定（改动要双侧同步）
 function isPersonalCommand(text) {
   return /^(?:我的账号|账号状态|我的状态|账号周常|我的周常状态|周常同步状态|刷新账号|刷新库存)$/u.test(text)
-    || /^(?:裂缝推荐|推荐裂缝|开什么遗物|开什么)(?:\s+\S+){0,2}$/u.test(text)
+    || /^(?:裂缝推荐|推荐裂缝|开什么遗物|开什么)(?:\s+\S+){0,3}$/u.test(text)
     || /^(?:精炼推荐|遗物精炼|值得精炼|精炼什么)(?:\s+\S+){0,2}$/u.test(text)
+    || /^(?:杜卡德|杜卡德推荐|杜卡德兑换)(?:\s+.*)?$/u.test(text)
     || /^(?:奸商推荐|奸商买什么|奸商购物|虚空商人推荐|虚空商人买什么)$/u.test(text)
     // 商店卡的已购标注读快照 → 个人通道（快照读失败脚本内部降级，不影响出卡）
     || /^商店(?:\s+\S+)?$/u.test(text)
