@@ -231,7 +231,7 @@ export function summarizeTradeStatistics(payload, isMod, now = Date.now()) {
 }
 
 // —— 单件估值：优先今日真实成交中位（至少 3 笔），样本不足回退 90 天成交中位；失败退统计缓存 ——
-async function fetchTradeStatistics(slug, isMod, statisticsFetcher) {
+export async function fetchTradeStatistics(slug, isMod, statisticsFetcher) {
   try {
     if (statisticsFetcher) return summarizeTradeStatistics(await statisticsFetcher(slug, isMod), isMod);
     const { staleCachedJson } = await import('./wfdata.mjs');
@@ -379,8 +379,8 @@ export async function traderShopping(inventory, options = {}) {
       const { parseDucatSpec, buildDucatCandidates, refreshDucatPrices, optimizeDucatTarget } = await import('./ducat-planner.mjs');
       const spec = parseDucatSpec('杜卡德');
       const ducatCandidates = await refreshDucatPrices(buildDucatCandidates(options.inventoryValuation, spec), {
-        maxLiveQuotes: options.maxLiveDucatQuotes ?? 12,
-        ...(options.ducatQuoteFetcher ? { quoteFetcher: options.ducatQuoteFetcher } : {}),
+        maxStatisticsQuotes: options.maxDucatStatisticsQuotes ?? options.maxLiveDucatQuotes ?? 24,
+        ...(options.ducatStatisticsFetcher ? { statisticsFetcher: options.ducatStatisticsFetcher } : {}),
         ...(options.ducatCatalog ? { catalog: options.ducatCatalog } : {}),
       });
       safeDucatAvailable = ducatCandidates.reduce((sum, entry) => sum + entry.available * entry.ducatsEach, 0);

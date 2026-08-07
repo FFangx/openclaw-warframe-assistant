@@ -418,34 +418,47 @@ export function buildInventorySnapshotCard(data) {
 export function buildDucatPlanCard(data) {
   const allRows = Array.isArray(data.rows) ? data.rows : [];
   const rows = allRows.slice(0, 15);
-  const rowH = 62;
+  const rowH = 72;
   const height = 90 + 32 + Math.max(rows.length, 1) * rowH + 36;
   const modeTitle = data.mode === 'target' ? `目标 ${escapeHtml(data.target)} 杜卡德`
     : data.mode === 'clearance' ? '安全清仓方案' : '优先兑换推荐';
+  const smartReserve = !data.reserveExplicit && data.reserveSets == null;
+  const reserveMeta = `<span>${smartReserve ? '智能保留' : escapeHtml(data.reserveLabel)}</span>`;
   const headerMeta = data.mode === 'target'
-    ? `<strong>${currency('ducat', data.target, { size: 14 })} 目标</strong><span>${escapeHtml(data.reserveLabel)}</span>`
-    : `<strong>${currency('ducat', data.totalDucats, { size: 14 })} 可兑换</strong><span>${escapeHtml(data.reserveLabel)}</span>`;
+    ? `<strong>${currency('ducat', data.target, { size: 14 })} 目标</strong>${reserveMeta}`
+    : `<strong>${currency('ducat', data.totalDucats, { size: 14 })} 可兑换</strong>${reserveMeta}`;
   const sectionText = data.complete
     ? `本次 ${currency('ducat', data.totalDucats, { size: 12 })} · 白金机会成本约 ${currency('plat', data.totalPlat, { size: 12, color: '#75dcca' })}`
-    : `安全库存只能换 ${currency('ducat', data.totalDucats, { size: 12 })} · <strong style="color:#e0513c">还差 ${escapeHtml(data.shortfall)} 杜卡德</strong>`;
+    : `可靠估值候选可换 ${currency('ducat', data.totalDucats, { size: 12 })} · <strong style="color:#e0513c">还差 ${escapeHtml(data.shortfall)} 杜卡德</strong>`;
   const body = rows.length ? rows.map((row, index) => {
     const iconCell = row.iconDataUri
       ? `<div style="width:40px;height:40px;border-radius:8px;display:grid;place-items:center;background:rgba(255,255,255,.07);overflow:hidden"><img src="${row.iconDataUri}" style="max-width:36px;max-height:36px;object-fit:contain"></div>`
       : '<div></div>';
-    const unit = currency('plat', row.unitPlat, { size: 10, color: '#a9d7e4', weight: 760 });
+    const basis = row.marketBasis === 'today' ? '今日中位' : '90日中位';
+    const median = currency('plat', row.unitPlat, { size: 10, color: '#a9d7e4', weight: 760 });
+    const dailyVolume = row.dailyVolume == null ? '日均—' : `日均 ${escapeHtml(row.dailyVolume)} 件`;
+    const orderFloor = row.lowestSell == null ? '' : ` · 最低卖单 ${currency('plat', row.lowestSell, { size: 10, color: '#7f8b97', weight: 720 })}`;
+    const reserveTone = row.reserveState === 'owned'
+      ? { color: '#75dcca', bg: 'rgba(117,220,202,.13)', border: 'rgba(117,220,202,.42)' }
+      : row.reserveState === 'unowned'
+        ? { color: '#f0c765', bg: 'rgba(240,199,101,.12)', border: 'rgba(240,199,101,.40)' }
+        : { color: '#d9a66f', bg: 'rgba(217,166,111,.12)', border: 'rgba(217,166,111,.40)' };
+    const reserveBadge = row.reserveReason
+      ? `<span style="display:inline-block;margin-left:4px;padding:1px 5px;border:1px solid ${reserveTone.border};border-radius:4px;background:${reserveTone.bg};color:${reserveTone.color};font-weight:800">${escapeHtml(row.reserveReason)}</span>`
+      : '';
     return `<div style="position:relative;z-index:1;height:${rowH}px;display:grid;grid-template-columns:46px minmax(0,1fr) 72px 126px;align-items:center;padding:0 16px;border-bottom:1px solid rgba(176,123,55,.40);background:${index % 2 ? 'rgba(255,255,255,.035)' : 'rgba(255,255,255,.014)'}">
       ${iconCell}
-      <div style="min-width:0;padding-left:8px"><div style="font-size:14px;font-weight:830;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(row.name)}</div><div style="margin-top:3px;font-size:10px;color:#8995a1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">库存 ×${escapeHtml(row.owned)} · 保留 ×${escapeHtml(row.reserve)}${row.reserveReason ? `（${escapeHtml(row.reserveReason)}）` : ''} · ${escapeHtml(row.priceSource)} ${unit}</div></div>
+      <div style="min-width:0;padding-left:8px"><div style="font-size:14px;font-weight:830;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(row.name)}</div><div style="margin-top:3px;font-size:10px;color:#8995a1;white-space:nowrap">库存 ×${escapeHtml(row.owned)} · 保留 ×${escapeHtml(row.reserve)}${reserveBadge}</div><div style="margin-top:3px;font-size:9px;color:#7f8b97;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${basis}${row.marketStatsStale ? '（缓存）' : ''} ${median} · ${dailyVolume}${orderFloor}</div></div>
       <div style="text-align:center"><div style="font-size:10px;color:#8995a1">兑换</div><div style="margin-top:3px;color:#75dcca;font-size:17px;font-weight:900;font-variant-numeric:tabular-nums">×${escapeHtml(row.exchangeQty)}</div></div>
       <div style="padding-left:8px"><div style="font-size:15px">${currency('ducat', `+${row.totalDucats}`, { size: 14 })}</div><div style="margin-top:3px;font-size:11px">${currency('plat', `−${row.totalPlat}`, { size: 11, color: '#a9d7e4', weight: 760 })}<span style="margin-left:4px;color:#6f7b86">机会成本</span></div></div>
     </div>`;
   }).join('') : '<div style="position:relative;z-index:1;height:62px;display:grid;place-items:center;color:#8995a1;font-size:13px">没有符合保留规则、且带可靠行情的多余 Prime 部件</div>';
   const shown = rows.length;
   const content = `<div class="card"><div class="header" style="height:90px">${glyphOrIcon(data.glyphDataUri, 'baro')}<div style="min-width:0"><div class="kicker">个人库存 · 安全模式</div><div class="title" style="font-size:23px">${modeTitle}</div></div><div class="header-meta">${headerMeta}</div></div>
-    <div class="section"><span class="section-badge">${escapeHtml(shown)} 项</span>${sectionText}<small>${data.mode === 'target' ? `可安全兑换 ${escapeHtml(data.availableDucats)} 杜` : '效率=杜卡德÷白金单价，越高越优先'}</small></div>
+    <div class="section"><span class="section-badge">${escapeHtml(shown)} 项</span>${sectionText}<small>机会成本=成交中位 · 最低卖单仅参考</small></div>
     ${body}
     <div class="footer" style="height:36px;font-size:9px"><span>命令：杜卡德 600｜杜卡德 清仓｜杜卡德 清仓 保留1</span><span>${allRows.length > shown ? `显示 ${shown}/${allRows.length}` : escapeHtml(localTime(data.syncedAt || data.fetchedAt))}</span></div></div>`;
-  const keySeed = `ducat-plan-v3|${data.mode}|${data.target}|${data.reserveLabel}|${data.syncedAt}|${allRows.map((row) => `${row.uniqueName}:${row.exchangeQty}:${row.unitPlat}:${row.reserve}:${row.reserveReason || ''}`).join('|')}`;
+  const keySeed = `ducat-plan-v5|${data.mode}|${data.target}|${data.reserveLabel}|${data.syncedAt}|${allRows.map((row) => `${row.uniqueName}:${row.exchangeQty}:${row.unitPlat}:${row.lowestSell ?? ''}:${row.reserve}:${row.reserveState || ''}`).join('|')}`;
   return { html: documentShell(content, height), width: 600, height, key: `ducat-plan-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 

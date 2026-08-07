@@ -1206,7 +1206,7 @@ const HELP_SECTIONS = [
   ]],
   ['我的账号 🔒', [
     ['我的账号 / 我的库存 X', '货币家底 / 快照只读查询'],
-    ['杜卡德 / 杜卡德 600', '智能保留未拥有套装；已有成品可换最后一件'],
+    ['杜卡德 / 杜卡德 600', '按持有状态智能保留；成交中位估算损失'],
     ['我的遗物 前N11 / 账号周常', '遗物·赋能·周常核对'],
     ['我的紫卡 / 紫卡 3', '词条等级·神卡标·行情估价'],
   ]],
@@ -1220,7 +1220,7 @@ function buildHelpCard() {
   const rowCount = HELP_SECTIONS.reduce((n, [, cmds]) => n + cmds.length, 0);
   const height = 92 + HELP_SECTIONS.length * 29 + rowCount * 38 + 34 + 6;
   const content = `<div class="card"><div class="relic-head"><div class="relic-title">Warframe 助手</div><div class="relic-code">功能总览</div><div class="relic-note">发左列命令即可使用<br>说人话提问也能识别</div></div><table><colgroup><col style="width:38%"><col style="width:62%"></colgroup><tbody>${rows}</tbody></table><div class="foot"><span>🔒 = 仅主人私聊 · 多数命令支持简称：好货/周报/侵袭/悬赏/开什么</span><span>发「帮助」随时唤出</span></div></div>`;
-  return { html: cardDocument(content, height, 760), width: 760, height, key: 'help-v21' };
+  return { html: cardDocument(content, height, 760), width: 760, height, key: 'help-v23' };
 }
 
 function formatHelp() {

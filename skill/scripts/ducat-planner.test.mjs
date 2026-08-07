@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  buildDucatPlan,
   buildDucatCandidates,
   optimizeDucatTarget,
   parseDucatSpec,
@@ -59,13 +60,14 @@ test('默认按成品拥有状态智能保留，显式保留参数优先覆盖',
     part({ name: '未知', count: 3, setRequired: 2, parentOwned: null }),
   ], smart);
   const byName = new Map(candidates.map((entry) => [entry.name, entry]));
-  assert.deepEqual([byName.get('已有').reserve, byName.get('已有').available, byName.get('已有').reserveReason], [0, 1, '已有成品']);
-  assert.deepEqual([byName.get('未有').reserve, byName.get('未有').available, byName.get('未有').reserveReason], [2, 1, '未拥有成品']);
-  assert.deepEqual([byName.get('未知').reserve, byName.get('未知').available, byName.get('未知').reserveReason], [2, 1, '状态未知']);
+  assert.deepEqual([byName.get('已有').reserve, byName.get('已有').available, byName.get('已有').reserveReason, byName.get('已有').reserveState], [0, 1, '已持有', 'owned']);
+  assert.deepEqual([byName.get('未有').reserve, byName.get('未有').available, byName.get('未有').reserveReason, byName.get('未有').reserveState], [2, 1, '未持有', 'unowned']);
+  assert.deepEqual([byName.get('未知').reserve, byName.get('未知').available, byName.get('未知').reserveReason, byName.get('未知').reserveState], [2, 1, '待确认', 'unknown']);
 
   const [forced] = buildDucatCandidates([part({ count: 2, parentOwned: true })], parseDucatSpec('杜卡德 保留1'));
   assert.equal(forced.reserve, 1);
   assert.equal(forced.reserveReason, null);
+  assert.equal(forced.reserveState, null);
 });
 
 test('本机装备栏为 Prime 部件标注对应成品拥有状态', () => {
@@ -100,6 +102,26 @@ test('目标规划优先选择白金机会成本最低的有界组合', () => {
   assert.equal(plan.rows[0].name, '乙');
 });
 
+test('杜卡德机会成本使用成交中位，最低卖单只作辅助展示', async () => {
+  const plan = await buildDucatPlan([
+    part({ count: 2, parentOwned: true }),
+  ], parseDucatSpec('杜卡德 清仓'), {
+    catalog: {
+      cheapprimepartblueprint: { slug: 'cheap_prime_part_blueprint', zhName: '廉价 Prime 部件蓝图' },
+    },
+    statisticsFetcher: async () => ({ payload: { statistics_closed: {
+      '48hours': [{ datetime: new Date().toISOString(), median: 3, volume: 8 }],
+      '90days': [{ datetime: '2026-08-06T00:00:00.000Z', median: 4, volume: 900 }],
+    } } }),
+    orderFetcher: async () => 1,
+  });
+  assert.equal(plan.rows[0].unitPlat, 3);
+  assert.equal(plan.rows[0].lowestSell, 1);
+  assert.equal(plan.rows[0].marketBasis, 'today');
+  assert.equal(plan.rows[0].dailyVolume, 10);
+  assert.equal(plan.totalPlat, 6);
+});
+
 const defaultTraderInventory = [{
   uniqueName: '/Lotus/StoreItems/Upgrades/Mods/PrimedTest',
   item: 'Primed Test',
@@ -131,10 +153,13 @@ const traderFixture = (inventoryCount = 10, traderInventory = defaultTraderInven
   ducatCatalog: {
     cheapprimepartblueprint: { slug: 'cheap_prime_part_blueprint', zhName: '廉价 Prime 部件蓝图' },
   },
-  ducatQuoteFetcher: async () => 3,
+  ducatStatisticsFetcher: async () => ({ payload: { statistics_closed: {
+    '48hours': [{ datetime: new Date().toISOString(), median: 3, volume: 8 }],
+    '90days': [{ datetime: '2026-08-06T00:00:00.000Z', median: 3, volume: 900 }],
+  } } }),
 });
 
-test('奸商联动使用 0 级成交中位价、准确交易税和安全库存机会成本', async () => {
+test('奸商联动两侧均使用成交中位价、准确交易税和安全库存机会成本', async () => {
   const result = await traderFixture();
   const [row] = result.rows;
   assert.equal(row.tradingTax, 1_000_000);

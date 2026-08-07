@@ -5,8 +5,9 @@
 
 const MARKET_BASE = 'https://api.warframe.market';
 const TIMEOUT_MS = 20_000;
-const LIVE_PRICE_CONCURRENCY = 3;
-const DEFAULT_LIVE_QUOTES = 14;
+const MARKET_PRICE_CONCURRENCY = 3;
+const DEFAULT_STATISTICS_QUOTES = 24;
+const DEFAULT_ORDER_QUOTES = 15;
 
 const compact = (value) => String(value ?? '').normalize('NFKC').trim().toLowerCase().replace(/[\s_\-:：·'’&]+/gu, '');
 const round1 = (value) => Math.round((Number(value) || 0) * 10) / 10;
@@ -69,30 +70,37 @@ function reserveFor(entry, spec) {
 
 function reserveReason(entry, spec) {
   if (spec.reserveSets != null || spec.reserveExplicit) return null;
-  if (entry.parentOwned === true) return '已有成品';
-  if (entry.parentOwned === false) return '未拥有成品';
-  return '状态未知';
+  if (entry.parentOwned === true) return { state: 'owned', label: '已持有' };
+  if (entry.parentOwned === false) return { state: 'unowned', label: '未持有' };
+  return { state: 'unknown', label: '待确认' };
 }
 
 export function buildDucatCandidates(entries, spec) {
   return (entries || []).filter((entry) => entry.catKey === 'part' && Number(entry.ducats) > 0 && Number(entry.count) > 0)
     .map((entry) => {
       const reserve = Math.min(Number(entry.count), reserveFor(entry, spec));
+      const reason = reserveReason(entry, spec);
       const available = Math.max(0, Number(entry.count) - reserve);
       const unitPlat = Number.isFinite(Number(entry.unit)) && Number(entry.unit) > 0 ? Number(entry.unit) : null;
       return {
         ...entry,
         owned: Number(entry.count),
         reserve,
-        reserveReason: reserveReason(entry, spec),
+        reserveReason: reason?.label || null,
+        reserveState: reason?.state || null,
         available,
         ducatsEach: Number(entry.ducats),
         unitPlat,
-        priceSource: unitPlat == null ? '暂无行情' : '近日成交均价',
+        priceSource: '待取成交统计',
+        marketBasis: null,
+        marketStatsStale: false,
+        todayVolume: null,
+        dailyVolume: null,
+        reliableMarket: false,
         efficiency: unitPlat ? round1(Number(entry.ducats) / unitPlat) : null,
       };
     })
-    .filter((entry) => entry.available > 0 && entry.unitPlat != null)
+    .filter((entry) => entry.available > 0)
     .sort((a, b) => (b.efficiency ?? -1) - (a.efficiency ?? -1) || b.ducatsEach - a.ducatsEach || a.name.localeCompare(b.name, 'zh-CN'));
 }
 
@@ -124,14 +132,14 @@ function marketMeta(catalog, entry) {
     || null;
 }
 
-async function liveLowestSell(meta, entry, quoteFetcher) {
-  if (!meta?.slug) return null;
-  if (quoteFetcher) {
-    const quote = await quoteFetcher(meta.slug, entry);
+async function currentLowestSell(slug, entry, orderFetcher) {
+  if (!slug) return null;
+  if (orderFetcher) {
+    const quote = await orderFetcher(slug, entry);
     const value = Number(quote?.platinum ?? quote);
     return Number.isFinite(value) && value > 0 ? value : null;
   }
-  const payload = await getJson(`${MARKET_BASE}/v2/orders/item/${meta.slug}/top`, { Platform: 'pc', Crossplay: 'true' });
+  const payload = await getJson(`${MARKET_BASE}/v2/orders/item/${slug}/top`, { Platform: 'pc', Crossplay: 'true' });
   const prices = (payload.data?.sell || [])
     .filter((order) => order.visible !== false)
     .map((order) => Number(order.platinum))
@@ -140,28 +148,44 @@ async function liveLowestSell(meta, entry, quoteFetcher) {
 }
 
 export async function refreshDucatPrices(candidates, options = {}) {
-  const maxLive = Math.max(0, Number(options.maxLiveQuotes ?? DEFAULT_LIVE_QUOTES));
-  if (!maxLive || !candidates.length) return candidates;
+  const maxStatistics = Math.max(0, Number(options.maxStatisticsQuotes ?? options.maxLiveQuotes ?? DEFAULT_STATISTICS_QUOTES));
+  if (!maxStatistics || !candidates.length) return [];
   let catalog;
-  try { catalog = options.catalog || await loadMarketCatalog(); } catch { return candidates; }
-  const pool = candidates.slice(0, maxLive);
-  await mapLimit(pool, LIVE_PRICE_CONCURRENCY, async (entry) => {
+  try { catalog = options.catalog || await loadMarketCatalog(); } catch { return []; }
+  const { fetchTradeStatistics } = await import('./trader-shopping.mjs');
+  const pool = candidates.slice(0, maxStatistics);
+  await mapLimit(pool, MARKET_PRICE_CONCURRENCY, async (entry) => {
     const meta = marketMeta(catalog, entry);
     if (!meta) return;
+    entry.marketSlug = meta.slug;
+    entry.wmThumb = meta.thumb;
+    if (meta.zhName) entry.marketZhName = meta.zhName;
     try {
-      const live = await liveLowestSell(meta, entry, options.quoteFetcher);
-      if (live != null) {
-        entry.unitPlat = round1(live);
-        entry.priceSource = '当前在线最低卖单';
+      const quote = await fetchTradeStatistics(meta.slug, false, options.statisticsFetcher);
+      if (quote?.platinum != null) {
+        entry.unitPlat = round1(quote.platinum);
+        entry.marketBasis = quote.basis;
+        entry.priceSource = quote.basis === 'today' ? '今日成交中位' : '90 日成交中位';
+        entry.marketStatsStale = Boolean(quote.stale);
+        entry.todayVolume = quote.todayVolume ?? null;
+        entry.dailyVolume = quote.dailyVolume ?? null;
+        entry.reliableMarket = true;
         entry.efficiency = round1(entry.ducatsEach / entry.unitPlat);
       }
-      entry.marketSlug = meta.slug;
-      entry.wmThumb = meta.thumb;
-      if (meta.zhName) entry.marketZhName = meta.zhName;
-    } catch { /* 单项行情失败沿用近日成交均价 */ }
+    } catch { /* 无可靠成交统计的部件不进入自动兑换方案 */ }
   });
-  candidates.sort((a, b) => (b.efficiency ?? -1) - (a.efficiency ?? -1) || b.ducatsEach - a.ducatsEach || a.name.localeCompare(b.name, 'zh-CN'));
-  return candidates;
+  const reliable = candidates.filter((entry) => entry.reliableMarket && entry.unitPlat != null);
+  reliable.sort((a, b) => (b.efficiency ?? -1) - (a.efficiency ?? -1) || b.ducatsEach - a.ducatsEach || a.name.localeCompare(b.name, 'zh-CN'));
+  return reliable;
+}
+
+export async function attachDucatOrderFloors(rows, options = {}) {
+  const maxOrders = Math.max(0, Number(options.maxOrderQuotes ?? DEFAULT_ORDER_QUOTES));
+  if (!maxOrders || !rows?.length) return rows;
+  await mapLimit(rows.slice(0, maxOrders), MARKET_PRICE_CONCURRENCY, async (entry) => {
+    try { entry.lowestSell = await currentLowestSell(entry.marketSlug, entry, options.orderFetcher); } catch { entry.lowestSell = null; }
+  });
+  return rows;
 }
 
 function selectionRows(candidates, quantities) {
@@ -242,9 +266,10 @@ export async function buildDucatPlan(entries, spec, options = {}) {
       rows,
     };
   }
+  await attachDucatOrderFloors(result.rows, options);
   const reserveLabel = parsed.reserveSets != null ? `保留 ${parsed.reserveSets} 套`
     : parsed.reserveExplicit ? `每种保留 ${parsed.reserveCount} 个`
-      : '智能保留：已有成品 0，其他 1 套';
+      : '智能保留';
   return {
     kind: 'ducat-plan',
     ok: true,
@@ -272,9 +297,10 @@ export function formatDucatPlan(data) {
   const title = data.mode === 'target' ? `目标 ${data.target} 杜卡德` : data.mode === 'clearance' ? '安全清仓' : '兑换推荐';
   const lines = [`【杜卡德兑换方案】${title}｜${data.reserveLabel}`];
   for (const row of data.rows.slice(0, 15)) {
-    lines.push(`${row.name}｜库存 ${row.owned} 留 ${row.reserve} 换 ${row.exchangeQty}｜+${row.totalDucats}杜｜约损失 ${row.totalPlat}p｜${row.priceSource}`);
+    const market = `${row.priceSource} ${row.unitPlat}p · 日均 ${row.dailyVolume ?? '—'} 件${row.lowestSell == null ? '' : ` · 最低卖单 ${row.lowestSell}p`}`;
+    lines.push(`${row.name}｜库存 ${row.owned} 留 ${row.reserve} 换 ${row.exchangeQty}｜+${row.totalDucats}杜｜约损失 ${row.totalPlat}p｜${market}`);
   }
   lines.push(`合计 +${data.totalDucats} 杜卡德，预计白金机会成本 ${data.totalPlat}p。`);
-  if (!data.complete) lines.push(`安全库存不足，距离目标还差 ${data.shortfall} 杜卡德。`);
+  if (!data.complete) lines.push(`可靠成交统计覆盖的候选不足，距离目标还差 ${data.shortfall} 杜卡德。`);
   return lines.join('\n');
 }

@@ -904,7 +904,7 @@ export async function runAlecaMessage(message, options = {}) {
     } catch { mediaUrl = null; }
     return {
       handled: true, ok: data.ok, command: 'ducat-plan', query: parsed.query, data, mediaUrl,
-      followupText: mediaUrl ? '按当前在线卖单优先、近日成交均价兜底估算；仅提供兑换建议，不会修改库存。' : null,
+      followupText: mediaUrl ? '机会成本优先取今日成交中位，样本不足回退 90 日中位；最低卖单仅作辅助参考，不参与方案排序。仅提供建议，不会修改库存。' : null,
       text: formatDucatPlan(data),
     };
   }
