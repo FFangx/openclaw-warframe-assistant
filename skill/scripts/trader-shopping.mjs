@@ -418,6 +418,50 @@ export async function traderShopping(inventory, options = {}) {
   };
 }
 
+// 为裂缝推荐解析一个可交易的奸商目标。自动模式只选当前推荐/缺杜卡德的商品；
+// 指定模式允许直接按中英文商品名匹配当前货单，但不可交易品没有市场对标口径。
+export function selectTraderGoal(result, target = { type: 'trader', query: '' }) {
+  if (!result?.arrived) return { ok: false, error: 'trader_not_arrived' };
+  const tradable = (result.rows || []).filter((row) => row.tradable && Number(row.platinum) > 0 && Number(row.ducats) > 0);
+  let row = null;
+  if (target.type === 'item') {
+    const needle = compact(target.query);
+    const exact = tradable.filter((item) => [item.zhName, item.nameEn].some((name) => compact(name) === needle));
+    const partial = tradable.filter((item) => [item.zhName, item.nameEn].some((name) => compact(name).includes(needle)));
+    row = exact[0] || partial[0] || null;
+    if (!row) return { ok: false, error: 'trader_item_not_found', query: target.query };
+  } else {
+    const priority = { strong: 0, buy: 1, cash: 2, flip: 3, need: 4 };
+    row = tradable.filter((item) => priority[item.advice?.tag] != null)
+      .sort((a, b) => priority[a.advice.tag] - priority[b.advice.tag]
+        || (b.ratio ?? -1) - (a.ratio ?? -1)
+        || (b.dailyVolume ?? 0) - (a.dailyVolume ?? 0))[0] || null;
+    if (!row) return { ok: false, error: 'no_recommended_trader_target' };
+  }
+  const ducatsPerPlat = Math.round(Number(row.ducats) / Number(row.platinum) * 10) / 10;
+  return {
+    ok: true,
+    goal: {
+      source: target.type === 'item' ? 'item' : 'trader',
+      name: row.zhName || row.nameEn || '目标商品',
+      nameEn: row.nameEn || null,
+      uniqueName: row.uniqueName,
+      ducats: Number(row.ducats),
+      currentDucats: Number(result.ducatBalance) || 0,
+      shortfall: Math.max(0, Number(row.ducats) - (Number(result.ducatBalance) || 0)),
+      marketPlat: Number(row.platinum),
+      ducatsPerPlat,
+      marketBasis: row.marketBasis || null,
+      todayVolume: row.todayVolume ?? null,
+      median90: row.median90 ?? null,
+      dailyVolume: row.dailyVolume ?? null,
+      credits: Number(row.credits) || 0,
+      tradingTax: row.tradingTax ?? null,
+      advice: row.advice || null,
+    },
+  };
+}
+
 // 本机系统时区不是北京时间，所有用户可见时间必须显式指定 Asia/Shanghai
 const beijingTime = (value) => {
   const date = new Date(value);

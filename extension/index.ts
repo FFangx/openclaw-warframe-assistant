@@ -38,8 +38,8 @@ function isShortcut(content: string): boolean {
 function isPersonalAccountCommand(content: string): boolean {
   const text = String(content || '').normalize('NFKC').trim().replace(/^\//u, '');
   return /^(?:我的账号|账号状态|我的状态|账号周常|我的周常状态|周常同步状态|刷新账号|刷新库存)$/u.test(text)
-    // 裂缝推荐要读本机遗物库存；尾部可组合币种、队伍与偏好（如「杜卡德 单人 速刷」）
-    || /^(?:裂缝推荐|推荐裂缝|开什么遗物|开什么)(?:\s+\S+){0,3}$/u.test(text)
+    // 裂缝推荐要读本机遗物库存；尾部可组合入库状态、币种、奸商/商品名、队伍与偏好。
+    || /^(?:裂缝推荐|推荐裂缝|开什么遗物|开什么)(?:\s+.*)?$/u.test(text)
     // 精炼推荐：库存全扫哪些遗物值得花光体（同属个人数据）
     || /^(?:精炼推荐|遗物精炼|值得精炼|精炼什么)(?:\s+\S+){0,2}$/u.test(text)
     // 杜卡德兑换：Prime 部件库存 × 当前行情，属于个人数据

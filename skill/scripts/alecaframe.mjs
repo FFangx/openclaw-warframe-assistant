@@ -144,6 +144,7 @@ async function loadCatalog(alecaDir, localize) {
         englishName: item.name || '',
         displayName: isWarframe ? (item.name || zhName || '未收录战甲') : (zhName || '未收录物品'),
         type: filename.replace(/\.json$/iu, ''),
+        vaulted: filename === 'Relics.json' ? Boolean(item.vaulted) : null,
       });
       for (const component of item.components || []) {
         if (!component?.uniqueName) continue;
@@ -303,8 +304,8 @@ async function relicQuery(snapshot, rawQuery) {
   const data = {
     kind: 'inventory', subtype: '遗物库存', title: query ? `我的遗物 · ${normalize(rawQuery)}` : '我的遗物',
     syncedAt: snapshot.syncedAt,
-    // 入库状态配色对齐遗物反查卡：已入库=金褐（绝版更值钱）/ 当前可获取=绿
-    rows: matches.slice(0, 14).map((item) => ({ name: item.name, value: `${item.count} 个`, detail: item.vaulted ? '已入库' : '当前可获取', detailColor: item.vaulted ? '#d7a46d' : '#8ee3ad', era: item.baseName.split(' ')[0] })),
+    // 入库状态配色对齐遗物反查卡：已入库=金褐（绝版更值钱）/ 未入库=绿
+    rows: matches.slice(0, 14).map((item) => ({ name: item.name, value: `${item.count} 个`, detail: item.vaulted ? '已入库' : '未入库', detailColor: item.vaulted ? '#d7a46d' : '#8ee3ad', era: item.baseName.split(' ')[0] })),
     totalMatches: matches.length,
     totalCount: matches.reduce((sum, item) => sum + item.count, 0),
   };
@@ -428,6 +429,7 @@ export async function assembleInventoryValuation(snapshot) {
       catKey, uniqueName, count, rank,
       refinement: REFINEMENT_ZH[refinement] || '',
       name: meta.displayName, englishName: meta.englishName,
+      vaulted: meta.category === 'Relics' ? Boolean(meta.vaulted) : null,
       ducats: meta.ducats ?? null, meta,
       parentUniqueName: meta.parentUniqueName || null,
       parentEnglishName: meta.parentEnglishName || null,
@@ -468,6 +470,7 @@ function valuationRowName(entry) {
 // 行明细：同物同级多个 → 单价×总价（用户定）；非满级标换算口径；部件类附杜卡德合计
 function valuationRowDetail(entry) {
   const parts = [];
+  if (entry.catKey === 'relic') parts.push(entry.vaulted ? '已入库' : '未入库');
   if (entry.unit == null) parts.push(`${entry.count} 个 · 暂无行情`);
   else if (entry.count > 1) parts.push(`${entry.count} 个 × 单价 ${entry.unit}p`);
   else parts.push(`单价 ${entry.unit}p`);
@@ -490,6 +493,7 @@ async function inventoryQuery(snapshot, rawQuery) {
         value: `${entry.count} 个`,
         plat: entry.total || null,
         detail: valuationRowDetail(entry),
+        detailColor: entry.catKey === 'relic' ? (entry.vaulted ? '#d7a46d' : '#8ee3ad') : undefined,
         uniqueName: entry.uniqueName, englishName: entry.englishName,
         era: entry.catKey === 'relic' ? entry.englishName.split(' ')[0] : undefined,
       })),
@@ -520,6 +524,7 @@ async function inventoryQuery(snapshot, rawQuery) {
       value: `${entry.count} 个`,
       plat: entry.total || null,
       detail: `${INVENTORY_CATEGORIES.find((category) => category.key === entry.catKey)?.zh || ''} · ${valuationRowDetail(entry)}`,
+      detailColor: entry.catKey === 'relic' ? (entry.vaulted ? '#d7a46d' : '#8ee3ad') : undefined,
       uniqueName: entry.uniqueName, englishName: entry.englishName,
       era: entry.catKey === 'relic' ? entry.englishName.split(' ')[0] : undefined,
     }));
@@ -555,12 +560,20 @@ async function inventoryQuery(snapshot, rawQuery) {
       if (candidate.includes(key) || key.includes(candidate)) return Math.min(best, 1 + Math.abs(candidate.length - key.length) / 100);
       return best;
     }, Number.POSITIVE_INFINITY);
-    return { ...item, displayName, englishName: metadata?.englishName || '', score };
+    return { ...item, displayName, englishName: metadata?.englishName || '', type: metadata?.type || '', vaulted: metadata?.type === 'Relics' ? Boolean(metadata.vaulted) : null, score };
   }).filter((item) => Number.isFinite(item.score));
   owned.sort((a, b) => a.score - b.score || b.total - a.total || a.displayName.localeCompare(b.displayName, 'zh-CN'));
   const data = {
     kind: 'inventory', subtype: '库存查询', title: `我的库存 · ${normalize(rawQuery)}`, syncedAt: snapshot.syncedAt,
-    rows: owned.slice(0, 14).map((item) => ({ name: item.displayName, value: `${item.total} 个`, detail: rankText(item.ranks) || '本机持有', uniqueName: item.uniqueName, englishName: item.englishName })),
+    rows: owned.slice(0, 14).map((item) => ({
+      name: item.displayName,
+      value: `${item.total} 个`,
+      detail: [item.type === 'Relics' ? (item.vaulted ? '已入库' : '未入库') : '', rankText(item.ranks) || '本机持有'].filter(Boolean).join(' · '),
+      detailColor: item.type === 'Relics' ? (item.vaulted ? '#d7a46d' : '#8ee3ad') : undefined,
+      uniqueName: item.uniqueName,
+      englishName: item.englishName,
+      era: item.type === 'Relics' ? item.englishName.split(' ')[0] : undefined,
+    })),
     totalMatches: owned.length,
     totalCount: owned.reduce((sum, item) => sum + item.total, 0),
   };
@@ -933,13 +946,45 @@ export async function runAlecaMessage(message, options = {}) {
     };
   }
   if (parsed.command === 'recommend') {
-    const { recommendFissures, formatRecommend, parseFissurePreference, FISSURE_PREFERENCES } = await import('./recommend.mjs');
+    const { recommendFissures, formatRecommend, parseFissurePreference, parseRelicVaultFilter, parseDucatRecommendTarget, FISSURE_PREFERENCES, RELIC_VAULT_FILTERS } = await import('./recommend.mjs');
     const relics = await loadRelics(snapshot);
     // 杜卡德/金币/ducat → 赚杜卡德；单人/solo → squad 1，默认 4 人组队（对齐 AlecaFrame）
     const mode = /杜卡德|金币|ducat/iu.test(parsed.query) ? 'ducat' : 'plat';
     const squad = parseSquad(parsed.query);
     const preference = parseFissurePreference(parsed.query);
-    const data = await recommendFissures(relics, { mode, squad, preference, alecaDir: snapshot.alecaDir, ...(options.recommendOptions || {}) });
+    const vaultFilter = parseRelicVaultFilter(parsed.query);
+    const ducatTarget = parseDucatRecommendTarget(parsed.query);
+    let ducatGoal = options.recommendOptions?.ducatGoal || null;
+    if (mode === 'ducat' && ['trader', 'item'].includes(ducatTarget.type) && !ducatGoal) {
+      try {
+        const { traderShopping, selectTraderGoal } = await import('./trader-shopping.mjs');
+        let inventoryValuation = null;
+        try { inventoryValuation = await assembleInventoryValuation(snapshot); } catch { inventoryValuation = null; }
+        let zhOf = null;
+        try {
+          const { getLangTable } = await import('./wfdata.mjs');
+          const lang = await getLangTable({ alecaDir: snapshot.alecaDir });
+          zhOf = (uniq) => lang[uniq]?.zh?.name || null;
+        } catch { zhOf = null; }
+        const traderData = await traderShopping(snapshot.inventory, {
+          alecaDir: snapshot.alecaDir,
+          ...(inventoryValuation ? { inventoryValuation } : {}),
+          ...(zhOf ? { zhOf } : {}),
+          ...(options.traderOptions || {}),
+        });
+        const selected = selectTraderGoal(traderData, ducatTarget);
+        if (!selected.ok) {
+          const targetError = selected.error === 'trader_not_arrived' ? '奸商尚未到货，无法自动建立商品盈亏线。'
+            : selected.error === 'trader_item_not_found' ? `当前奸商货单中没有可交易商品“${selected.query}”。`
+              : '当前货单没有适合自动对标的可交易奸商商品。';
+          return { handled: true, ok: false, command: 'recommend', query: parsed.query, text: targetError };
+        }
+        ducatGoal = selected.goal;
+      } catch {
+        return { handled: true, ok: false, command: 'recommend', query: parsed.query, text: '奸商商品或市场成交数据读取失败，暂时无法计算动态盈亏线。' };
+      }
+    }
+    const data = await recommendFissures(relics, { mode, squad, preference, vaultFilter, alecaDir: snapshot.alecaDir, ...(options.recommendOptions || {}), ducatGoal });
     let mediaUrl = null;
     try {
       const { buildFissureRecommendCard } = await import('./warframe-cards.mjs');
@@ -947,7 +992,7 @@ export async function runAlecaMessage(message, options = {}) {
     } catch { mediaUrl = null; }
     return {
       handled: true, ok: data.ok, command: 'recommend', query: parsed.query, data, mediaUrl,
-      followupText: mediaUrl ? `当前为${mode === 'ducat' ? '赚杜卡德' : '赚白金'}·${FISSURE_PREFERENCES[preference].zh}·${squad > 1 ? `${squad}人组队` : '单人'}口径；可组合「裂缝推荐 杜卡德 速刷」「裂缝推荐 白金 舒适」「裂缝推荐 收益」。` : null,
+      followupText: mediaUrl ? `当前为${mode === 'ducat' ? (ducatGoal ? `奸商对标·${ducatGoal.name}` : '普通杜卡德') : '赚白金'}·${FISSURE_PREFERENCES[preference].zh}·${RELIC_VAULT_FILTERS[vaultFilter].zh}·${squad > 1 ? `${squad}人组队` : '单人'}口径；「裂缝推荐 杜卡德」看毛杜卡德期望，「裂缝推荐 杜卡德 奸商」自动对标，「裂缝推荐 杜卡德 商品名」指定目标。` : null,
       text: formatRecommend(data),
     };
   }

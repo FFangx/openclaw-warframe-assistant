@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { classifyFissure, parseFissurePreference, recommendFissures } from './recommend.mjs';
+import { classifyFissure, formatRecommend, parseDucatRecommendTarget, parseFissurePreference, parseRelicVaultFilter, recommendFissures, recommendRefinement } from './recommend.mjs';
+import { buildFissureRecommendCard, buildRefineRecommendCard } from './warframe-cards.mjs';
 
-const relics = [{ baseName: 'Lith T1', count: 7, refinement: 'Intact' }];
+const relics = [{ baseName: 'Lith T1', count: 7, refinement: 'Intact', vaulted: true }];
 const rewards = [
   { name: 'Common A', slug: 'common_a', chance: 25.33 },
   { name: 'Common B', slug: 'common_b', chance: 25.33 },
@@ -55,6 +56,76 @@ test('parses the four recommendation preferences', () => {
   assert.equal(parseFissurePreference('额外收益'), 'yield');
 });
 
+test('parses relic vault filters without confusing 未入库 with 入库', () => {
+  assert.equal(parseRelicVaultFilter('裂缝推荐'), 'all');
+  assert.equal(parseRelicVaultFilter('裂缝推荐 未入库 白金 速刷'), 'unvaulted');
+  assert.equal(parseRelicVaultFilter('裂缝推荐 当前可获取'), 'unvaulted');
+  assert.equal(parseRelicVaultFilter('裂缝推荐 已入库 杜卡德'), 'vaulted');
+});
+
+test('parses ordinary, automatic trader and named-item Ducat modes', () => {
+  assert.deepEqual(parseDucatRecommendTarget('杜卡德 未入库'), { type: 'ordinary', query: '' });
+  assert.deepEqual(parseDucatRecommendTarget('杜卡德 奸商 速刷'), { type: 'trader', query: '' });
+  assert.deepEqual(parseDucatRecommendTarget('杜卡德 Primed Flow 单人'), { type: 'item', query: 'Primed Flow' });
+  assert.deepEqual(parseDucatRecommendTarget('白金 速刷'), { type: 'none', query: '' });
+});
+
+test('ordinary Ducat mode ranks gross Ducat expectation while trader target ranks same-draw savings', async () => {
+  const flatRewards = (prefix) => rewards.map((reward, index) => ({ ...reward, slug: `${prefix}_${index}` }));
+  const highDucat = flatRewards('high');
+  const cheapDucat = flatRewards('cheap');
+  const mixedPrices = {};
+  highDucat.forEach((reward) => { mixedPrices[reward.slug] = { p: 20, d: 100, zh: '高杜高价奖励' }; });
+  cheapDucat.forEach((reward) => { mixedPrices[reward.slug] = { p: 2, d: 45, zh: '低价兑换奖励' }; });
+  const mixedRelics = [
+    { baseName: 'Lith H1', count: 2, refinement: 'Intact', vaulted: false },
+    { baseName: 'Lith C1', count: 2, refinement: 'Intact', vaulted: false },
+  ];
+  const mixedDb = { rewardsByBase: new Map([['Lith H1', highDucat], ['Lith C1', cheapDucat]]) };
+  const oneFissure = { fissures: [fissure('capture', 'Capture')] };
+  const ordinary = await recommendFissures(mixedRelics, { mode: 'ducat', worldState: oneFissure, localDb: mixedDb, prices: mixedPrices });
+  assert.equal(ordinary.ducatStrategy, 'ordinary');
+  assert.equal(ordinary.rows[0].relic.base, 'Lith H1');
+  assert.equal(ordinary.rows[0].expectedDucats, 100);
+
+  const ducatGoal = { name: '测试奸商商品', uniqueName: 'test', ducats: 300, marketPlat: 30, ducatsPerPlat: 10, marketBasis: 'today', dailyVolume: 5 };
+  const targeted = await recommendFissures(mixedRelics, { mode: 'ducat', ducatGoal, worldState: oneFissure, localDb: mixedDb, prices: mixedPrices });
+  assert.equal(targeted.ducatStrategy, 'trader');
+  assert.equal(targeted.rows[0].relic.base, 'Lith C1');
+  assert.equal(targeted.rows[0].targetEconomy.expectedSaving, 2.5);
+  assert.equal(targeted.rows[0].targetEconomy.conversionChance, 100);
+  const card = buildFissureRecommendCard(targeted).html;
+  assert.match(card, /测试奸商商品/u);
+  assert.match(card, /预计省/u);
+  assert.match(card, /不读取实时奖励/u);
+});
+
+test('vault filter only recommends matching relics already present in inventory', async () => {
+  const mixedRelics = [
+    ...relics,
+    { baseName: 'Lith U1', count: 3, refinement: 'Intact', vaulted: false },
+  ];
+  const mixedDb = { rewardsByBase: new Map([['Lith T1', rewards], ['Lith U1', rewards]]) };
+  const unvaulted = await recommendFissures(mixedRelics, { vaultFilter: 'unvaulted', worldState, localDb: mixedDb, prices });
+  assert.equal(unvaulted.vaultFilter, 'unvaulted');
+  assert.equal(unvaulted.appraisedCount, 1);
+  assert.equal(unvaulted.rows.every((row) => row.relic.base === 'Lith U1' && row.relic.vaulted === false), true);
+  const unvaultedCard = buildFissureRecommendCard(unvaulted).html;
+  assert.match(unvaultedCard, /未入库/u);
+  assert.doesNotMatch(unvaultedCard, /当前可获取/u);
+
+  const vaulted = await recommendFissures(mixedRelics, { vaultFilter: 'vaulted', worldState, localDb: mixedDb, prices });
+  assert.equal(vaulted.appraisedCount, 1);
+  assert.equal(vaulted.rows.every((row) => row.relic.base === 'Lith T1' && row.relic.vaulted === true), true);
+});
+
+test('vault filter reports when inventory has no matching relics', async () => {
+  const data = await recommendFissures(relics, { vaultFilter: 'unvaulted', worldState, localDb, prices });
+  assert.equal(data.ok, false);
+  assert.equal(data.error, 'no_relics_for_vault_filter');
+  assert.match(formatRecommend(data), /没有“未入库”遗物/u);
+});
+
 test('labels mission experience without inventing a numeric time factor', () => {
   assert.deepEqual(classifyFissure({ missionType: 'Capture' }).map((tag) => tag.key), ['speed']);
   assert.deepEqual(classifyFissure({ missionType: 'Defense' }).map((tag) => tag.key), ['comfort', 'endless']);
@@ -88,31 +159,73 @@ test('keeps Void Cascade and Void Flood official Chinese names distinct', async 
   assert.equal(data.rows.find((row) => row.missionType === 'Void Flood')?.missionZh, '虚空洪流');
 });
 
-test('balanced mode uses speed, comfort and Railjack-last tie-breaking at equal relic value', async () => {
+test('balanced mode recommends at most two distinct routes for one relic', async () => {
   const data = await run('balanced');
   assert.equal(data.ok, true);
   assert.equal(data.preference, 'balanced');
-  assert.equal(new Set(data.rows.map((row) => row.valueScore)).size, 1);
-  assert.equal(new Set(data.rows.map((row) => row.preferenceRank)).size, 1);
-  assert.equal(data.rows.slice(0, 3).every((row) => row.tags.some((tag) => tag.key === 'speed')), true);
-  assert.equal(data.rows.slice(3, 5).every((row) => row.tags.some((tag) => tag.key === 'comfort')), true);
-  assert.equal(data.rows.slice(5, 7).every((row) => row.tags.some((tag) => tag.key === 'endless')), true);
-  assert.equal(data.rows.at(-1).storm, true);
+  assert.equal(data.rows.length, 2);
+  assert.equal(new Set(data.rows.map((row) => row.id)).size, 2);
+  assert.equal(data.rows.every((row) => row.tags.some((tag) => tag.key === 'speed')), true);
+  assert.equal(data.matchedRelicCount, 1);
 });
 
-test('speed and comfort modes use categorical priority then value fallback', async () => {
+test('speed and comfort preferences choose the best two routes for each relic', async () => {
   const speed = await run('speed');
-  assert.equal(speed.rows.slice(0, 3).every((row) => row.tags.some((tag) => tag.key === 'speed')), true);
+  assert.equal(speed.rows.length, 2);
+  assert.equal(speed.rows.every((row) => row.tags.some((tag) => tag.key === 'speed')), true);
 
   const comfort = await run('comfort');
-  assert.deepEqual(new Set(comfort.rows.slice(0, 2).map((row) => row.missionType)), new Set(['Defense', 'Survival']));
+  assert.equal(comfort.rows.length, 2);
+  assert.deepEqual(new Set(comfort.rows.map((row) => row.missionType)), new Set(['Defense', 'Survival']));
 });
 
-test('yield mode prioritizes Void Storm, then Steel Path, then endless fissures', async () => {
+test('yield preference chooses Void Storm then Steel Path for each relic', async () => {
   const data = await run('yield');
   assert.equal(data.rows[0].storm, true);
   assert.equal(data.rows[1].hard, true);
-  assert.equal(data.rows.slice(2, 6).every((row) => row.tags.some((tag) => tag.key === 'endless')), true);
-  const interception = data.rows.find((row) => row.missionType === 'Interception');
-  assert.equal(interception.tags.some((tag) => tag.key === 'bonus'), false);
+});
+
+test('ranks distinct relics by value before expanding each to at most two routes', async () => {
+  const pricedRewards = (prefix, price) => rewards.map((reward, index) => ({
+    ...reward,
+    slug: `${prefix}_${index}`,
+    price,
+  }));
+  const highRewards = pricedRewards('high_value', 50);
+  const midRewards = pricedRewards('mid_value', 40);
+  const lowRewards = pricedRewards('low_value', 30);
+  const rankedPrices = {};
+  for (const reward of [...highRewards, ...midRewards, ...lowRewards]) {
+    rankedPrices[reward.slug] = { p: reward.price, d: 15, zh: reward.slug };
+  }
+  const rankedRelics = [
+    { baseName: 'Lith H1', count: 1, refinement: 'Intact', vaulted: false },
+    { baseName: 'Lith M1', count: 1, refinement: 'Intact', vaulted: false },
+    { baseName: 'Lith L1', count: 1, refinement: 'Intact', vaulted: false },
+  ];
+  const rankedDb = { rewardsByBase: new Map([
+    ['Lith H1', highRewards],
+    ['Lith M1', midRewards],
+    ['Lith L1', lowRewards],
+  ]) };
+  const data = await recommendFissures(rankedRelics, { worldState, localDb: rankedDb, prices: rankedPrices });
+  assert.deepEqual(data.rows.map((row) => row.relic.base), [
+    'Lith H1', 'Lith H1', 'Lith M1', 'Lith M1', 'Lith L1', 'Lith L1',
+  ]);
+  for (const base of ['Lith H1', 'Lith M1', 'Lith L1']) {
+    const routes = data.rows.filter((row) => row.relic.base === base);
+    assert.equal(routes.length, 2);
+    assert.equal(new Set(routes.map((row) => row.id)).size, 2);
+  }
+  assert.match(buildFissureRecommendCard(data).html, /每种最多 2 条路线/u);
+});
+
+test('裂缝与精炼推荐保留并展示遗物入库状态', async () => {
+  const fissureData = await run('balanced');
+  assert.equal(fissureData.rows[0].relic.vaulted, true);
+  assert.match(buildFissureRecommendCard(fissureData).html, /已入库/u);
+
+  const refineData = await recommendRefinement(relics, { localDb, prices });
+  assert.equal(refineData.rows[0].vaulted, true);
+  assert.match(buildRefineRecommendCard(refineData).html, /已入库/u);
 });

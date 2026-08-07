@@ -141,6 +141,7 @@ async function loadCatalog(alecaDir) {
       if (!item?.uniqueName) continue;
       const isWarframe = category === 'Warframes' || String(item.uniqueName).includes('/Powersuits/');
       const isPrime = Boolean(item.isPrime) || /\bPrime\b/u.test(item.name || '');
+      const isRelic = category === 'Relics';
       if (!byUniqueName.has(item.uniqueName)) {
         byUniqueName.set(item.uniqueName, {
           englishName: item.name || '',
@@ -150,6 +151,8 @@ async function loadCatalog(alecaDir) {
           rarity: item.rarity || null,
           tradable: item.tradable !== false,
           isPrime,
+          isRelic,
+          vaulted: isRelic ? Boolean(item.vaulted) : null,
           ducats: Number(item.ducats ?? item.primeSellingPrice) || null,
           imageName: item.imageName || null,
         });
@@ -210,6 +213,7 @@ function describeDrop(uniqueName, gained, catalog) {
   const isPrime = meta ? meta.isPrime : /Prime/iu.test(uniqueName);
   const isMod = meta?.category === 'Mods';
   const isArcane = meta?.category === 'Arcanes';
+  const isRelic = meta?.category === 'Relics';
   const rarity = meta?.rarity || null;
   return {
     uniqueName,
@@ -223,6 +227,8 @@ function describeDrop(uniqueName, gained, catalog) {
     isPrime,
     isMod,
     isArcane,
+    isRelic,
+    vaulted: isRelic ? Boolean(meta?.vaulted) : null,
     ducats: meta?.ducats ?? null,
     imageName: meta?.imageName ?? null,
     // 「值得关注」：Prime 部件 / 稀有以上 MOD / 赋能。资源类刷屏就靠它挡

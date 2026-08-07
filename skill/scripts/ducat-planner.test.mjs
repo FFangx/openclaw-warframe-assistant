@@ -6,7 +6,7 @@ import {
   optimizeDucatTarget,
   parseDucatSpec,
 } from './ducat-planner.mjs';
-import { normalizeTraderLocation, summarizeTradeStatistics, traderShopping } from './trader-shopping.mjs';
+import { normalizeTraderLocation, selectTraderGoal, summarizeTradeStatistics, traderShopping } from './trader-shopping.mjs';
 import { buildTraderShoppingCard } from './warframe-cards.mjs';
 import { primeWarframePartIconPath } from './wfdata.mjs';
 
@@ -113,6 +113,22 @@ test('奸商联动使用 0 级成交中位价、准确交易税和安全库存�
   assert.equal(row.advice.tag, 'strong');
   assert.equal(result.safeDucatAvailable, 405);
   assert.equal(result.ducatShortfall, 195);
+});
+
+test('裂缝推荐可从当前货单自动或按商品名建立动态盈亏目标', async () => {
+  const result = await traderFixture();
+  const automatic = selectTraderGoal(result, { type: 'trader', query: '' });
+  assert.equal(automatic.ok, true);
+  assert.equal(automatic.goal.name, '测试 Prime');
+  assert.equal(automatic.goal.ducats, 300);
+  assert.equal(automatic.goal.marketPlat, 25);
+  assert.equal(automatic.goal.ducatsPerPlat, 12);
+  assert.equal(automatic.goal.source, 'trader');
+
+  const named = selectTraderGoal(result, { type: 'item', query: '测试 Prime' });
+  assert.equal(named.ok, true);
+  assert.equal(named.goal.source, 'item');
+  assert.equal(selectTraderGoal(result, { type: 'item', query: '不存在' }).error, 'trader_item_not_found');
 });
 
 test('奸商地点使用游戏内中继站格式', async () => {

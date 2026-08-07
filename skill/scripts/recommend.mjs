@@ -14,9 +14,6 @@ const TIMEOUT_MS = 20_000;
 const TOP_RESULTS = 8;
 const MIN_REMAIN_MS = 5 * 60 * 1000; // 快过期的裂缝不推
 const CACHE_TTL_MS = 60 * 60 * 1000;
-// 杜卡德模式的白金机会成本：市场上 1p ≈ 10~15 杜卡德，取保守值 10——
-// 白金期望高的遗物拿去换杜卡德 = 亏，按此汇率扣分沉底
-const DUCAT_PER_PLAT_OPPORTUNITY = 10;
 
 const ERA_ZH = { Lith: '古纪', Meso: '前纪', Neo: '中纪', Axi: '后纪', Requiem: '安魂', Omnia: '全能' };
 const MISSION_ZH = {
@@ -49,12 +46,35 @@ export const FISSURE_PREFERENCES = Object.freeze({
   yield: { zh: '收益', command: '收益' },
 });
 
+export const RELIC_VAULT_FILTERS = Object.freeze({
+  all: { zh: '全部遗物', command: '' },
+  unvaulted: { zh: '未入库', command: '未入库' },
+  vaulted: { zh: '已入库', command: '已入库' },
+});
+
 export function parseFissurePreference(value) {
   const text = String(value || '').normalize('NFKC');
   if (/速刷|快速|快开|效率/iu.test(text)) return 'speed';
   if (/舒适|轻松|挂机/iu.test(text)) return 'comfort';
   if (/收益|额外|长线/iu.test(text)) return 'yield';
   return 'balanced';
+}
+
+export function parseRelicVaultFilter(value) {
+  const text = String(value || '').normalize('NFKC');
+  // 「未入库」本身包含「入库」，所以必须先判断未入库。
+  if (/未入库|当前可获取|可获取|现役/iu.test(text)) return 'unvaulted';
+  if (/已入库|入库|绝版/iu.test(text)) return 'vaulted';
+  return 'all';
+}
+
+export function parseDucatRecommendTarget(value) {
+  const text = String(value || '').normalize('NFKC').trim();
+  if (!/杜卡德|金币|ducat/iu.test(text)) return { type: 'none', query: '' };
+  if (/(?:^|\s)奸商(?:\s|$)/u.test(text)) return { type: 'trader', query: '' };
+  const modifiers = /^(?:杜卡德|金币|ducat|白金|未入库|已入库|当前可获取|可获取|现役|速刷|快速|快开|效率|舒适|轻松|挂机|收益|额外|长线|单人|solo|1人|一人|组队|4人|四人)$/iu;
+  const query = text.split(/\s+/u).filter((token) => !modifiers.test(token)).join(' ').trim();
+  return query ? { type: 'item', query } : { type: 'ordinary', query: '' };
 }
 
 export function classifyFissure(fissure) {
@@ -238,11 +258,66 @@ export function appraiseOffline(rewards, prices, squad = 4) {
   return { expected: Math.round(expected * 10) / 10, expectedDucats: Math.round(expectedDucats), top, topDucat };
 }
 
+// 目标商品模式：一次开奖中先比较每个实际候选奖励的经济盈余，再按开奖概率求期望。
+// 这里只枚举公开掉率，不读取游戏画面、网络封包或队友客户端。4 人时最多 7^4=2401 种组合。
+export function appraiseTraderTarget(rewards, prices, squad = 4, goal = {}) {
+  const targetDucats = Number(goal.ducats) || 0;
+  const targetPlat = Number(goal.marketPlat) || 0;
+  if (targetDucats <= 0 || targetPlat <= 0) return null;
+  const platPerDucat = targetPlat / targetDucats;
+  const rolls = rewards.map((reward) => {
+    const entry = reward.slug ? prices[reward.slug] : null;
+    const ducats = Number(entry?.d) || 0;
+    const platinum = Number(entry?.p) || 0;
+    return {
+      chance: Math.max(0, Number(reward.chance) || 0) / 100,
+      ducats,
+      platinum,
+      saving: Math.max(0, ducats * platPerDucat - platinum),
+    };
+  });
+  const totalChance = rolls.reduce((sum, reward) => sum + reward.chance, 0);
+  if (totalChance < 1) rolls.push({ chance: 1 - totalChance, ducats: 0, platinum: 0, saving: 0 });
+  const draws = Math.max(1, Math.min(4, Number(squad) || 1));
+  let expectedSaving = 0;
+  let expectedDucats = 0;
+  let expectedPlat = 0;
+  let conversionChance = 0;
+  const better = (candidate, current) => !current
+    || candidate.saving > current.saving
+    || (candidate.saving === current.saving && candidate.ducats > current.ducats)
+    || (candidate.saving === current.saving && candidate.ducats === current.ducats && candidate.platinum < current.platinum);
+  const visit = (depth, probability, best) => {
+    if (depth === draws) {
+      if (best?.saving > 0) {
+        expectedSaving += probability * best.saving;
+        expectedDucats += probability * best.ducats;
+        expectedPlat += probability * best.platinum;
+        conversionChance += probability;
+      }
+      return;
+    }
+    for (const reward of rolls) {
+      if (reward.chance <= 0) continue;
+      visit(depth + 1, probability * reward.chance, better(reward, best) ? reward : best);
+    }
+  };
+  visit(0, 1, null);
+  return {
+    expectedSaving: Math.round(expectedSaving * 10) / 10,
+    expectedDucats: Math.round(expectedDucats * 10) / 10,
+    expectedPlat: Math.round(expectedPlat * 10) / 10,
+    conversionChance: Math.round(conversionChance * 1000) / 10,
+    ducatsPerPlat: Math.round(targetDucats / targetPlat * 10) / 10,
+  };
+}
+
 const relicEra = (baseName) => String(baseName).split(' ')[0];
 const relicZh = (baseName) => {
   const [era, code] = String(baseName).split(' ');
   return `${ERA_ZH[era] || era} ${code || ''}`.trim();
 };
+const vaultStatusZh = (vaulted) => (vaulted ? '已入库' : '未入库');
 
 function splitNode(value) {
   const match = String(value || '').match(/^(.*?)\s*\(([^)]+)\)\s*$/u);
@@ -250,22 +325,34 @@ function splitNode(value) {
   return { node: match[1], planet: PLANET_ZH[match[2]] || match[2] };
 }
 
-// relics: alecaframe loadRelics 的输出；options.mode: 'plat'（默认）| 'ducat'；options.squad: 4（默认组队）| 1（单人）；options.preference: balanced|speed|comfort|yield
+// relics: alecaframe loadRelics 的输出；options.mode: 'plat'（默认）| 'ducat'；options.squad: 4（默认组队）| 1（单人）；options.preference: balanced|speed|comfort|yield；options.vaultFilter: all|unvaulted|vaulted
 export async function recommendFissures(relics, options = {}) {
   const mode = options.mode === 'ducat' ? 'ducat' : 'plat';
   const squad = Number(options.squad) >= 1 ? Math.min(Number(options.squad), 4) : 4;
   const preference = FISSURE_PREFERENCES[options.preference] ? options.preference : parseFissurePreference(options.preference);
+  const vaultFilter = RELIC_VAULT_FILTERS[options.vaultFilter] ? options.vaultFilter : parseRelicVaultFilter(options.vaultFilter);
+  const ducatGoal = mode === 'ducat' && options.ducatGoal ? options.ducatGoal : null;
+  const ducatStrategy = mode === 'ducat' ? (ducatGoal ? 'trader' : 'ordinary') : null;
   const now = Date.now();
 
   // 1) 库存按遗物合并精炼度——全量进入估值，不做候选裁剪
   const byBase = new Map();
   for (const item of relics) {
-    const entry = byBase.get(item.baseName) || { base: item.baseName, era: relicEra(item.baseName), count: 0, refinements: new Set() };
+    const entry = byBase.get(item.baseName) || { base: item.baseName, era: relicEra(item.baseName), count: 0, refinements: new Set(), vaulted: Boolean(item.vaulted) };
     entry.count += item.count;
     if (item.refinement) entry.refinements.add(item.refinement);
+    entry.vaulted = entry.vaulted || Boolean(item.vaulted);
     byBase.set(item.baseName, entry);
   }
-  const owned = [...byBase.values()].filter((entry) => entry.count > 0);
+  const allOwned = [...byBase.values()].filter((entry) => entry.count > 0);
+  const owned = allOwned.filter((entry) => vaultFilter === 'vaulted'
+    ? entry.vaulted
+    : vaultFilter === 'unvaulted'
+      ? !entry.vaulted
+      : true);
+  if (!owned.length && vaultFilter !== 'all') {
+    return { ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, error: 'no_relics_for_vault_filter', fetchedAt: new Date().toISOString() };
+  }
   const requiemCount = owned.filter((entry) => entry.era === 'Requiem').reduce((sum, entry) => sum + entry.count, 0);
 
   // 2) 裂缝 + 奖励表 + 价格整表
@@ -273,14 +360,14 @@ export async function recommendFissures(relics, options = {}) {
   const fissures = (Array.isArray(worldState.fissures) ? worldState.fissures : [])
     .filter((f) => !f.expired && Date.parse(f.expiry) - now > MIN_REMAIN_MS);
   if (!fissures.length) {
-    return { ok: false, kind: 'fissure-recommend', mode, preference, error: 'no_fissures', fetchedAt: new Date().toISOString() };
+    return { ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, error: 'no_fissures', fetchedAt: new Date().toISOString() };
   }
   let localDb = options.localDb ?? null;
   if (!localDb && options.alecaDir) {
     try { localDb = await loadLocalRelicDb(options.alecaDir); } catch { localDb = null; }
   }
   if (!localDb) {
-    return { ok: false, kind: 'fissure-recommend', mode, preference, error: 'no_local_relic_db', fetchedAt: new Date().toISOString() };
+    return { ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, error: 'no_local_relic_db', fetchedAt: new Date().toISOString() };
   }
   const prices = options.prices || await loadPriceTable();
   const priceStaleAt = prices.__meta?.stale ? prices.__meta.cachedAt : null;
@@ -292,24 +379,17 @@ export async function recommendFissures(relics, options = {}) {
     const rewards = localDb.rewardsByBase.get(entry.base);
     if (!rewards) continue;
     const refine = appraiseRefinements(rewards, priceOf, { squad, mode });
-    appraised.push({ ...entry, refinements: [...entry.refinements], ...appraiseOffline(rewards, prices, squad), refine });
+    const targetEconomy = ducatGoal ? appraiseTraderTarget(rewards, prices, squad, ducatGoal) : null;
+    appraised.push({ ...entry, refinements: [...entry.refinements], ...appraiseOffline(rewards, prices, squad), refine, targetEconomy });
   }
 
-  // 4) 逐裂缝配最优遗物并打分；全能=全部候选参与（game-knowledge：全能可开除安魂外任意遗物）
-  // 模式价值键：赚白金=白金期望；赚杜卡德=杜卡德期望扣白金机会成本（白金高的换杜卡德=亏）
+  // 4) 先按遗物价值排，再为每枚遗物挑最多两条当前路线。
+  // 全能=可承载全部非安魂候选（game-knowledge：全能可开除安魂外任意遗物）。
+  // 模式价值键：赚白金=白金期望；普通杜卡德=毛杜卡德期望；奸商目标=同次开奖中可兑换奖励的预期白金节省。
   const valueOf = (entry) => mode === 'ducat'
-    ? Math.max(0, (entry.expectedDucats || 0) - entry.expected * DUCAT_PER_PLAT_OPPORTUNITY)
+    ? (ducatGoal ? (entry.targetEconomy?.expectedSaving || 0) : (entry.expectedDucats || 0))
     : entry.expected;
-  const bestFor = (tier) => {
-    const pool = tier === 'Omnia' ? appraised : appraised.filter((entry) => entry.era === tier);
-    return [...pool].sort((a, b) => valueOf(b) - valueOf(a))[0] || null;
-  };
-  const rows = [];
-  let requiemFissures = 0;
-  for (const fissure of fissures) {
-    if (fissure.tier === 'Requiem') { requiemFissures += 1; continue; }
-    const relic = bestFor(fissure.tier);
-    if (!relic) continue;
+  const makeRow = (fissure, relic) => {
     const location = splitNode(fissure.node);
     const row = {
       id: fissure.id,
@@ -323,36 +403,66 @@ export async function recommendFissures(relics, options = {}) {
       node: location.node,
       planet: location.planet,
       expiry: fissure.expiry,
-      relic: { base: relic.base, zh: relicZh(relic.base), count: relic.count, refinements: relic.refinements },
+      relic: { base: relic.base, zh: relicZh(relic.base), count: relic.count, refinements: relic.refinements, vaulted: relic.vaulted },
       topReward: relic.top,
       topDucat: relic.topDucat || null,
       expectedValue: relic.expected,
       expectedDucats: relic.expectedDucats || 0,
+      targetEconomy: relic.targetEconomy || null,
       refineZh: relic.refine?.suggest?.zh || null,
       refineReason: relic.refine?.suggest?.reason || null,
       valueScore: Math.round(valueOf(relic) * 10) / 10,
     };
     row.preferenceRank = preferenceRank(row, preference);
     row.balancedTieRank = balancedTieRank(row);
-    rows.push(row);
-  }
-  rows.sort((a, b) => a.preferenceRank - b.preferenceRank
-    || b.valueScore - a.valueScore
+    return row;
+  };
+  const routeOrder = (a, b) => a.preferenceRank - b.preferenceRank
     || (preference === 'balanced' ? a.balancedTieRank - b.balancedTieRank : 0)
-    || Date.parse(b.expiry) - Date.parse(a.expiry));
+    || Date.parse(b.expiry) - Date.parse(a.expiry)
+    || String(a.id).localeCompare(String(b.id));
+  const requiemFissures = fissures.filter((fissure) => fissure.tier === 'Requiem').length;
+  const runnableFissures = fissures.filter((fissure) => fissure.tier !== 'Requiem');
+  const eligibleRelics = ducatGoal ? appraised.filter((entry) => valueOf(entry) > 0) : appraised;
+  const routeGroups = [];
+  for (const relic of eligibleRelics) {
+    const routes = runnableFissures
+      .filter((fissure) => fissure.tier === 'Omnia' || fissure.tier === relic.era)
+      .map((fissure) => makeRow(fissure, relic))
+      .sort(routeOrder)
+      .slice(0, 2);
+    if (!routes.length) continue;
+    routeGroups.push({
+      relic,
+      valueScore: Math.round(valueOf(relic) * 10) / 10,
+      bestRoute: routes[0],
+      routes,
+    });
+  }
+  routeGroups.sort((a, b) => b.valueScore - a.valueScore
+    || routeOrder(a.bestRoute, b.bestRoute)
+    || String(a.relic.base).localeCompare(String(b.relic.base)));
+  const matchedRows = routeGroups.flatMap((group) => group.routes);
+  const rows = matchedRows.slice(0, TOP_RESULTS);
 
   return {
     ok: rows.length > 0,
     kind: 'fissure-recommend',
     mode,
     preference,
+    vaultFilter,
+    ducatStrategy,
+    ducatGoal,
     squad,
     fetchedAt: new Date().toISOString(),
     priceStaleAt,
-    rows: rows.slice(0, TOP_RESULTS),
-    matchedCount: rows.length,
+    rows,
+    matchedCount: matchedRows.length,
+    matchedRelicCount: routeGroups.length,
     totalFissures: fissures.length,
     appraisedCount: appraised.length,
+    economicallyViableCount: ducatGoal ? appraised.filter((entry) => valueOf(entry) > 0).length : null,
+    error: rows.length ? null : (ducatGoal ? 'market_route_better' : 'no_matching_fissures'),
     requiem: requiemFissures > 0 && requiemCount > 0 ? { fissures: requiemFissures, relics: requiemCount } : null,
   };
 }
@@ -373,8 +483,9 @@ export async function recommendRefinement(relics, options = {}) {
   // 库存合并（含安魂：安魂 Mod 可交易，精炼同样有效）
   const byBase = new Map();
   for (const item of relics) {
-    const entry = byBase.get(item.baseName) || { base: item.baseName, count: 0 };
+    const entry = byBase.get(item.baseName) || { base: item.baseName, count: 0, vaulted: Boolean(item.vaulted) };
     entry.count += item.count;
+    entry.vaulted = entry.vaulted || Boolean(item.vaulted);
     byBase.set(item.baseName, entry);
   }
   const rows = [];
@@ -389,6 +500,7 @@ export async function recommendRefinement(relics, options = {}) {
       base: entry.base,
       zh: relicZh(entry.base),
       count: entry.count,
+      vaulted: entry.vaulted,
       intact: tiers[0],
       radiant: tiers[3],
       suggest,
@@ -406,7 +518,8 @@ export async function recommendRefinement(relics, options = {}) {
   }
   const worth = rows.filter((row) => row.suggest.key !== 'Intact');
   // 各档代表（档内增益最高者）：TOP 榜按增益排序天然被光辉档霸屏，示例行让另两档可见
-  const examplesOf = (key) => rows.filter((row) => row.suggest.key === key).slice(0, 2).map((row) => row.zh);
+  const examplesOf = (key) => rows.filter((row) => row.suggest.key === key).slice(0, 2)
+    .map((row) => `${row.zh}（${vaultStatusZh(row.vaulted)}）`);
   return {
     ok: rows.length > 0,
     kind: 'refine-recommend',
@@ -440,7 +553,7 @@ export function formatRefineRecommend(data) {
   if (stale) lines.push(stale);
   data.rows.forEach((row, index) => {
     const gain = data.mode === 'ducat' ? `${row.suggest.gainDucats} 杜` : `${row.suggest.gainPlat}p`;
-    lines.push(`${index + 1}. ${row.zh} ×${row.count}｜建议${row.suggest.zh}｜增益 +${gain}｜稀有奖 ${row.topRare?.zhName || '—'}`);
+    lines.push(`${index + 1}. ${row.zh} ×${row.count}｜${vaultStatusZh(row.vaulted)}｜建议${row.suggest.zh}｜增益 +${gain}｜稀有奖 ${row.topRare?.zhName || '—'}`);
   });
   const dist = data.distribution;
   lines.push(`全库 ${data.totalOwned} 种：建议光辉 ${dist?.radiant ?? '?'} · 无瑕 ${dist?.flawless ?? '?'} · 不精炼 ${dist?.intact ?? '?'}；发「精炼推荐 单人」换单人口径。`);
@@ -453,24 +566,37 @@ export function formatRefineRecommend(data) {
 export function formatRecommend(data) {
   if (!data.ok) {
     if (data.error === 'no_local_relic_db') return '本地遗物数据表读取失败，请确认 AlecaFrame 数据完整。';
+    if (data.error === 'no_relics_for_vault_filter') {
+      return data.vaultFilter === 'vaulted'
+        ? '你的库存中没有“已入库”遗物，无法按该条件推荐裂缝。'
+        : '你的库存中没有“未入库”遗物，无法按该条件推荐裂缝。';
+    }
+    if (data.error === 'market_route_better') return `按「${data.ducatGoal?.name || '目标商品'}」当前行情，你库存中的遗物没有能以更低白金机会成本补杜卡德的候选；直接卖部件或从市场购买更合适。`;
     return '当前没有能配上你库存遗物的裂缝（或裂缝列表为空）。';
   }
   const ducatMode = data.mode === 'ducat';
   const squadZh = (data.squad ?? 4) > 1 ? `${data.squad ?? 4}人组队` : '单人';
   const preferenceZh = FISSURE_PREFERENCES[data.preference]?.zh || FISSURE_PREFERENCES.balanced.zh;
-  const lines = [`🎯 裂缝推荐 · ${ducatMode ? '赚杜卡德' : '赚白金'} · ${preferenceZh} · ${squadZh}口径（库存 × 双币期望）`];
+  const vaultFilterZh = RELIC_VAULT_FILTERS[data.vaultFilter]?.zh || RELIC_VAULT_FILTERS.all.zh;
+  const modeZh = ducatMode ? (data.ducatGoal ? `奸商对标：${data.ducatGoal.name}` : '赚杜卡德') : '赚白金';
+  const lines = [`🎯 裂缝推荐 · ${modeZh} · ${preferenceZh} · ${vaultFilterZh} · ${squadZh}口径（库存 × 双币期望）`];
+  if (data.ducatGoal) lines.push(`目标 ${data.ducatGoal.ducats} 杜 / 市场 ${data.ducatGoal.marketPlat}p｜盈亏线 1p≈${data.ducatGoal.ducatsPerPlat} 杜｜${data.ducatGoal.marketBasis === 'today' ? '今日中位' : '90天中位'}｜日均 ${data.ducatGoal.dailyVolume ?? '—'} 件`);
+  lines.push(`可立即开 ${data.matchedRelicCount ?? 0} 种遗物；每种最多列两条当前路线。`);
   const stale = staleLine(data.priceStaleAt);
   if (stale) lines.push(stale);
   data.rows.forEach((row, index) => {
     const flags = [row.hard ? '钢铁' : '', row.storm ? '九重天' : '', ...(row.tags || []).map((tag) => tag.zh)].filter(Boolean).join('/');
-    lines.push(`${index + 1}. ${row.tierZh}${row.missionZh} ${row.planet}·${row.node}${flags ? `（${flags}）` : ''}`);
+    lines.push(`${index + 1}. ${row.relic.zh} ×${row.relic.count}｜${vaultStatusZh(row.relic.vaulted)}`);
+    lines.push(`   路线 ${row.tierZh}${row.missionZh} ${row.planet}·${row.node}${flags ? `（${flags}）` : ''}`);
     const refineNote = row.refineZh ? `｜建议${row.refineZh}` : '';
     lines.push(ducatMode
-      ? `   配 ${row.relic.zh} ×${row.relic.count}｜重点奖励 ${row.topDucat?.zhName || '—'} ${row.topDucat?.ducats || 0} 杜卡德｜期望 ${row.expectedDucats} 杜卡德 / ${row.expectedValue} 白金${refineNote}`
-      : `   配 ${row.relic.zh} ×${row.relic.count}｜重点奖励 ${row.topReward?.zhName || '—'} ${row.topReward?.price || 0} 白金｜期望 ${row.expectedValue} 白金 / ${row.expectedDucats} 杜卡德${refineNote}`);
+      ? data.ducatGoal
+        ? `   预计省 ${row.targetEconomy?.expectedSaving || 0}p｜可兑 ${row.targetEconomy?.expectedDucats || 0} 杜 / 放弃 ${row.targetEconomy?.expectedPlat || 0}p｜转换概率 ${row.targetEconomy?.conversionChance || 0}%${refineNote}`
+        : `   重点奖励 ${row.topDucat?.zhName || '—'} ${row.topDucat?.ducats || 0} 杜卡德｜期望 ${row.expectedDucats} 杜卡德 / ${row.expectedValue} 白金${refineNote}`
+      : `   重点奖励 ${row.topReward?.zhName || '—'} ${row.topReward?.price || 0} 白金｜期望 ${row.expectedValue} 白金 / ${row.expectedDucats} 杜卡德${refineNote}`);
   });
   if (data.requiem) lines.push(`另有安魂裂缝 ${data.requiem.fissures} 条，你有安魂遗物 ${data.requiem.relics} 个。`);
-  const preferenceNote = data.preference === 'speed' ? '速刷优先捕获/歼灭' : data.preference === 'comfort' ? '舒适优先防御/生存' : data.preference === 'yield' ? '收益优先九重天→钢铁→无尽' : '默认按遗物期望收益，同收益时速刷/舒适优先';
-  lines.push(`${preferenceNote}；${ducatMode ? '杜卡德排序会扣除白金机会成本' : `期望按完整精炼度·${squadZh}开奖取最优·市场加权均价估算`}，仅供参考。`);
+  const preferenceNote = data.preference === 'speed' ? '每枚遗物优先匹配捕获/歼灭' : data.preference === 'comfort' ? '每枚遗物优先匹配防御/生存' : data.preference === 'yield' ? '每枚遗物优先匹配九重天→钢铁→无尽' : '遗物按期望收益排序，每枚最多两条路线';
+  lines.push(`${preferenceNote}；${ducatMode ? (data.ducatGoal ? '按目标商品动态盈亏线逐次开奖选择，不读取实时奖励' : '普通模式按毛杜卡德期望排序，不扣白金') : `期望按完整精炼度·${squadZh}开奖取最优·市场加权均价估算`}，仅供参考。`);
   return lines.join('\n');
 }

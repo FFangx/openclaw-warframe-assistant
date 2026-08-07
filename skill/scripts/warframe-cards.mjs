@@ -441,8 +441,11 @@ export function buildDucatPlanCard(data) {
 export function buildFissureRecommendCard(data) {
   const rows = Array.isArray(data.rows) ? data.rows : [];
   const ducatMode = data.mode === 'ducat';
+  const ducatGoal = ducatMode ? data.ducatGoal : null;
   const preference = data.preference || 'balanced';
   const preferenceZh = { balanced: '综合', speed: '速刷', comfort: '舒适', yield: '收益' }[preference] || '综合';
+  const vaultFilter = data.vaultFilter || 'all';
+  const vaultFilterZh = { all: '全部遗物', unvaulted: '未入库', vaulted: '已入库' }[vaultFilter] || '全部遗物';
   const tagColors = { speed: '#57c98b', comfort: '#8ab8ec', endless: '#c39ae8', bonus: '#f0c765' };
   const rowH = 64;
   const height = 84 + 30 + Math.max(rows.length, 1) * rowH + 32;
@@ -457,18 +460,23 @@ export function buildFissureRecommendCard(data) {
     const flags = [row.hard ? '<span style="color:#e0513c;font-weight:800">钢铁</span>' : '', row.storm ? '<span style="color:#57a1ff;font-weight:800">九重天</span>' : ''].filter(Boolean).join(' ');
     const tags = (row.tags || []).slice(0, 2).map((tag) => `<span style="display:inline-flex;align-items:center;height:16px;padding:0 5px;border:1px solid ${tagColors[tag.key] || '#8f9aa6'};border-radius:4px;color:${tagColors[tag.key] || '#8f9aa6'};font-size:9px;font-weight:800">${escapeHtml(tag.zh)}</span>`).join(' ');
     // 两种模式统一使用「重点奖励」；所有币值都走图标＋数字组件。
-    const refineNote = row.refineZh ? `｜建议<b style="color:#e8a5c0">${escapeHtml(row.refineZh)}</b>` : '';
-    const detail = ducatMode
-      ? `配 <b style="color:#75dcca">${escapeHtml(row.relic.zh)}</b> ×${escapeHtml(row.relic.count)}｜重点奖励 ${escapeHtml(row.topDucat?.zhName || '—')} ${currency('ducat', row.topDucat?.ducats || 0, { size: 10 })}${refineNote}`
-      : `配 <b style="color:#75dcca">${escapeHtml(row.relic.zh)}</b> ×${escapeHtml(row.relic.count)}｜重点奖励 ${escapeHtml(row.topReward?.zhName || '—')} ${currency('plat', row.topReward?.price || 0, { size: 10 })}${refineNote}`;
+    const refineNote = row.refineZh ? `｜<b style="color:#e8a5c0">${escapeHtml(row.refineZh)}</b>` : '';
+    const vaultState = `<span style="color:${row.relic.vaulted ? '#d7a46d' : '#8ee3ad'};font-weight:800">${row.relic.vaulted ? '已入库' : '未入库'}</span>`;
+    const rewardDetail = ducatMode
+      ? ducatGoal
+        ? `可兑 ${currency('ducat', row.targetEconomy?.expectedDucats || 0, { size: 10 })} · 放弃 ${currency('plat', row.targetEconomy?.expectedPlat || 0, { size: 10 })} · 转换 ${escapeHtml(row.targetEconomy?.conversionChance || 0)}%${refineNote}`
+        : `${escapeHtml(row.topDucat?.zhName || '—')} ${currency('ducat', row.topDucat?.ducats || 0, { size: 10 })}${refineNote}`
+      : `${escapeHtml(row.topReward?.zhName || '—')} ${currency('plat', row.topReward?.price || 0, { size: 10 })}${refineNote}`;
     const value = ducatMode
-      ? `<div style="font-size:16px">期望 ${currency('ducat', row.expectedDucats, { size: 14 })}</div><div style="font-size:10px;color:#7f8b97">${currency('plat', row.expectedValue, { size: 10 })} · 白金期望</div>`
+      ? ducatGoal
+        ? `<div style="font-size:16px">预计省 ${currency('plat', row.targetEconomy?.expectedSaving || 0, { size: 14 })}</div><div style="font-size:10px;color:#7f8b97">每次理论开奖</div>`
+        : `<div style="font-size:16px">期望 ${currency('ducat', row.expectedDucats, { size: 14 })}</div><div style="font-size:10px;color:#7f8b97">${currency('plat', row.expectedValue, { size: 10 })} · 仅作参考</div>`
       : `<div style="font-size:16px">期望 ${currency('plat', row.expectedValue, { size: 14 })}</div><div style="font-size:10px;color:#7f8b97">${currency('ducat', row.expectedDucats, { size: 10 })} · 杜卡德期望</div>`;
     return `<div style="position:relative;z-index:1;height:${rowH}px;display:grid;grid-template-columns:30px 46px minmax(0,1fr) 180px 80px;align-items:center;padding:0 14px;border-bottom:1px solid rgba(176,123,55,.42);background:${index % 2 ? 'rgba(255,255,255,.035)' : 'rgba(255,255,255,.014)'}">
       <div style="font-size:17px;font-weight:900;color:${index < 3 ? '#f0c765' : '#8f9aa6'}">${index + 1}</div>
       ${eraCell}
-      <div style="min-width:0"><div style="font-size:15px;font-weight:820;display:flex;align-items:center;gap:5px;white-space:nowrap;overflow:hidden"><span style="overflow:hidden;text-overflow:ellipsis">${escapeHtml(row.missionZh)} · ${escapeHtml(row.planet)} ${escapeHtml(row.node)}</span>${flags}${tags}</div>
-        <div style="margin-top:3px;font-size:11px;color:#8f9aa6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${detail}</div></div>
+      <div style="min-width:0"><div style="font-size:15px;font-weight:820;display:flex;align-items:center;gap:5px;white-space:nowrap;overflow:hidden"><span style="overflow:hidden;text-overflow:ellipsis;color:#75dcca">${escapeHtml(row.relic.zh)} ×${escapeHtml(row.relic.count)}</span>${vaultState}</div>
+        <div style="margin-top:3px;font-size:10px;color:#8f9aa6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">路线 ${escapeHtml(row.missionZh)} · ${escapeHtml(row.planet)} ${escapeHtml(row.node)} ${flags}${tags ? ` ${tags}` : ''}｜${rewardDetail}</div></div>
       <div style="text-align:right">${value}</div>
       <div class="time${urgent ? ' urgent' : ''}" style="text-align:right">${escapeHtml(countdown(row.expiry))}<small>${urgent ? '即将结束' : '剩余'}</small></div>
     </div>`;
@@ -477,12 +485,22 @@ export function buildFissureRecommendCard(data) {
   const requiemNote = data.requiem ? `安魂 ${data.requiem.fissures} 条 · 库存 ${data.requiem.relics}｜` : '';
   const modeZh = ducatMode ? '赚杜卡德' : '赚白金';
   const squadZh = (data.squad ?? 4) > 1 ? `${data.squad ?? 4}人组队取最优` : '单人';
-  const preferenceNote = preference === 'speed' ? '速刷优先：捕获/歼灭，其余按收益补位' : preference === 'comfort' ? '舒适优先：防御/生存，其余按收益补位' : preference === 'yield' ? '收益优先：九重天→钢铁→无尽，其余按价值' : '默认：按期望收益；同收益时速刷/舒适优先';
-  const content = `<div class="card"><div class="header">${headerIcon('fissure')}<div style="min-width:0"><div class="kicker">裂缝推荐 · ${modeZh} · ${preferenceZh}</div><div class="title">${ducatMode ? '现在换杜卡德开什么最赚' : '现在开什么遗物最值'}</div></div><div class="header-meta"><strong>库存匹配 · 双币估值</strong><span>${escapeHtml(localTime(data.fetchedAt))} 估值</span></div></div>
-    <div class="section"><span class="section-badge">TOP ${rows.length}</span>候选遗物 ${escapeHtml(data.appraisedCount ?? 0)} 种已估值<small>切换：白金/杜卡德＋速刷/舒适/收益 · 共 ${escapeHtml(data.totalFissures ?? 0)} 条裂缝</small></div>
+  const preferenceNote = preference === 'speed' ? '每枚优先匹配捕获/歼灭' : preference === 'comfort' ? '每枚优先匹配防御/生存' : preference === 'yield' ? '每枚优先匹配九重天→钢铁→无尽' : '遗物按期望收益；每枚最多两条路线';
+  const title = ducatGoal ? `为「${escapeHtml(ducatGoal.name)}」开什么遗物` : ducatMode ? '现在换杜卡德开什么最赚' : '现在开什么遗物最值';
+  const targetSummary = ducatGoal
+    ? `对标 ${currency('ducat', ducatGoal.ducats, { size: 10 })} / ${currency('plat', ducatGoal.marketPlat, { size: 10 })} · 盈亏线 1p≈${escapeHtml(ducatGoal.ducatsPerPlat)}杜 · ${ducatGoal.marketBasis === 'today' ? '今日中位' : '90天中位'} · 日均 ${escapeHtml(ducatGoal.dailyVolume ?? '—')} 件`
+    : `筛选：${vaultFilterZh} · 可切换白金/杜卡德＋速刷/舒适/收益 · 共 ${escapeHtml(data.totalFissures ?? 0)} 条裂缝`;
+  const headerMeta = ducatGoal
+    ? `<strong>还差 ${currency('ducat', ducatGoal.shortfall, { size: 14 })}</strong><span>余额 ${currency('ducat', ducatGoal.currentDucats, { size: 10 })} · ${escapeHtml(localTime(data.fetchedAt))}</span>`
+    : `<strong>库存匹配 · 双币估值</strong><span>${escapeHtml(localTime(data.fetchedAt))} 估值</span>`;
+  const targetCosts = ducatGoal
+    ? `奸商 ${currency('credit', ducatGoal.credits, { size: 9, weight: 700 })} · 市场税 ${ducatGoal.tradingTax != null ? currency('credit', ducatGoal.tradingTax, { size: 9, weight: 700 }) : '未知'}`
+    : '钢铁 +1 精华 · 九重天有额外结算';
+  const content = `<div class="card"><div class="header">${headerIcon('fissure')}<div style="min-width:0"><div class="kicker">裂缝推荐 · ${ducatGoal ? '奸商对标' : modeZh} · ${preferenceZh} · ${vaultFilterZh}</div><div class="title">${title}</div></div><div class="header-meta">${headerMeta}</div></div>
+    <div class="section"><span class="section-badge">TOP ${rows.length}</span>可立即开 ${escapeHtml(data.matchedRelicCount ?? 0)} 种 · 每种最多 2 条路线<small>${targetSummary}</small></div>
     ${body || empty}
-    <div class="footer" style="font-size:9px"><span>${requiemNote}完整·${squadZh}${ducatMode ? '·扣白金机会成本' : ''}｜${preferenceNote}</span><span>钢铁 +1 精华 · 九重天有额外结算</span></div></div>`;
-  const keySeed = `recommend|v7|w800|${data.mode}|${preference}|${data.squad ?? 4}|${rows.map((row) => `${row.id}:${row.relic.base}:${(row.tags || []).map((tag) => tag.key).join(',')}`).join('|')}`;
+    <div class="footer" style="font-size:9px"><span>${requiemNote}完整·${squadZh}${ducatGoal ? '·逐次开奖比较兑杜/卖白金·不读取实时奖励' : ducatMode ? '·按毛杜卡德期望' : ''}｜${preferenceNote}</span><span>${targetCosts}</span></div></div>`;
+  const keySeed = `recommend|v12|w800|${data.mode}|${preference}|${vaultFilter}|${ducatGoal?.uniqueName || ''}|${ducatGoal?.marketPlat || ''}|${data.squad ?? 4}|${rows.map((row) => `${row.id}:${row.relic.base}:${row.relic.vaulted ? 'v' : 'u'}:${row.targetEconomy?.expectedSaving ?? ''}:${(row.tags || []).map((tag) => tag.key).join(',')}`).join('|')}`;
   return { html: documentShell(content, height, 800), width: 800, height, key: `fissure-recommend-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 
@@ -494,22 +512,26 @@ export function buildRefineRecommendCard(data) {
   // 榜外参考行：TOP 榜按增益排序天然被光辉档霸屏，示例让无瑕/不精炼档可见
   const examples = data.examples || {};
   const exampleLine = (examples.flawless?.length || examples.intact?.length)
-    ? `<div style="position:relative;z-index:1;height:32px;display:flex;align-items:center;padding:0 14px;font-size:11px;color:#8f9aa6;border-bottom:1px solid rgba(176,123,55,.42)">榜外参考：${examples.flawless?.length ? `无瑕档代表 <b style="color:#75dcca">&nbsp;${escapeHtml(examples.flawless.join('、'))}</b>` : ''}${examples.flawless?.length && examples.intact?.length ? '&nbsp;·&nbsp;' : ''}${examples.intact?.length ? `完整档代表 <b style="color:#aab4bd">&nbsp;${escapeHtml(examples.intact.join('、'))}</b>&nbsp;（直接开）` : ''}</div>`
+    ? `<div style="position:relative;z-index:1;height:50px;display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:center;padding:0 14px;font-size:10px;line-height:15px;color:#8f9aa6;border-bottom:1px solid rgba(176,123,55,.42)">
+        <div>${examples.flawless?.length ? `无瑕档代表<br><b style="color:#75dcca">${escapeHtml(examples.flawless.join('、'))}</b>` : ''}</div>
+        <div>${examples.intact?.length ? `完整档代表（直接开）<br><b style="color:#aab4bd">${escapeHtml(examples.intact.join('、'))}</b>` : ''}</div>
+      </div>`
     : '';
-  const exampleH = exampleLine ? 32 : 0;
+  const exampleH = exampleLine ? 50 : 0;
   const height = 84 + 30 + Math.max(rows.length, 1) * rowH + exampleH + 32;
   const suggestColor = { Radiant: '#f0c765', Flawless: '#75dcca', Intact: '#8f9aa6' };
   const body = rows.map((row, index) => {
     const gain = ducatMode ? row.suggest.gainDucats : row.suggest.gainPlat;
     const gainText = ducatMode ? `+${escapeHtml(gain)} 杜` : `+${escapeHtml(gain)}p`;
     const color = suggestColor[row.suggest.key] || '#8f9aa6';
+    const vaultState = `<span style="margin-left:5px;color:${row.vaulted ? '#d7a46d' : '#8ee3ad'};font-size:10px;font-weight:800">${row.vaulted ? '已入库' : '未入库'}</span>`;
     const value = `<div style="font-size:16px;font-weight:900;color:${color}">${escapeHtml(row.suggest.zh)}</div><div style="font-size:10px;color:#7f8b97">增益 ${gainText}/100光体</div>`;
     const tiersText = ducatMode
       ? `完整 ${escapeHtml(Math.round(row.intact.ducats))}杜 → 光辉 ${escapeHtml(Math.round(row.radiant.ducats))}杜`
       : `完整 ${escapeHtml(row.intact.plat)}p → 光辉 ${escapeHtml(row.radiant.plat)}p`;
     return `<div style="position:relative;z-index:1;height:${rowH}px;display:grid;grid-template-columns:30px minmax(0,1fr) 190px 110px;align-items:center;padding:0 14px;border-bottom:1px solid rgba(176,123,55,.42);background:${index % 2 ? 'rgba(255,255,255,.035)' : 'rgba(255,255,255,.014)'}">
       <div style="font-size:17px;font-weight:900;color:${index < 3 ? '#f0c765' : '#8f9aa6'}">${index + 1}</div>
-      <div style="min-width:0"><div style="font-size:15px;font-weight:820;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><b style="color:#75dcca">${escapeHtml(row.zh)}</b> ×${escapeHtml(row.count)}</div>
+      <div style="min-width:0"><div style="font-size:15px;font-weight:820;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><b style="color:#75dcca">${escapeHtml(row.zh)}</b> ×${escapeHtml(row.count)}${vaultState}</div>
         <div style="margin-top:3px;font-size:11px;color:#8f9aa6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">稀有奖 ${escapeHtml(row.topRare?.zhName || '—')}${row.topRare?.price ? ` <b style="color:#f0c765">${escapeHtml(Math.round(row.topRare.price * 10) / 10)}p</b>` : ''}</div></div>
       <div style="text-align:right;font-size:12px;color:#aab4bd;font-variant-numeric:tabular-nums">${tiersText}</div>
       <div style="text-align:right">${value}</div>
@@ -523,7 +545,7 @@ export function buildRefineRecommendCard(data) {
     ${body || empty}
     ${exampleLine}
     <div class="footer"><span>增益 = 光辉相对完整的期望提升（100 光体）· 优良每光体收益≈无瑕，不单列档</span><span>价格为市场加权均价</span></div></div>`;
-  const keySeed = `refine|v2|${data.mode}|${data.squad ?? 4}|${rows.map((row) => row.base).join('|')}`;
+  const keySeed = `refine|v3|${data.mode}|${data.squad ?? 4}|${rows.map((row) => `${row.base}:${row.vaulted ? 'v' : 'u'}`).join('|')}`;
   return { html: documentShell(content, height), width: 600, height, key: `refine-recommend-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 
@@ -531,7 +553,8 @@ export function buildDropsAlertCard(data) {
   const drops = Array.isArray(data.drops) ? data.drops : [];
   const total = Number(data.total) || drops.length;
   const height = 86 + Math.max(drops.length, 1) * 62 + 34;
-  const markOf = (drop) => drop.isPrime ? { text: 'P', color: '#f0c765' }
+  const markOf = (drop) => drop.isRelic ? { text: '遗', color: '#d7a46d' }
+    : drop.isPrime ? { text: 'P', color: '#f0c765' }
     : drop.isArcane ? { text: '赋', color: '#75dcca' }
       : drop.isMod ? { text: '模', color: '#b48ce8' }
         : { text: '物', color: '#8ab4f8' };
@@ -541,7 +564,7 @@ export function buildDropsAlertCard(data) {
     const iconBox = drop.iconDataUri
       ? `<div style="width:40px;height:40px;border-radius:8px;display:grid;place-items:center;background:rgba(255,255,255,.07);overflow:hidden"><img src="${drop.iconDataUri}" style="max-width:36px;max-height:36px;object-fit:contain"></div>`
       : `<div style="width:32px;height:32px;border-radius:8px;display:grid;place-items:center;background:${mark.color};color:#14181d;font-size:15px;font-weight:900">${mark.text}</div>`;
-    const detailParts = [drop.rarityZh, drop.condition].filter(Boolean);
+    const detailParts = [drop.isRelic ? (drop.vaulted ? '已入库' : '未入库') : '', drop.rarityZh, drop.condition].filter(Boolean);
     const priceText = drop.platinum != null ? currency('plat', drop.platinum, { size: 11, weight: 800 }) : (drop.tradable ? '暂无在线卖单' : '不可交易');
     // 杜卡德优先占副行（Prime 部件固定价值比浮动市价更可靠），市价退到同行拼接
     const valueParts = [drop.ducats != null ? currency('ducat', drop.ducats * (Number(drop.gained) || 1), { size: 11, weight: 800 }) : '', priceText].filter(Boolean).join(' · ');
@@ -550,7 +573,7 @@ export function buildDropsAlertCard(data) {
   const empty = '<div style="position:relative;z-index:1;height:62px;display:grid;place-items:center;color:#8995a1;font-size:14px">没有可显示的新掉落</div>';
   const totalDucats = Number(data.totalDucats) || 0;
   const content = `<div class="card"><div class="header" style="height:86px">${glyphOrIcon(data.glyphDataUri, 'target')}<div style="min-width:0"><div class="kicker">个人掉落 · 本机只读</div><div class="title" style="font-size:23px">入库新掉落 · ${total} 项</div></div><div class="header-meta"><strong style="color:#75dcca">仅用户私聊</strong><span>${escapeHtml(localTime(data.syncedAt))} 同步</span></div></div>${rows || empty}<div class="footer" style="height:34px"><span>${totalDucats ? `本批共可换 <strong style="color:#f0c765">${totalDucats}</strong> 杜卡德 · ` : ''}来源：本机账号快照</span><span>${total > drops.length ? `显示 ${drops.length}/${total} · ` : ''}价格为当前在线卖单，仅供参考</span></div></div>`;
-  const keySeed = `drops-v3|${data.syncedAt}|${data.glyphDataUri ? 'g' : 'x'}|${drops.map((drop) => `${drop.uniqueName}:${drop.gained}`).join('|')}`;
+  const keySeed = `drops-v4|${data.syncedAt}|${data.glyphDataUri ? 'g' : 'x'}|${drops.map((drop) => `${drop.uniqueName}:${drop.gained}:${drop.isRelic ? (drop.vaulted ? 'v' : 'u') : '-'}`).join('|')}`;
   return { html: documentShell(content, height), width: 600, height, key: `drops-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 
