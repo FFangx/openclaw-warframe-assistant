@@ -884,7 +884,10 @@ export async function runAlecaMessage(message, options = {}) {
       for (const row of (data.rows || []).slice(0, 15)) {
         const wmEntry = slugs ? drops.findMarketEntry(slugs, row.englishName) : null;
         row.iconDataUri = await primeWarframePartIconDataUri(row.uniqueName, row.englishName);
-        if (!row.iconDataUri && wmEntry?.thumb) row.iconDataUri = await imageDataUri(`https://warframe.market/static/assets/${wmEntry.thumb}`);
+        if (!row.iconDataUri) {
+          const marketImageUrl = drops.marketDisplayImageUrl(wmEntry);
+          if (marketImageUrl) row.iconDataUri = await imageDataUri(marketImageUrl);
+        }
         if (!row.iconDataUri) row.iconDataUri = await gameIconDataUri(row.uniqueName);
         if (!row.iconDataUri) {
           catalog ??= await drops.loadCatalog(snapshot.alecaDir).catch(() => new Map());
@@ -942,11 +945,14 @@ export async function runAlecaMessage(message, options = {}) {
     }
     // 物品图降级链（用户定）：wm 素材 → browse.wf 游戏原图 → 本机目录插画；失败无图降级
     try {
-      const [{ loadCatalog }, { imageDataUri, gameIconDataUri, primeWarframePartIconDataUri }] = await Promise.all([import('./drops.mjs'), import('./wfdata.mjs')]);
+      const [{ loadCatalog, marketDisplayImageUrl }, { imageDataUri, gameIconDataUri, primeWarframePartIconDataUri }] = await Promise.all([import('./drops.mjs'), import('./wfdata.mjs')]);
       const catalog = await loadCatalog(snapshot.alecaDir).catch(() => new Map());
       await Promise.all((data.rows || []).map(async (row) => {
         row.iconDataUri = await primeWarframePartIconDataUri(row.uniqueName, row.englishName);
-        if (!row.iconDataUri && row.wmThumb) row.iconDataUri = await imageDataUri(`https://warframe.market/static/assets/${row.wmThumb}`);
+        if (!row.iconDataUri) {
+          const marketImageUrl = marketDisplayImageUrl({ icon: row.wmIcon, thumb: row.wmThumb, subIcon: row.wmSubIcon });
+          if (marketImageUrl) row.iconDataUri = await imageDataUri(marketImageUrl);
+        }
         if (!row.iconDataUri) row.iconDataUri = await gameIconDataUri(row.uniqueName);
         const meta = catalog.get(row.uniqueName);
         if (!row.iconDataUri && meta?.imageName) row.iconDataUri = await imageDataUri(`https://cdn.alecaframe.com/warframeData/img/${meta.imageName}`);
@@ -1050,7 +1056,10 @@ export async function runAlecaMessage(message, options = {}) {
         if (row.era) { row.iconDataUri = RELIC_ICON_DATA[row.era] || null; continue; }
         const wmEntry = slugs ? drops.findMarketEntry(slugs, row.englishName) : null;
         row.iconDataUri = await primeWarframePartIconDataUri(row.uniqueName, row.englishName);
-        if (!row.iconDataUri && wmEntry?.thumb) row.iconDataUri = await imageDataUri(`https://warframe.market/static/assets/${wmEntry.thumb}`);
+        if (!row.iconDataUri) {
+          const marketImageUrl = drops.marketDisplayImageUrl(wmEntry);
+          if (marketImageUrl) row.iconDataUri = await imageDataUri(marketImageUrl);
+        }
         if (!row.iconDataUri) row.iconDataUri = await gameIconDataUri(row.uniqueName);
         if (!row.iconDataUri) {
           catalog ??= await drops.loadCatalog(snapshot.alecaDir).catch(() => new Map());

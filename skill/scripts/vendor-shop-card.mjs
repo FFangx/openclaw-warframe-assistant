@@ -124,7 +124,7 @@ export function buildVendorDetailCard(detail, fetchedAt = new Date().toISOString
     ${boughtBits.length ? `<div style="height:30px;display:flex;align-items:center;padding:0 16px;font-size:13px;font-weight:800;color:${C.green};border-bottom:1px solid #3d454f">${escapeHtml(boughtBits.join(' · '))}</div>` : ''}
     ${rowsHtml}
     <div class="footer" style="margin-top:12px"><span>货单：官方导出数据 · 已购：本机快照</span><span>${escapeHtml(new Date(fetchedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))}</span></div></div>`;
-  return { html: documentShell(content, height), width: 600, height, key: `shop-detail3-${detail.key.split('/').pop()}-${anyIcon ? 'i' : 'x'}-${String(fetchedAt).slice(0, 16)}` };
+  return { html: documentShell(content, height), width: 600, height, key: `shop-detail4-${detail.key.split('/').pop()}-${anyIcon ? 'i' : 'x'}-${String(fetchedAt).slice(0, 16)}` };
 }
 
 // ==== ③ 瓦奇娅 / 达尔沃专属详情（结构不同单独画） ====
@@ -180,7 +180,7 @@ export function buildWhereToBuyCard(result, fetchedAt = new Date().toISOString()
   const height = 84 + Math.max(result.hits.length, 1) * rowH + 32;
   const empty = `<div style="height:${rowH}px;display:flex;align-items:center;justify-content:center;color:${C.dim};font-size:14px">没有商人出售「${escapeHtml(result.query)}」——可能来自掉落/合成，试试「遗物 ${escapeHtml(result.query)}」</div>`;
   const content = `<div class="card"><div class="header">${shopIcon()}<div><div class="kicker">商店 · 哪里买</div><div class="title">${escapeHtml(result.query)}</div></div><div class="header-meta"><strong>${result.total || 0} 个货源</strong><span>${result.total > result.hits.length ? `显示前 ${result.hits.length}` : '全部显示'}</span></div></div>${rows || empty}<div class="footer"><span>货单：官方导出数据 · 常驻优先排序</span><span>${escapeHtml(new Date(fetchedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))}</span></div></div>`;
-  return { html: documentShell(content, height), width: 600, height, key: `shop-where3-${result.query}-${anyIcon ? 'i' : 'x'}-${String(fetchedAt).slice(0, 16)}` };
+  return { html: documentShell(content, height), width: 600, height, key: `shop-where4-${result.query}-${anyIcon ? 'i' : 'x'}-${String(fetchedAt).slice(0, 16)}` };
 }
 
 // ==== ⑥ 本周好货卡（周一随周报推送；数据=buildWeeklyDeals） ====

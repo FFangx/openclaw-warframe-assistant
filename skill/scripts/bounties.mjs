@@ -327,7 +327,8 @@ export async function attachRewardIcons(rewards) {
       if (/Credits\s+Cache/iu.test(en)) { creditsIcon ??= await currencyIcon('credits.png'); reward.iconDataUri = creditsIcon; continue; }
       const base = en.replace(/^\d+X\s+/u, '').replace(/^[\d,]+\s+/u, '').trim();
       const wmEntry = slugs ? drops.findMarketEntry(slugs, base) : null;
-      if (wmEntry?.thumb) reward.iconDataUri = await imageDataUri(`https://warframe.market/static/assets/${wmEntry.thumb}`);
+      const marketImageUrl = drops.marketDisplayImageUrl(wmEntry);
+      if (marketImageUrl) reward.iconDataUri = await imageDataUri(marketImageUrl);
       if (reward.iconDataUri) continue;
       if (!byEnglish) {
         byEnglish = new Map();

@@ -137,8 +137,8 @@ export function mergeTraderStates(official, wfstat) {
 // —— wm 目录（1 请求持久双层缓存 1h，wm 挂掉退陈旧快照）：英文名 compact → { slug, zh }，仅精确匹配零模糊 ——
 export async function loadMarketCatalog() {
   const { staleCachedJson } = await import('./wfdata.mjs');
-  // version 3：目录结构升级；交易税不在 /v2/items 中，另由单品详情精确读取。
-  const result = await staleCachedJson('market-catalog-compact', { ttlMs: CATALOG_CACHE_TTL_MS, version: 3 }, async () => {
+  // version 4：保留主图与部件副图；交易税不在 /v2/items 中，另由单品详情精确读取。
+  const result = await staleCachedJson('market-catalog-compact', { ttlMs: CATALOG_CACHE_TTL_MS, version: 4 }, async () => {
     const items = await getJson(`${MARKET_BASE}/v2/items`, { Platform: 'pc', Crossplay: 'true', Language: 'zh-hans' });
     const catalog = {};
     for (const item of items.data || []) {
@@ -147,7 +147,9 @@ export async function loadMarketCatalog() {
       catalog[compact(en)] = {
         slug: item.slug,
         zh: item.i18n?.['zh-hans']?.name || null,
+        icon: item.i18n?.en?.icon || null,
         thumb: item.i18n?.en?.thumb || null,
+        subIcon: item.i18n?.en?.subIcon || null,
         tradingTax: Number.isFinite(Number(item.tradingTax)) ? Number(item.tradingTax) : null,
       };
     }
@@ -317,7 +319,9 @@ export async function appraiseTraderGoods(goods, options = {}) {
       uniqueName: entry.uniqueName,
       nameEn: entry.item,
       zhName: meta?.zh || zhLocal || null,
+      wmIcon: meta?.icon || null,
       wmThumb: meta?.thumb || null,
+      wmSubIcon: meta?.subIcon || null,
       ducats,
       credits: Number(entry.credits) || 0,
       // 商店路径归一后比对：快照库存用的是非 StoreItems 路径

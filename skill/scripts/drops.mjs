@@ -262,6 +262,20 @@ function dropMatches(drop, filter) {
 
 let marketSlugsPromise = null;
 
+// Warframe.Market 同时提供整件物品主图和部件副图。
+// 组成部件使用 subIcon；“XXX Blueprint”的 subIcon 只是通用蓝图纸，继续使用成品主图。
+function marketDisplayImagePath(entry) {
+  const subIcon = entry?.subIcon || null;
+  const genericBlueprint = /(?:^|\/)blueprint_128x128\.[a-z0-9]+$/iu.test(String(subIcon || ''));
+  if (subIcon && !genericBlueprint) return subIcon;
+  return entry?.thumb || entry?.icon || null;
+}
+
+function marketDisplayImageUrl(entry) {
+  const imagePath = marketDisplayImagePath(entry);
+  return imagePath ? `https://warframe.market/static/assets/${imagePath}` : null;
+}
+
 // 英文名（小写去空格）→ market slug 的映射，整表拉一次后常驻本进程
 async function marketSlugMap() {
   if (marketSlugsPromise) return marketSlugsPromise;
@@ -275,7 +289,13 @@ async function marketSlugMap() {
     const bySquashedName = new Map();
     for (const item of payload?.data || []) {
       const english = normalize(item?.i18n?.en?.name).toLowerCase().replace(/\s+/gu, '');
-      if (english && item.slug) bySquashedName.set(english, { slug: item.slug, zhName: normalize(item?.i18n?.['zh-hans']?.name) || null, thumb: item?.i18n?.en?.thumb || null });
+      if (english && item.slug) bySquashedName.set(english, {
+        slug: item.slug,
+        zhName: normalize(item?.i18n?.['zh-hans']?.name) || null,
+        icon: item?.i18n?.en?.icon || null,
+        thumb: item?.i18n?.en?.thumb || null,
+        subIcon: item?.i18n?.en?.subIcon || null,
+      });
     }
     return bySquashedName;
   })();
@@ -496,7 +516,10 @@ async function monitorDrops({ statePath, ledgerPath, target, cardDir, alecaDir, 
       await Promise.all(matched.slice(0, MAX_CARD_ROWS).map(async (drop) => {
         const wmEntry = slugs ? findMarketEntry(slugs, drop.englishName) : null;
         drop.iconDataUri = await primeWarframePartIconDataUri(drop.uniqueName, drop.englishName);
-        if (!drop.iconDataUri && wmEntry?.thumb) drop.iconDataUri = await imageDataUri(`https://warframe.market/static/assets/${wmEntry.thumb}`);
+        if (!drop.iconDataUri) {
+          const marketImageUrl = marketDisplayImageUrl(wmEntry);
+          if (marketImageUrl) drop.iconDataUri = await imageDataUri(marketImageUrl);
+        }
         if (!drop.iconDataUri) drop.iconDataUri = await gameIconDataUri(drop.uniqueName);
         if (!drop.iconDataUri && drop.imageName) drop.iconDataUri = await imageDataUri(`https://cdn.alecaframe.com/warframeData/img/${drop.imageName}`);
       }));
@@ -581,7 +604,7 @@ async function main() {
   process.exitCode = 1;
 }
 
-export { monitorDrops, dropMatches, countInventory, loadCatalog, describeDrop, defaultAlecaDir, marketSlugMap, findMarketEntry, withLock };
+export { monitorDrops, dropMatches, countInventory, loadCatalog, describeDrop, defaultAlecaDir, marketSlugMap, findMarketEntry, marketDisplayImagePath, marketDisplayImageUrl, withLock };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {

@@ -123,7 +123,7 @@ export function buildBountyPlaceCard(place, expiry, fetchedAt = new Date().toISO
     <div style="height:34px;display:flex;align-items:center;padding:0 16px;font-size:12px;color:${C.dim};border-bottom:1px solid #3d454f">共 ${place.jobs.length} 个赏金 · 奖池全部展开 · 概率按任务阶段从低到高全列</div>
     ${sections.map((section) => section.header + section.rows.join('')).join('')}
     <div class="footer"><span>任务/奖励：官方世界状态</span><span>${escapeHtml(new Date(fetchedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))}</span></div></div>`;
-  return { html: documentShell(content, height), width: 600, height, key: `bounty-place6-${place.key}-${anyIcon ? 'i' : 'x'}-${String(fetchedAt).slice(0, 16)}` };
+  return { html: documentShell(content, height), width: 600, height, key: `bounty-place7-${place.key}-${anyIcon ? 'i' : 'x'}-${String(fetchedAt).slice(0, 16)}` };
 }
 
 // ==== ④ 挑战板详情卡：扎里曼/实验室/1999 每节点挑战 + 难度 + 描述（任务好不好做一眼看完） ====
@@ -166,5 +166,5 @@ export function buildBountyReverseCard(result, fetchedAt = new Date().toISOStrin
   const empty = `<div style="height:${rowH}px;display:flex;align-items:center;justify-content:center;color:${C.dim};font-size:14px">本轮赏金没有「${escapeHtml(result.query)}」——奖池 2.5 小时轮换，可「订阅 赏金 ${escapeHtml(result.query)}」蹲下轮</div>`;
   const expiryMs = Date.parse(result.expiry);
   const content = `<div class="card"><div class="header">${bountyIcon()}<div><div class="kicker">星球赏金 · 奖励反查</div><div class="title">${escapeHtml(result.query)}</div></div><div class="header-meta"><strong>${result.total || 0} 个赏金在出</strong>${Number.isFinite(expiryMs) ? `<span>${escapeHtml(countdownMs(expiryMs))} 后轮换</span>` : ''}</div></div>${rows || empty}<div class="footer"><span>概率为奖池标注值 · 按概率降序</span><span>${escapeHtml(new Date(fetchedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))}</span></div></div>`;
-  return { html: documentShell(content, height), width: 600, height, key: `bounty-where4-${result.query}-${anyIcon ? 'i' : 'x'}-${String(fetchedAt).slice(0, 16)}` };
+  return { html: documentShell(content, height), width: 600, height, key: `bounty-where5-${result.query}-${anyIcon ? 'i' : 'x'}-${String(fetchedAt).slice(0, 16)}` };
 }

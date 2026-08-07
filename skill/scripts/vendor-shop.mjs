@@ -582,7 +582,8 @@ export async function attachRowIcons(rows, { alecaDir = null } = {}) {
     const meta = catalog.get(uniqueName);
     try {
       const wmEntry = slugs && meta?.englishName ? drops.findMarketEntry(slugs, meta.englishName) : null;
-      if (wmEntry?.thumb) row.iconDataUri = await imageDataUri(`https://warframe.market/static/assets/${wmEntry.thumb}`);
+      const marketImageUrl = drops.marketDisplayImageUrl(wmEntry);
+      if (marketImageUrl) row.iconDataUri = await imageDataUri(marketImageUrl);
       if (!row.iconDataUri) row.iconDataUri = await gameIconDataUri(uniqueName);
       if (!row.iconDataUri && meta?.imageName) row.iconDataUri = await imageDataUri(`https://cdn.alecaframe.com/warframeData/img/${meta.imageName}`);
       if (!row.iconDataUri) row.iconDataUri = null;

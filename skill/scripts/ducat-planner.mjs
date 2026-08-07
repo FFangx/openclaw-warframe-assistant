@@ -106,7 +106,7 @@ export function buildDucatCandidates(entries, spec) {
 
 async function loadMarketCatalog() {
   const { staleCachedJson } = await import('./wfdata.mjs');
-  const result = await staleCachedJson('ducat-market-catalog', { ttlMs: 60 * 60 * 1000, version: 1 }, async () => {
+  const result = await staleCachedJson('ducat-market-catalog', { ttlMs: 60 * 60 * 1000, version: 2 }, async () => {
     const payload = await getJson(`${MARKET_BASE}/v2/items`, { Platform: 'pc', Crossplay: 'true', Language: 'zh-hans' });
     const catalog = {};
     for (const item of payload.data || []) {
@@ -115,7 +115,9 @@ async function loadMarketCatalog() {
       catalog[compact(english)] = {
         slug: item.slug,
         zhName: item.i18n?.['zh-hans']?.name || null,
+        icon: item.i18n?.en?.icon || null,
         thumb: item.i18n?.en?.thumb || null,
+        subIcon: item.i18n?.en?.subIcon || null,
       };
     }
     if (!Object.keys(catalog).length) throw new Error('市场目录为空');
@@ -158,7 +160,9 @@ export async function refreshDucatPrices(candidates, options = {}) {
     const meta = marketMeta(catalog, entry);
     if (!meta) return;
     entry.marketSlug = meta.slug;
+    entry.wmIcon = meta.icon;
     entry.wmThumb = meta.thumb;
+    entry.wmSubIcon = meta.subIcon;
     if (meta.zhName) entry.marketZhName = meta.zhName;
     try {
       const quote = await fetchTradeStatistics(meta.slug, false, options.statisticsFetcher);

@@ -4,7 +4,7 @@ import { mkdtemp, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { describeDrop, withLock } from './drops.mjs';
+import { describeDrop, marketDisplayImagePath, withLock } from './drops.mjs';
 import { buildDropsAlertCard } from './warframe-cards.mjs';
 
 test('掉落监测会自动回收被超时进程遗留的陈旧锁', async () => {
@@ -29,4 +29,22 @@ test('遗物掉落提醒显示入库状态', () => {
   assert.equal(drop.isRelic, true);
   assert.equal(drop.vaulted, true);
   assert.match(buildDropsAlertCard({ drops: [drop], total: 1, syncedAt: new Date().toISOString() }).html, /已入库/u);
+});
+
+test('市场部件使用副图，主蓝图和套装继续使用成品主图', () => {
+  assert.equal(marketDisplayImagePath({
+    icon: 'items/images/en/nyx_prime_systems.png',
+    thumb: 'items/images/en/thumbs/nyx_prime_systems.128x128.png',
+    subIcon: 'sub_icons/warframe/prime_systems_128x128.png',
+  }), 'sub_icons/warframe/prime_systems_128x128.png');
+  assert.equal(marketDisplayImagePath({
+    icon: 'items/images/en/gyre_prime_blueprint.webp',
+    thumb: 'items/images/en/thumbs/gyre_prime_blueprint.128x128.webp',
+    subIcon: 'sub_icons/blueprint_128x128.png',
+  }), 'items/images/en/thumbs/gyre_prime_blueprint.128x128.webp');
+  assert.equal(marketDisplayImagePath({
+    icon: 'items/images/en/nyx_prime_set.png',
+    thumb: 'items/images/en/thumbs/nyx_prime_set.128x128.png',
+    subIcon: null,
+  }), 'items/images/en/thumbs/nyx_prime_set.128x128.png');
 });

@@ -410,7 +410,7 @@ export function buildInventorySnapshotCard(data) {
     ? `${currency('plat', data.totalPlat, { size: 15, color: '#75dcca' })} <span style="font-size:11px;color:#8d99a5">估值</span>`
     : `${escapeHtml(data.totalCount || 0)} ${escapeHtml(data.countUnit || '个')}`;
   const content = `<div class="card"><div class="header" style="height:92px">${glyphOrIcon(data.glyphDataUri, 'weekly')}<div style="min-width:0"><div class="kicker">${escapeHtml(data.subtype || '个人库存')} · 本机只读</div><div class="title" style="font-size:23px">${escapeHtml(data.title || '我的库存')}</div></div><div class="header-meta"><strong style="color:#75dcca">${headerStrong}</strong><span>匹配 ${escapeHtml(total)} 项</span></div></div>${body}<div class="footer" style="height:34px"><span>来源：本机账号快照${data.totalPlat != null ? ' · 估值=wm 近日成交均价' : ''}</span><span>${total > shown ? `显示 ${shown}/${total}` : escapeHtml(localTime(data.syncedAt))}</span></div></div>`;
-  const keySeed = `inv-v9|${data.title}|${data.syncedAt}|${data.glyphDataUri ? 'g' : 'x'}|${data.totalPlat ?? ''}|${rows.map((item) => `${item.name}:${item.value}:${item.plat ?? ''}:${item.detail}:${item.iconDataUri ? 'i' : 'x'}`).join('|')}`;
+  const keySeed = `inv-v10|${data.title}|${data.syncedAt}|${data.glyphDataUri ? 'g' : 'x'}|${data.totalPlat ?? ''}|${rows.map((item) => `${item.name}:${item.value}:${item.plat ?? ''}:${item.detail}:${item.iconDataUri ? 'i' : 'x'}`).join('|')}`;
   return { html: documentShell(content, height), width: 600, height, key: `inventory-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 
@@ -460,7 +460,7 @@ export function buildDucatPlanCard(data) {
     <div class="footer" style="height:36px;font-size:9px"><span>命令：杜卡德 600｜杜卡德 清仓｜杜卡德 清仓 保留1</span><span>${allRows.length > shown ? `显示 ${shown}/${allRows.length}` : escapeHtml(localTime(data.syncedAt || data.fetchedAt))}</span></div></div>`;
   // 名称来自会独立更新的 Aleca 游戏目录。缓存键必须包含名称，否则目录纠正译名后
   // 仍会复用同一物品路径对应的旧图片，造成“数量/图标正确、名称串到旧物品”的假象。
-  const keySeed = `ducat-plan-v6|${data.mode}|${data.target}|${data.reserveLabel}|${data.syncedAt}|${allRows.map((row) => `${row.uniqueName}:${row.name}:${row.englishName || ''}:${row.exchangeQty}:${row.unitPlat}:${row.lowestSell ?? ''}:${row.reserve}:${row.reserveState || ''}`).join('|')}`;
+  const keySeed = `ducat-plan-v7|${data.mode}|${data.target}|${data.reserveLabel}|${data.syncedAt}|${allRows.map((row) => `${row.uniqueName}:${row.name}:${row.englishName || ''}:${row.exchangeQty}:${row.unitPlat}:${row.lowestSell ?? ''}:${row.reserve}:${row.reserveState || ''}`).join('|')}`;
   return { html: documentShell(content, height), width: 600, height, key: `ducat-plan-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 
@@ -601,7 +601,7 @@ export function buildDropsAlertCard(data) {
   const empty = '<div style="position:relative;z-index:1;height:62px;display:grid;place-items:center;color:#8995a1;font-size:14px">没有可显示的新掉落</div>';
   const totalDucats = Number(data.totalDucats) || 0;
   const content = `<div class="card"><div class="header" style="height:86px">${glyphOrIcon(data.glyphDataUri, 'target')}<div style="min-width:0"><div class="kicker">个人掉落 · 本机只读</div><div class="title" style="font-size:23px">入库新掉落 · ${total} 项</div></div><div class="header-meta"><strong style="color:#75dcca">仅用户私聊</strong><span>${escapeHtml(localTime(data.syncedAt))} 同步</span></div></div>${rows || empty}<div class="footer" style="height:34px"><span>${totalDucats ? `本批共可换 <strong style="color:#f0c765">${totalDucats}</strong> 杜卡德 · ` : ''}来源：本机账号快照</span><span>${total > drops.length ? `显示 ${drops.length}/${total} · ` : ''}价格为当前在线卖单，仅供参考</span></div></div>`;
-  const keySeed = `drops-v4|${data.syncedAt}|${data.glyphDataUri ? 'g' : 'x'}|${drops.map((drop) => `${drop.uniqueName}:${drop.gained}:${drop.isRelic ? (drop.vaulted ? 'v' : 'u') : '-'}`).join('|')}`;
+  const keySeed = `drops-v5|${data.syncedAt}|${data.glyphDataUri ? 'g' : 'x'}|${drops.map((drop) => `${drop.uniqueName}:${drop.gained}:${drop.isRelic ? (drop.vaulted ? 'v' : 'u') : '-'}`).join('|')}`;
   return { html: documentShell(content, height), width: 600, height, key: `drops-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 
@@ -653,7 +653,7 @@ export function buildTraderShoppingCard(data) {
     <div class="section"><span class="section-badge">${rows.length}/${allRows.length} 件</span>奸商兑换路线 vs 玩家市场路线<small>${data.arrived ? `当前 ${currency('ducat', balance, { size: 10, weight: 760 })}${data.safeDucatAvailable != null ? ` · 安全库存最多 ${currency('ducat', `+${data.safeDucatAvailable}`, { size: 10, weight: 760 })}` : ''} · 各商品独立判断` : '未到货'}</small></div>
     ${body || empty}
     <div class="footer" style="height:34px"><span>${affordText}</span><span>MOD 按 0 级 · 成交中位价 · 仅供参考</span></div></div>`;
-  const keySeed = `trader-shop6|${data.fetchedAt}|${allRows.map((row) => `${row.uniqueName}:${row.advice?.tag}:${row.platinum ?? ''}:${row.marketBasis ?? ''}:${row.dailyVolume ?? ''}:${row.ducatOpportunityPlat ?? ''}:${row.tradingTax ?? ''}`).join('|')}`;
+  const keySeed = `trader-shop7|${data.fetchedAt}|${allRows.map((row) => `${row.uniqueName}:${row.advice?.tag}:${row.platinum ?? ''}:${row.marketBasis ?? ''}:${row.dailyVolume ?? ''}:${row.ducatOpportunityPlat ?? ''}:${row.tradingTax ?? ''}`).join('|')}`;
   return { html: documentShell(content, height), width: 600, height, key: `trader-shop-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 

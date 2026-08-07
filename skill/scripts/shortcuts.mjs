@@ -585,6 +585,7 @@ async function queryMarket(rawQuery, platform = DEFAULT_PLATFORM, crossplay = DE
       thumb: detail.i18n?.en?.thumb || null,
       // icon = wm 完整物品图（MOD 是带边框卡面），卡片头部用；tags 判 MOD/赋能才上词条行
       icon: detail.i18n?.en?.icon || null,
+      subIcon: detail.i18n?.en?.subIcon || null,
       description: detail.i18n?.['zh-hans']?.description || null,
       tags: detail.tags || [],
       rank: selectedRank,
@@ -639,6 +640,8 @@ async function enrichRelicReward(reward, marketItems, platform, crossplay) {
     highestBuy: null,
     ducatsPerPlatinum: null,
     thumb: null,
+    icon: null,
+    subIcon: null,
   };
   if (!slug) return base;
   try {
@@ -659,7 +662,9 @@ async function enrichRelicReward(reward, marketItems, platform, crossplay) {
       lowestSell,
       highestBuy: buy[0]?.platinum ?? null,
       ducatsPerPlatinum: ducats && lowestSell ? Math.round(ducats / lowestSell) : null,
+      icon: detail.i18n?.en?.icon || null,
       thumb: detail.i18n?.en?.thumb || null,
+      subIcon: detail.i18n?.en?.subIcon || null,
     };
   } catch {
     return base;
@@ -1089,7 +1094,7 @@ function buildMarketCard(data) {
   // chips 收进 flex 流且固定右上（垂直居中时多行词条会撞框，2026-08-06 赋能·速攻实锤）
   const content = `<div class="card"><div class="head" style="height:${headH}px;display:flex;gap:14px;align-items:center">${iconHtml}<div style="min-width:0;flex:1"><div class="eyebrow">星际战甲市场 · 跨平台交易</div><div class="title" style="font-size:${titleSize}px">${escapeHtml(item.zhName)}</div>${effectsHtml}</div><div class="chips" style="position:static;flex:0 0 auto;align-self:flex-start;margin-top:16px"><div class="chip"><small>杜卡德</small>${item.ducats == null ? '—' : currency('ducat', item.ducats, { size: 12, color: '#f3d188', weight: 700 })}</div><div class="chip"><small>交易税</small>${item.tradingTax == null ? '—' : currency('credit', item.tradingTax, { size: 12, color: '#f3d188', weight: 700 })}</div></div></div>${partsBlock}<table><colgroup>${columns}</colgroup><thead class="market-head"><tr><th class="seller-col">卖家</th><th class="rep-col">信誉</th><th class="qty-col">数量</th>${rankHeader}<th class="price-col">价格</th></tr></thead><tbody>${sellerRows || emptySellRow}<tr class="section"><td class="seller-col">买家</td><td class="rep-col">信誉</td><td class="qty-col">数量</td>${ranked ? '<td class="qty-col">等级</td>' : ''}<td class="price-col">价格</td></tr>${buyerRows || emptyBuyRow}</tbody></table><div class="foot"><span>${footLeft}</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
   // key 带 v9 + 图/词条/行数/散件特征：模板改版必须打散渲染缓存，否则吃陈旧图
-  return { html: cardDocument(content, height), width: 600, height, key: `market-v9-${item.slug}-${stats ? 's' : 'ns'}-${item.iconDataUri ? 'i' : 'x'}${effectLines.length}e${effRows}-r${sellCount}${buyCount}-sp${setParts.length}.${priced.length}` };
+  return { html: cardDocument(content, height), width: 600, height, key: `market-v10-${item.slug}-${stats ? 's' : 'ns'}-${item.iconDataUri ? 'i' : 'x'}${effectLines.length}e${effRows}-r${sellCount}${buyCount}-sp${setParts.length}.${priced.length}` };
 }
 
 function buildRelicCard(data) {
@@ -1122,7 +1127,7 @@ function buildRelicCard(data) {
     ? `<img src="${RELIC_ICON_DATA[headTierKey]}" width="46" height="46" style="flex:0 0 auto;object-fit:contain">`
     : '';
   const content = `<div class="card"><div class="relic-head" style="display:flex;align-items:center;gap:14px">${headIcon}<div style="min-width:0"><div class="relic-title">${relic.vaulted ? '已入库遗物' : '未入库遗物'}</div><div class="relic-code">${escapeHtml(relic.zhName)}</div></div><div class="relic-note">价格 = 当前在线最低卖价<br>效率 = 杜卡德 ÷ 白金（越高越适合换杜）</div></div><table><colgroup><col style="width:10%"><col style="width:48%"><col style="width:16%"><col style="width:13%"><col style="width:13%"></colgroup><thead class="relic-table-head"><tr><th></th><th class="reward-col">奖励</th><th>价格</th><th>杜卡德</th><th>效率</th></tr></thead><tbody>${rows}${refineBlock}${sourceBlock}</tbody></table><div class="foot"><span>遗物资料＋星际战甲市场；发「遗物 编号 单人」换单人口径</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
-  return { html: cardDocument(content, height), width: 600, height, key: `relic7-${relic.name}-s${data.squad ?? 4}-i${relic.rewards.filter((reward) => reward.iconDataUri).length}-d${sources.length}` };
+  return { html: cardDocument(content, height), width: 600, height, key: `relic8-${relic.name}-s${data.squad ?? 4}-i${relic.rewards.filter((reward) => reward.iconDataUri).length}-d${sources.length}` };
 }
 
 function localizeRelicName(name) {
@@ -1160,7 +1165,7 @@ function buildRelicReverseCard(data) {
     ? `<img src="${data.headIconDataUri}" width="46" height="46" style="flex:0 0 auto;object-fit:contain">`
     : '';
   const content = `<div class="card"><div class="relic-head" style="display:flex;align-items:center;gap:14px">${headIcon}<div style="min-width:0"><div class="relic-title">反向遗物查询</div><div class="relic-code">${escapeHtml(data.query)}</div></div><div class="relic-note">${escapeHtml(data.total)} 个相关遗物<br>未入库 ${unvaultedCount} · 已入库 ${vaultedCount}</div></div><table><colgroup><col style="width:18%"><col style="width:28%"><col style="width:54%"></colgroup><thead class="reverse-head"><tr><th class="state-col">状态</th><th class="relic-col">遗物</th><th class="hit-col">命中奖励</th></tr></thead><tbody>${rows}</tbody></table><div class="foot"><span>遗物反向索引${anySource ? ' · 掉点=概率最高来源' : ''}</span><span>${visible.length < data.total ? `显示 ${visible.length}/${data.total}` : escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
-  return { html: cardDocument(content, height), width: 600, height, key: `relic-reverse6-${data.query}-${visible.length}-${data.headIconDataUri ? 'i' : 'x'}-${anySource ? 's' : 'n'}` };
+  return { html: cardDocument(content, height), width: 600, height, key: `relic-reverse7-${data.query}-${visible.length}-${data.headIconDataUri ? 'i' : 'x'}-${anySource ? 's' : 'n'}` };
 }
 
 // ---- 帮助卡：静态功能总览（零网络，内容改这里即可，无需重启 Gateway） ----
@@ -1257,19 +1262,19 @@ async function renderCard(data, cardDir) {
   if (data.kind === 'fissure') return renderWarframeCard(buildFissureQueryCard(data), cardDir);
   // 物品图在渲染前解析（下载+缓存+base64），失败保持 null 无图降级；放这里不进模型注入素材
   if (data.kind === 'market' && data.item && data.item.iconDataUri === undefined) {
-    const { imageDataUri, primeWarframePartIconDataUri } = await import('./wfdata.mjs');
-    data.item.iconDataUri = await primeWarframePartIconDataUri(null, data.item.name);
-    if (!data.item.iconDataUri && data.item.icon) {
-      data.item.iconDataUri = await imageDataUri(`https://warframe.market/static/assets/${data.item.icon}`);
-    }
+    const [{ marketDisplayImageUrl }, { imageDataUri, primeWarframePartIconDataUri }] = await Promise.all([import('./drops.mjs'), import('./wfdata.mjs')]);
+    const marketImageUrl = marketDisplayImageUrl(data.item);
+    data.item.iconDataUri = marketImageUrl ? await imageDataUri(marketImageUrl) : null;
+    if (!data.item.iconDataUri) data.item.iconDataUri = await primeWarframePartIconDataUri(null, data.item.name);
   }
-  // 遗物正查：六奖励行配 wm thumb（已全量预热本地缓存，零网络）；无 slug 奖励（Forma 蓝图）无图留空
+  // 遗物正查：六奖励行优先配 wm 部件副图，主蓝图保留成品主图；无 slug 奖励（Forma 蓝图）无图留空
   if (data.kind === 'relic' && data.mode === 'forward' && Array.isArray(data.relic?.rewards)) {
-    const { imageDataUri, primeWarframePartIconDataUri } = await import('./wfdata.mjs');
+    const [{ marketDisplayImageUrl }, { imageDataUri, primeWarframePartIconDataUri }] = await Promise.all([import('./drops.mjs'), import('./wfdata.mjs')]);
     for (const reward of data.relic.rewards) {
       if (reward.iconDataUri !== undefined) continue;
-      reward.iconDataUri = await primeWarframePartIconDataUri(null, reward.name);
-      if (!reward.iconDataUri && reward.thumb) reward.iconDataUri = await imageDataUri(`https://warframe.market/static/assets/${reward.thumb}`);
+      const marketImageUrl = marketDisplayImageUrl(reward);
+      reward.iconDataUri = marketImageUrl ? await imageDataUri(marketImageUrl) : null;
+      if (!reward.iconDataUri) reward.iconDataUri = await primeWarframePartIconDataUri(null, reward.name);
     }
     // wm 缺图（新 Prime 未上图，Vadarya 实锤）：AlecaFrame 目录英文名→imageName 兜底；无 AlecaFrame 静默降级
     if (data.relic.rewards.some((reward) => !reward.iconDataUri && reward.name)) {
@@ -1297,10 +1302,11 @@ async function renderCard(data, cardDir) {
     try {
       const firstName = data.matches?.[0]?.rewards?.[0]?.name;
       if (firstName) {
-        const [{ marketSlugMap, findMarketEntry }, { imageDataUri, primeWarframePartIconDataUri }] = await Promise.all([import('./drops.mjs'), import('./wfdata.mjs')]);
-        data.headIconDataUri = await primeWarframePartIconDataUri(null, firstName);
+        const [{ marketSlugMap, findMarketEntry, marketDisplayImageUrl }, { imageDataUri, primeWarframePartIconDataUri }] = await Promise.all([import('./drops.mjs'), import('./wfdata.mjs')]);
         const entry = findMarketEntry(await marketSlugMap(), firstName);
-        if (!data.headIconDataUri && entry?.thumb) data.headIconDataUri = await imageDataUri(`https://warframe.market/static/assets/${entry.thumb}`);
+        const marketImageUrl = marketDisplayImageUrl(entry);
+        data.headIconDataUri = marketImageUrl ? await imageDataUri(marketImageUrl) : null;
+        if (!data.headIconDataUri) data.headIconDataUri = await primeWarframePartIconDataUri(null, firstName);
       }
     } catch { /* 无图降级 */ }
   }
