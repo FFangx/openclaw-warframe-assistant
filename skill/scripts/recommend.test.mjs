@@ -279,7 +279,11 @@ test('merged fissure card shows all task labels and only exposes inventory in pe
 test('裂缝与精炼推荐保留并展示遗物入库状态', async () => {
   const fissureData = await run('balanced');
   assert.equal(fissureData.rows[0].relic.vaulted, true);
-  assert.match(buildFissureRecommendCard(fissureData).html, /已入库/u);
+  const fissureCard = buildFissureRecommendCard(fissureData).html;
+  assert.match(fissureCard, /已入库/u);
+  assert.match(fissureCard, /建议(?:光辉|无瑕|不精炼)/u);
+  assert.match(fissureCard, /价格优先今日中位，样本不足取90日/u);
+  assert.doesNotMatch(fissureCard, /日均/u);
 
   const refineData = await recommendRefinement(relics, { localDb, prices });
   assert.equal(refineData.rows[0].vaulted, true);
