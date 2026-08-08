@@ -988,14 +988,15 @@ export async function runAlecaMessage(message, options = {}) {
     };
   }
   if (parsed.command === 'recommend') {
-    const { recommendFissures, formatRecommend, parseFissurePreference, parseRelicVaultFilter, parseDucatRecommendTarget, FISSURE_PREFERENCES, RELIC_VAULT_FILTERS } = await import('./recommend.mjs');
+    const { recommendFissures, formatRecommend, parseFissurePreference, parseRelicVaultFilter, parseFissureScope, parseDucatRecommendTarget, FISSURE_PREFERENCES, RELIC_VAULT_FILTERS, FISSURE_SCOPES } = await import('./recommend.mjs');
     const relics = await loadRelics(snapshot);
-    // 杜卡德/金币/ducat → 赚杜卡德；单人/solo → squad 1，默认 4 人组队（对齐 AlecaFrame）
-    const mode = /杜卡德|金币|ducat/iu.test(parsed.query) ? 'ducat' : 'plat';
+    // 直接写当前奸商商品名也进入商品目标模式；旧写法「杜卡德 商品名」继续兼容。
+    const ducatTarget = parseDucatRecommendTarget(parsed.query);
+    const mode = /杜卡德|金币|ducat/iu.test(parsed.query) || ['trader', 'item'].includes(ducatTarget.type) ? 'ducat' : 'plat';
     const squad = parseSquad(parsed.query);
     const preference = parseFissurePreference(parsed.query);
     const vaultFilter = parseRelicVaultFilter(parsed.query);
-    const ducatTarget = parseDucatRecommendTarget(parsed.query);
+    const fissureScope = parseFissureScope(parsed.query);
     let ducatGoal = options.recommendOptions?.ducatGoal || null;
     if (mode === 'ducat' && ['trader', 'item'].includes(ducatTarget.type) && !ducatGoal) {
       try {
@@ -1021,12 +1022,21 @@ export async function runAlecaMessage(message, options = {}) {
               : '当前货单没有适合自动对标的可交易奸商商品。';
           return { handled: true, ok: false, command: 'recommend', query: parsed.query, text: targetError };
         }
-        ducatGoal = selected.goal;
+        ducatGoal = { ...selected.goal, expiresAt: traderData.expiry || null };
       } catch {
         return { handled: true, ok: false, command: 'recommend', query: parsed.query, text: '奸商商品或市场成交数据读取失败，暂时无法计算动态盈亏线。' };
       }
     }
-    const data = await recommendFissures(relics, { mode, squad, preference, vaultFilter, alecaDir: snapshot.alecaDir, ...(options.recommendOptions || {}), ducatGoal });
+    const configuredStrategyPath = options.recommendOptions?.strategyOutputPath;
+    const strategyOutputPath = !ducatGoal || configuredStrategyPath === false
+      ? null
+      : configuredStrategyPath || (process.env.APPDATA ? path.join(process.env.APPDATA, 'WFInfo', 'ducat_strategy.json') : null);
+    const data = await recommendFissures(relics, {
+      mode, squad, preference, vaultFilter, fissureScope, alecaDir: snapshot.alecaDir,
+      ...(options.recommendOptions || {}),
+      ducatGoal,
+      strategyOutputPath,
+    });
     let mediaUrl = null;
     try {
       const { buildFissureRecommendCard } = await import('./warframe-cards.mjs');
@@ -1034,7 +1044,7 @@ export async function runAlecaMessage(message, options = {}) {
     } catch { mediaUrl = null; }
     return {
       handled: true, ok: data.ok, command: 'recommend', query: parsed.query, data, mediaUrl,
-      followupText: mediaUrl ? `当前为${mode === 'ducat' ? (ducatGoal ? `奸商对标·${ducatGoal.name}` : '普通杜卡德') : '赚白金'}·${FISSURE_PREFERENCES[preference].zh}·${RELIC_VAULT_FILTERS[vaultFilter].zh}·${squad > 1 ? `${squad}人组队` : '单人'}口径；「开遗物 杜卡德」看毛杜卡德期望，「开遗物 杜卡德 奸商」自动对标，「开遗物 杜卡德 商品名」指定目标。` : null,
+      followupText: mediaUrl ? `当前为${mode === 'ducat' ? (ducatGoal ? `奸商对标·${ducatGoal.name}·自己携带遗物` : '普通杜卡德') : '赚白金'}·${FISSURE_SCOPES[fissureScope].zh}·${FISSURE_PREFERENCES[preference].zh}·${RELIC_VAULT_FILTERS[vaultFilter].zh}${ducatGoal ? '' : `·${(data.squad ?? squad) > 1 ? `${data.squad ?? squad}人组队` : '单人'}口径`}${data.strategySync?.ok ? `；已同步 WFInfo 奸商目标（可靠估值 ${data.strategySync.priceCount} 项）` : ''}。` : null,
       text: formatRecommend(data),
     };
   }

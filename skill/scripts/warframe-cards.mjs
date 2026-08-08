@@ -163,7 +163,7 @@ function fissureRow(item, data) {
   const rec = item.recommendation;
   const recValue = !rec ? ''
     : rec.targetEconomy
-      ? ` · 预计省 ${currency('plat', rec.targetEconomy.expectedSaving || 0, { size: 9 })}`
+      ? ` · 期望 ${currency('ducat', rec.targetEconomy.expectedDucats || 0, { size: 9 })} / ${currency('plat', rec.targetEconomy.expectedPlat || 0, { size: 9 })}`
       : data.recommendationModeZh === '杜卡德'
         ? ` · 期望 ${currency('ducat', rec.expectedDucats || 0, { size: 9 })}`
         : ` · 期望 ${currency('plat', rec.expectedValue || 0, { size: 9 })}`;
@@ -467,15 +467,21 @@ export function buildDucatPlanCard(data) {
 // 开遗物卡：遗物双币期望与任务偏好分开展示，不把主观体验混进价值数字。
 export function buildFissureRecommendCard(data) {
   const rows = Array.isArray(data.rows) ? data.rows : [];
+  const acquireRows = Array.isArray(data.acquireRows) ? data.acquireRows : [];
+  const shownRelicCount = new Set(rows.map((row) => row.relic?.base).filter(Boolean)).size;
   const ducatMode = data.mode === 'ducat';
   const ducatGoal = ducatMode ? data.ducatGoal : null;
   const preference = data.preference || 'balanced';
   const preferenceZh = { balanced: '综合', speed: '速刷', comfort: '舒适', yield: '收益' }[preference] || '综合';
+  const fissureScope = data.fissureScope || 'all';
+  const fissureScopeZh = fissureScope === 'steel' ? '仅钢铁' : '全部裂缝';
   const vaultFilter = data.vaultFilter || 'all';
   const vaultFilterZh = { all: '全部遗物', unvaulted: '未入库', vaulted: '已入库' }[vaultFilter] || '全部遗物';
   const tagColors = { speed: '#57c98b', comfort: '#8ab8ec', endless: '#c39ae8', bonus: '#f0c765' };
   const rowH = 64;
-  const height = 84 + 30 + Math.max(rows.length, 1) * rowH + 32;
+  const acquireRowH = 62;
+  const acquireH = ducatGoal ? 30 + Math.max(acquireRows.length, 1) * acquireRowH : 0;
+  const height = 84 + 30 + Math.max(rows.length, 1) * rowH + acquireH + 32;
   const body = rows.map((row, index) => {
     const era = ERA[row.tier] || { zh: row.tierZh || '未知', color: '#8995a1' };
     const remainingMs = Date.parse(row.expiry) - Date.now();
@@ -491,12 +497,12 @@ export function buildFissureRecommendCard(data) {
     const vaultState = `<span style="color:${row.relic.vaulted ? '#d7a46d' : '#8ee3ad'};font-weight:800">${row.relic.vaulted ? '已入库' : '未入库'}</span>`;
     const rewardDetail = ducatMode
       ? ducatGoal
-        ? `可兑 ${currency('ducat', row.targetEconomy?.expectedDucats || 0, { size: 10 })} · 放弃 ${currency('plat', row.targetEconomy?.expectedPlat || 0, { size: 10 })} · 转换 ${escapeHtml(row.targetEconomy?.conversionChance || 0)}%`
+        ? `每局期望 ${currency('ducat', row.targetEconomy?.expectedDucats || 0, { size: 10 })} / ${currency('plat', row.targetEconomy?.expectedPlat || 0, { size: 10 })} · 效率 ${escapeHtml(row.targetEconomy?.efficiency ?? '—')} 杜/p`
         : `${escapeHtml(row.topDucat?.zhName || '—')} ${currency('ducat', row.topDucat?.ducats || 0, { size: 10 })}`
       : `${escapeHtml(row.topReward?.zhName || '—')} ${currency('plat', row.topReward?.price || 0, { size: 10 })}`;
     const value = ducatMode
       ? ducatGoal
-        ? `<div style="font-size:16px">预计省 ${currency('plat', row.targetEconomy?.expectedSaving || 0, { size: 14 })}</div><div style="font-size:10px;color:#7f8b97">${refineFixed}${refineFixed ? ' · ' : ''}每次开奖</div>`
+        ? `<div style="font-size:16px">约 ${escapeHtml(row.targetEconomy?.expectedRuns ?? '—')} 局</div><div style="font-size:10px;color:#7f8b97">${refineFixed}${refineFixed ? ' · ' : ''}同类重复约 ${currency('plat', row.targetEconomy?.opportunityPlat ?? 0, { size: 9 })}</div>`
         : `<div style="font-size:16px">期望 ${currency('ducat', row.expectedDucats, { size: 14 })}</div><div style="font-size:10px;color:#7f8b97">${currency('plat', row.expectedValue, { size: 10 })}${refineFixed ? ` · ${refineFixed}` : ''}</div>`
       : `<div style="font-size:16px">期望 ${currency('plat', row.expectedValue, { size: 14 })}</div><div style="font-size:10px;color:#7f8b97">${currency('ducat', row.expectedDucats, { size: 10 })}${refineFixed ? ` · ${refineFixed}` : ''}</div>`;
     return `<div style="position:relative;z-index:1;height:${rowH}px;display:grid;grid-template-columns:30px 46px minmax(0,1fr) 180px 80px;align-items:center;padding:0 14px;border-bottom:1px solid rgba(176,123,55,.42);background:${index % 2 ? 'rgba(255,255,255,.035)' : 'rgba(255,255,255,.014)'}">
@@ -508,26 +514,38 @@ export function buildFissureRecommendCard(data) {
       <div class="time${urgent ? ' urgent' : ''}" style="text-align:right">${escapeHtml(countdown(row.expiry))}<small>${urgent ? '即将结束' : '剩余'}</small></div>
     </div>`;
   }).join('');
-  const empty = '<div style="position:relative;z-index:1;height:64px;display:grid;place-items:center;color:#8995a1;font-size:14px">当前没有能配上库存遗物的裂缝</div>';
+  const empty = `<div style="position:relative;z-index:1;height:64px;display:grid;place-items:center;color:#8995a1;font-size:14px">${ducatGoal ? '库存中暂无达到保本线且能立即开的遗物' : '当前没有能配上库存遗物的裂缝'}</div>`;
+  const acquireBody = acquireRows.map((row, index) => {
+    const sources = (row.sources || []).map((source) => `${escapeHtml(source.place)} ${escapeHtml(Math.round(Number(source.chance || 0) * 10) / 10)}%`).join(' · ');
+    const refine = row.refineZh ? `建议${escapeHtml(row.refineZh)}` : '';
+    return `<div style="position:relative;z-index:1;height:${acquireRowH}px;display:grid;grid-template-columns:30px 150px minmax(0,1fr) 150px;align-items:center;padding:0 14px;border-bottom:1px solid rgba(176,123,55,.42);background:${index % 2 ? 'rgba(255,255,255,.035)' : 'rgba(255,255,255,.014)'}">
+      <div style="font-size:16px;font-weight:900;color:${index < 3 ? '#f0c765' : '#8f9aa6'}">${index + 1}</div>
+      <div style="font-size:14px;font-weight:820;color:#75dcca">${escapeHtml(row.relic.zh)}</div>
+      <div style="min-width:0"><div style="font-size:10px;color:#cfd6dc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sources || '当前掉落表查无常规来源'}</div><div style="margin-top:3px;font-size:10px;color:#8f9aa6">每局期望 ${currency('ducat', row.targetEconomy?.expectedDucats || 0, { size: 9 })} / ${currency('plat', row.targetEconomy?.expectedPlat || 0, { size: 9 })} · 效率 ${escapeHtml(row.targetEconomy?.efficiency ?? '—')} 杜/p</div></div>
+      <div style="text-align:right;font-size:14px;font-weight:800">约 ${escapeHtml(row.targetEconomy?.expectedRuns ?? '—')} 局<div style="font-size:9px;color:#8f9aa6">${refine} · 补齐约 ${currency('plat', row.targetEconomy?.opportunityPlat ?? 0, { size: 9 })}</div></div>
+    </div>`;
+  }).join('');
+  const acquireEmpty = '<div style="position:relative;z-index:1;height:62px;display:grid;place-items:center;color:#8995a1;font-size:13px">暂无未拥有、当前可获取且达到保本线的遗物</div>';
   const requiemNote = data.requiem ? `安魂 ${data.requiem.fissures} 条 · 库存 ${data.requiem.relics}｜` : '';
   const modeZh = ducatMode ? '赚杜卡德' : '赚白金';
-  const squadZh = (data.squad ?? 4) > 1 ? `${data.squad ?? 4}人组队取最优` : '单人';
+  const squadZh = ducatGoal ? '自己携带遗物' : ((data.squad ?? 4) > 1 ? `${data.squad ?? 4}人组队取最优` : '单人');
   const preferenceNote = preference === 'speed' ? '每枚优先匹配捕获/歼灭' : preference === 'comfort' ? '每枚优先匹配防御/生存' : preference === 'yield' ? '每枚优先匹配九重天→钢铁→无尽' : '遗物按期望收益；每枚最多两条路线';
   const title = ducatGoal ? `为「${escapeHtml(ducatGoal.name)}」开什么遗物` : ducatMode ? '现在换杜卡德开什么最赚' : '现在开什么遗物最值';
   const targetSummary = ducatGoal
-    ? `对标 ${currency('ducat', ducatGoal.ducats, { size: 10 })} / ${currency('plat', ducatGoal.marketPlat, { size: 10 })} · 盈亏线 1p≈${escapeHtml(ducatGoal.ducatsPerPlat)}杜 · ${ducatGoal.marketBasis === 'today' ? '今日中位' : '90天中位'} · 日均 ${escapeHtml(ducatGoal.dailyVolume ?? '—')} 件`
-    : `筛选：${vaultFilterZh} · 可切换白金/杜卡德＋速刷/舒适/收益 · 共 ${escapeHtml(data.totalFissures ?? 0)} 条裂缝`;
+    ? `对标 ${currency('ducat', ducatGoal.ducats, { size: 10 })} / ${currency('plat', ducatGoal.marketPlat, { size: 10 })} · 盈亏线 1p≈${escapeHtml(ducatGoal.ducatsPerPlat)}杜 · ${ducatGoal.marketBasis === 'today' ? '今日中位' : '90天中位'} · 日均 ${escapeHtml(ducatGoal.dailyVolume ?? '—')} · ${fissureScopeZh}`
+    : `筛选：${fissureScopeZh} · ${vaultFilterZh} · 可切换白金/杜卡德＋速刷/舒适/收益 · 共 ${escapeHtml(data.totalFissures ?? 0)} 条裂缝`;
   const headerMeta = ducatGoal
     ? `<strong>还差 ${currency('ducat', ducatGoal.shortfall, { size: 14 })}</strong><span>余额 ${currency('ducat', ducatGoal.currentDucats, { size: 10 })} · ${escapeHtml(localTime(data.fetchedAt))}</span>`
     : `<strong>库存匹配 · 双币估值</strong><span>${escapeHtml(localTime(data.fetchedAt))} 估值</span>`;
   const targetCosts = ducatGoal
     ? `奸商 ${currency('credit', ducatGoal.credits, { size: 9, weight: 700 })} · 市场税 ${ducatGoal.tradingTax != null ? currency('credit', ducatGoal.tradingTax, { size: 9, weight: 700 }) : '未知'}`
     : '钢铁 +1 精华 · 九重天有额外结算';
-  const content = `<div class="card"><div class="header">${headerIcon('fissure')}<div style="min-width:0"><div class="kicker">开遗物 · ${ducatGoal ? '奸商对标' : modeZh} · ${preferenceZh} · ${vaultFilterZh}</div><div class="title">${title}</div></div><div class="header-meta">${headerMeta}</div></div>
-    <div class="section"><span class="section-badge">TOP ${rows.length}</span>可立即开 ${escapeHtml(data.matchedRelicCount ?? 0)} 种 · 每种最多 2 条路线<small>${targetSummary}</small></div>
+  const content = `<div class="card"><div class="header">${headerIcon('fissure')}<div style="min-width:0"><div class="kicker">开遗物 · ${ducatGoal ? '奸商对标' : modeZh} · ${fissureScopeZh} · ${preferenceZh} · ${vaultFilterZh}</div><div class="title">${title}</div></div><div class="header-meta">${headerMeta}</div></div>
+    <div class="section"><span class="section-badge">${ducatGoal ? '立即可开' : `TOP ${rows.length}`}</span>${ducatGoal ? `展示 ${escapeHtml(shownRelicCount)}/${escapeHtml(data.matchedRelicCount ?? shownRelicCount)} 种估算过线候选 · 每种最多 2 条路线` : `可立即开 ${escapeHtml(data.matchedRelicCount ?? 0)} 种 · 每种最多 2 条路线`}<small>${targetSummary}</small></div>
     ${body || empty}
-    <div class="footer" style="font-size:9px"><span>${requiemNote}完整·${squadZh}${ducatGoal ? '·逐次开奖比较兑杜/卖白金·不读取实时奖励' : ducatMode ? '·按毛杜卡德期望' : '·价格优先今日中位，样本不足取90日'}｜${preferenceNote}</span><span>${targetCosts}</span></div></div>`;
-  const keySeed = `recommend|v14|w800|${data.mode}|${preference}|${vaultFilter}|${ducatGoal?.uniqueName || ''}|${ducatGoal?.marketPlat || ''}|${data.squad ?? 4}|${rows.map((row) => `${row.id}:${row.relic.base}:${row.relic.vaulted ? 'v' : 'u'}:${row.expectedValue ?? ''}:${row.topReward?.price ?? ''}:${row.targetEconomy?.expectedSaving ?? ''}:${row.refineZh ?? ''}:${(row.tags || []).map((tag) => tag.key).join(',')}`).join('|')}`;
+    ${ducatGoal ? `<div class="section"><span class="section-badge">建议获取</span>未拥有且当前可刷 · 最多 3 种<small>列出概率最高的常规来源</small></div>${acquireBody || acquireEmpty}` : ''}
+    <div class="footer" style="font-size:9px"><span>${requiemNote}${ducatGoal ? `${squadZh}·按推荐精炼·开局前只估自己遗物·WFInfo 按实际四选一守保本线` : `完整·${squadZh}${ducatMode ? '·按毛杜卡德期望' : '·价格优先今日中位，样本不足取90日'}`}｜${preferenceNote}</span><span>${targetCosts}</span></div></div>`;
+  const keySeed = `recommend|v16|w800|${data.mode}|${fissureScope}|${preference}|${vaultFilter}|${ducatGoal?.uniqueName || ''}|${ducatGoal?.marketPlat || ''}|${data.squad ?? 4}|${rows.map((row) => `${row.id}:${row.relic.base}:${row.relic.vaulted ? 'v' : 'u'}:${row.targetEconomy?.expectedDucats ?? row.expectedValue ?? ''}:${row.targetEconomy?.opportunityPlat ?? ''}:${row.refineZh ?? ''}:${(row.tags || []).map((tag) => tag.key).join(',')}`).join('|')}|${acquireRows.map((row) => `${row.relic.base}:${row.targetEconomy?.expectedDucats ?? ''}:${row.refineZh ?? ''}`).join('|')}`;
   return { html: documentShell(content, height, 800), width: 800, height, key: `fissure-recommend-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 

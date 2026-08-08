@@ -75,6 +75,8 @@ node scripts/prefetch-icons.mjs   # 预热全量物品小图（~64MB），掉落
 
 装 AlecaFrame：官网安装 → 先启动它再进游戏 → 过一次加载点（进任务/中继站）→ 生成 `%LOCALAPPDATA%\AlecaFrame\lastData.dat`。
 
+可选安装本项目配套的 WFInfo 修改版。在 WFInfo 设置中把“开奖决策”切到“奸商目标”；主人私聊发送 `开遗物 商品名`（旧写法`开遗物 杜卡德 商品名`同样可用）后，助手会原子写入 `%APPDATA%\WFInfo\ducat_strategy.json`。OpenClaw 先列达到商品保本线的“立即可开＋建议获取”遗物；WFInfo 识别实际四项奖励后，使用同一批今日/90 天成交中位计算并在游戏覆盖层标出选择。策略过期、缺失或任一奖励没有可靠估值时只展示普通信息，不强行推荐。
+
 ## 4. 自检
 
 ```bash

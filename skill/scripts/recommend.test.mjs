@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { classifyFissure, formatRecommend, parseDucatRecommendTarget, parseFissurePreference, parseRelicVaultFilter, recommendFissures, recommendRefinement } from './recommend.mjs';
+import { buildWfInfoDucatStrategy, classifyFissure, formatRecommend, parseDucatRecommendTarget, parseFissurePreference, parseFissureScope, parseRelicVaultFilter, recommendFissures, recommendRefinement } from './recommend.mjs';
 import { parseAlecaMessage } from './alecaframe.mjs';
 import { parseNaturalWorldQuestion, parseShortcutMessage } from './shortcuts.mjs';
 import { buildFissureQueryCard, buildFissureRecommendCard, buildRefineRecommendCard } from './warframe-cards.mjs';
@@ -21,6 +21,20 @@ const prices = Object.fromEntries(rewards.map((reward, index) => [reward.slug, {
   zh: `奖励 ${index + 1}`,
 }]));
 const localDb = { rewardsByBase: new Map([['Lith T1', rewards]]) };
+
+test('builds a WFInfo target strategy with one consistent fair-price map', () => {
+  const reliablePrices = Object.fromEntries(Object.entries(prices).map(([slug, entry], index) => [slug, {
+    ...entry, reliable: true, marketBasis: index === 0 ? 'today' : '90d', dailyVolume: index + 1,
+  }]));
+  const strategy = buildWfInfoDucatStrategy({
+    name: '测试商品', ducats: 350, marketPlat: 20, marketBasis: 'today', expiresAt: '2026-08-09T00:00:00.000Z',
+  }, rewards, reliablePrices, new Date('2026-08-08T00:00:00.000Z'));
+  assert.equal(strategy.breakEven, 17.5);
+  assert.equal(strategy.mode, 'baro-target');
+  assert.equal(strategy.prices['Common A'].platinum, 3);
+  assert.equal(strategy.prices['Common A'].basis, 'today');
+  assert.equal(Object.keys(strategy.prices).length, rewards.length);
+});
 
 function fissure(id, missionType, extra = {}) {
   return {
@@ -58,6 +72,13 @@ test('parses the four recommendation preferences', () => {
   assert.equal(parseFissurePreference('额外收益'), 'yield');
 });
 
+test('parses a dedicated Steel Path fissure scope', () => {
+  assert.equal(parseFissureScope('开遗物 钢铁'), 'steel');
+  assert.equal(parseFissureScope('开遗物 钢铁之路 速刷'), 'steel');
+  assert.equal(parseFissureScope('开遗物 速刷'), 'all');
+  assert.deepEqual(parseDucatRecommendTarget('钢铁 速刷'), { type: 'none', query: '' });
+});
+
 test('parses relic vault filters without confusing 未入库 with 入库', () => {
   assert.equal(parseRelicVaultFilter('裂缝推荐'), 'all');
   assert.equal(parseRelicVaultFilter('裂缝推荐 未入库 白金 速刷'), 'unvaulted');
@@ -69,10 +90,11 @@ test('parses ordinary, automatic trader and named-item Ducat modes', () => {
   assert.deepEqual(parseDucatRecommendTarget('杜卡德 未入库'), { type: 'ordinary', query: '' });
   assert.deepEqual(parseDucatRecommendTarget('杜卡德 奸商 速刷'), { type: 'trader', query: '' });
   assert.deepEqual(parseDucatRecommendTarget('杜卡德 Primed Flow 单人'), { type: 'item', query: 'Primed Flow' });
+  assert.deepEqual(parseDucatRecommendTarget('串联弹匣 Prime 单人'), { type: 'item', query: '串联弹匣 Prime' });
   assert.deepEqual(parseDucatRecommendTarget('白金 速刷'), { type: 'none', query: '' });
 });
 
-test('ordinary Ducat mode ranks gross Ducat expectation while trader target ranks same-draw savings', async () => {
+test('trader target filters by break-even then ranks own-relic Ducat expectation', async () => {
   const flatRewards = (prefix) => rewards.map((reward, index) => ({ ...reward, slug: `${prefix}_${index}` }));
   const highDucat = flatRewards('high');
   const cheapDucat = flatRewards('cheap');
@@ -93,13 +115,46 @@ test('ordinary Ducat mode ranks gross Ducat expectation while trader target rank
   const ducatGoal = { name: '测试奸商商品', uniqueName: 'test', ducats: 300, marketPlat: 30, ducatsPerPlat: 10, marketBasis: 'today', dailyVolume: 5 };
   const targeted = await recommendFissures(mixedRelics, { mode: 'ducat', ducatGoal, worldState: oneFissure, localDb: mixedDb, prices: mixedPrices });
   assert.equal(targeted.ducatStrategy, 'trader');
+  assert.equal(targeted.squad, 1);
   assert.equal(targeted.rows[0].relic.base, 'Lith C1');
-  assert.equal(targeted.rows[0].targetEconomy.expectedSaving, 2.5);
-  assert.equal(targeted.rows[0].targetEconomy.conversionChance, 100);
+  assert.equal(targeted.rows[0].targetEconomy.viable, true);
+  assert.equal(targeted.rows[0].targetEconomy.expectedDucats, 45);
+  assert.equal(targeted.rows[0].targetEconomy.expectedPlat, 2);
+  assert.equal(targeted.rows[0].targetEconomy.efficiency, 22.5);
   const card = buildFissureRecommendCard(targeted).html;
   assert.match(card, /测试奸商商品/u);
-  assert.match(card, /预计省/u);
-  assert.match(card, /不读取实时奖励/u);
+  assert.match(card, /立即可开/u);
+  assert.match(card, /WFInfo 按实际四选一守保本线/u);
+  assert.doesNotMatch(card, /转换概率|预计省/u);
+});
+
+test('trader target adds three obtainable unowned relics with sources', async () => {
+  const ownedRewards = rewards.map((reward, index) => ({ ...reward, slug: `owned_${index}` }));
+  const acquireRewards = rewards.map((reward, index) => ({ ...reward, slug: `acquire_${index}` }));
+  const mixedPrices = {};
+  ownedRewards.forEach((reward) => { mixedPrices[reward.slug] = { p: 20, d: 45, zh: '高价库存奖励' }; });
+  acquireRewards.forEach((reward) => { mixedPrices[reward.slug] = { p: 2, d: 45, zh: '低价可刷奖励' }; });
+  const mixedDb = {
+    rewardsByBase: new Map([['Lith O1', ownedRewards], ['Lith A1', acquireRewards]]),
+    relicsByBase: new Map([
+      ['Lith O1', { base: 'Lith O1', era: 'Lith', vaulted: false }],
+      ['Lith A1', { base: 'Lith A1', era: 'Lith', vaulted: false }],
+    ]),
+  };
+  const goal = { name: '测试商品', ducats: 300, marketPlat: 30, shortfall: 180, ducatsPerPlat: 10 };
+  const data = await recommendFissures([{ baseName: 'Lith O1', count: 1, refinement: 'Intact', vaulted: false }], {
+    mode: 'ducat', ducatGoal: goal, worldState: { fissures: [fissure('capture', 'Capture')] },
+    localDb: mixedDb, prices: mixedPrices,
+    relicSources: { 'Lith A1': [{ place: '地球 Hepit（捕获）', chance: 12.5 }] },
+  });
+  assert.equal(data.ok, true);
+  assert.equal(data.rows.length, 0);
+  assert.equal(data.acquireRows.length, 1);
+  assert.equal(data.acquireRows[0].relic.base, 'Lith A1');
+  assert.equal(data.acquireRows[0].sources[0].place, '地球 Hepit（捕获）');
+  const card = buildFissureRecommendCard(data).html;
+  assert.match(card, /建议获取/u);
+  assert.match(card, /地球 Hepit（捕获）/u);
 });
 
 test('vault filter only recommends matching relics already present in inventory', async () => {
@@ -187,6 +242,21 @@ test('yield preference chooses Void Storm then Steel Path for each relic', async
   assert.equal(data.rows[1].hard, true);
 });
 
+test('Steel Path scope only returns Steel Path fissures', async () => {
+  const data = await recommendFissures(relics, { fissureScope: 'steel', worldState, localDb, prices });
+  assert.equal(data.ok, true);
+  assert.equal(data.fissureScope, 'steel');
+  assert.equal(data.rows.length, 1);
+  assert.equal(data.rows.every((row) => row.hard), true);
+  assert.match(buildFissureRecommendCard(data).html, /仅钢铁/u);
+
+  const empty = await recommendFissures(relics, {
+    fissureScope: 'steel', worldState: { fissures: [fissure('normal', 'Capture')] }, localDb, prices,
+  });
+  assert.equal(empty.error, 'no_steel_fissures');
+  assert.match(formatRecommend(empty), /当前没有.*钢铁裂缝/u);
+});
+
 test('ranks distinct relics by value before expanding each to at most two routes', async () => {
   const pricedRewards = (prefix, price) => rewards.map((reward, index) => ({
     ...reward,
@@ -248,7 +318,7 @@ test('裂缝推荐兼容到任务卡，开遗物进入遗物先行个人模式',
 
 test('自然语言购买奸商商品会进入指定商品的开遗物模式', () => {
   assert.deepEqual(parseNaturalWorldQuestion('我先买电冲弹药，怎么开遗物合适'), {
-    kind: 'recommend', command: '开遗物 杜卡德 电冲弹药', personal: true,
+    kind: 'recommend', command: '开遗物 电冲弹药', personal: true,
   });
   assert.deepEqual(parseNaturalWorldQuestion('怎么开遗物合适'), {
     kind: 'recommend', command: '开遗物', personal: true,

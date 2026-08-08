@@ -1184,8 +1184,8 @@ const HELP_SECTIONS = [
     ['遗物 前x1', '正查：六奖励·价格·精炼建议'],
     ['遗物 战刃', '反查：哪些遗物出它'],
     ['裂缝 [筛选]', '任务先行：全部普通/钢铁＋标签；私聊逐任务配库存'],
-    ['开遗物 [条件] 🔒', '遗物先行：价值 TOP8；每枚最多两条路线'],
-    ['开遗物 杜卡德 商品名 🔒', '指定奸商商品：逐次比较兑杜/卖白金'],
+    ['开遗物 [条件] 🔒', '遗物先行：价值 TOP8；加“钢铁”只匹配钢铁裂缝'],
+    ['开遗物 商品名 🔒', '估算过线候选＋可刷遗物；同步 WFInfo 当屏兜底'],
     ['精炼推荐 🔒', '哪些值得花光体；加「单人」换口径'],
   ]],
   ['世界状态', [
@@ -1230,7 +1230,7 @@ function buildHelpCard() {
   const rowCount = HELP_SECTIONS.reduce((n, [, cmds]) => n + cmds.length, 0);
   const height = 92 + HELP_SECTIONS.length * 29 + rowCount * 38 + 34 + 6;
   const content = `<div class="card"><div class="relic-head"><div class="relic-title">Warframe 助手</div><div class="relic-code">功能总览</div><div class="relic-note">发左列命令即可使用<br>说人话提问也能识别</div></div><table><colgroup><col style="width:38%"><col style="width:62%"></colgroup><tbody>${rows}</tbody></table><div class="foot"><span>🔒 = 仅主人私聊 · 多数命令支持简称：好货/周报/侵袭/悬赏/开什么</span><span>发「帮助」随时唤出</span></div></div>`;
-  return { html: cardDocument(content, height, 760), width: 760, height, key: 'help-v23' };
+  return { html: cardDocument(content, height, 760), width: 760, height, key: 'help-v24' };
 }
 
 function formatHelp() {
@@ -1238,7 +1238,7 @@ function formatHelp() {
     '【Warframe 助手功能总览】',
     '查价：wm 悟空p ｜ wm 赋能充沛 满级 ｜ 或直接问「悟空p多少钱」',
     '遗物：遗物 前x1（正查）｜ 遗物 战刃（反查哪里出）',
-    '裂缝：裂缝 [钢铁 生存 速刷 …]（主人私聊自动配库存遗物）｜ 开遗物 [未入库|已入库] [白金|杜卡德 [奸商|商品名]] [速刷|舒适|收益] [单人]｜ 精炼推荐 [单人]',
+    '裂缝：裂缝 [钢铁 生存 速刷 …]（主人私聊自动配库存遗物）｜ 开遗物 [商品名|未入库|已入库] [白金|杜卡德] [钢铁] [速刷|舒适|收益] [单人]（商品名模式同步 WFInfo 游戏内决策）｜ 精炼推荐 [单人]',
     '世界：仲裁 ｜ 警报 ｜ 入侵 ｜ 活动 ｜ 突击 ｜ 钢铁侵袭 ｜ 赏金 [地点|物品] ｜ 虚空商人/奸商 ｜ 奸商推荐（仅主人私聊）',
     '商店：商店 [序号|商人名]（仅主人私聊）｜ 本周好货 ｜ 哪里买 <物品> ｜ 轮换日历（仅主人私聊）',
     '周常：周常 ｜ 完成 1 3 ｜ 撤销 2 ｜ 清空周常',
@@ -1484,7 +1484,7 @@ export function parseNaturalWorldQuestion(message) {
     || /开遗物.{0,6}(?:怎么|如何|合适|划算|好)/u.test(text)) {
     const buyTargetMatch = text.match(/(?:我)?(?:先|想|要|准备)?买(?:奸商|虚空商人)?(?:的)?[「『]?(.{1,20}?)[」』]?[，,。！？!?；;\s]+(?:(?:该)?怎么|如何).{0,4}开遗物/u);
     const buyTarget = String(buyTargetMatch?.[1] || '').replace(/[「」『』]/gu, '').trim();
-    const mode = /杜卡德|奸商|虚空商人/u.test(text) || buyTarget ? '杜卡德' : '';
+    const mode = buyTarget ? '' : (/杜卡德|奸商|虚空商人/u.test(text) ? '杜卡德' : '');
     const preference = /速刷|快速|快开|效率/u.test(text) ? '速刷'
       : /舒适|轻松|挂机/u.test(text) ? '舒适'
         : /收益|额外|长线/u.test(text) ? '收益' : '';
