@@ -3,7 +3,7 @@
 // 开遗物/裂缝库存增强：库存交集 → 双币期望 → 可选任务偏好，零 AI 判断。
 // 知识依据见 references/game-knowledge.md：全能裂缝可开除安魂外任意遗物，绝不按「无对应遗物」过滤。
 // 估值数据源（学 AlecaFrame 双指标思路）：
-//   奖励表+概率 = 本地 Relics.json（离线）；白金均价+杜卡德 = market /v1/tools/ducats 整表（1 请求，缓存 1h）
+//   奖励表+概率 = 本地 Relics.json（离线）；杜卡德 = market /v1/tools/ducats 整表；白金 = 今日/90 日可靠成交中位（逐件持久缓存）
 //   → 库存遗物全量估值，不做候选裁剪（曾按囤量 top4 取候选，把量少但值钱的遗物漏掉了）
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -124,6 +124,19 @@ async function getJson(url, headers = {}, attempt = 0) {
   return response.json();
 }
 
+async function mapLimit(values, limit, mapper) {
+  const results = new Array(values.length);
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, values.length) }, async () => {
+    while (cursor < values.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await mapper(values[index], index);
+    }
+  }));
+  return results;
+}
+
 // —— 本地遗物奖励表（AlecaFrame cachedData，只读；本地缺失走 CDN 兑底） ——
 export async function loadLocalRelicDb(alecaDir) {
   const { readAlecaJson } = await import('./wfdata.mjs');
@@ -143,28 +156,59 @@ export async function loadLocalRelicDb(alecaDir) {
   return { rewardsByBase };
 }
 
-// —— 价格整表：slug → { p: 加权均价, d: 杜卡德, zh: 中文名 }（2 请求，持久双层缓存 1h；wm 挂掉退陈旧快照） ——
+// —— 杜卡德整表 + 逐件成交中位：slug → { p, d, zh, marketBasis, dailyVolume, reliable } ——
 // 附带 __meta 键（非 slug 命名空间不冲突）：{stale, cachedAt}，调用方据此标注「离线快照」
 export async function loadPriceTable() {
   const { staleCachedJson } = await import('./wfdata.mjs');
-  const result = await staleCachedJson('market-price-table', { ttlMs: CACHE_TTL_MS, version: 3 }, async () => {
+  const result = await staleCachedJson('market-price-table', { ttlMs: CACHE_TTL_MS, version: 4 }, async () => {
     const [items, ducats] = await Promise.all([
       getJson(`${MARKET_BASE}/v2/items`, { Platform: 'pc', Crossplay: 'true', Language: 'zh-hans' }),
       getJson(`${MARKET_BASE}/v1/tools/ducats`),
     ]);
-    const byId = new Map((items.data || []).map((item) => [item.id, { slug: item.slug, zh: item.i18n?.['zh-hans']?.name || null }]));
+    const byId = new Map((items.data || []).map((item) => [item.id, {
+      slug: item.slug,
+      zh: item.i18n?.['zh-hans']?.name || null,
+      isMod: (item.tags || []).includes('mod'),
+    }]));
     const payload = ducats?.payload || {};
     const rows = payload.previous_hour?.length ? payload.previous_hour : (payload.previous_day || []);
     const prices = {};
     for (const row of rows) {
       const meta = byId.get(row.item);
       if (!meta) continue;
-      prices[meta.slug] = { p: Number(row.wa_price) || 0, d: Number(row.ducats) || 0, zh: meta.zh };
+      prices[meta.slug] = { p: null, d: Number(row.ducats) || 0, zh: meta.zh, isMod: meta.isMod, reliable: false };
     }
     if (!Object.keys(prices).length) throw new Error('价格整表为空');
     return prices;
   });
   return { ...result.data, __meta: { stale: result.stale, cachedAt: result.cachedAt } };
+}
+
+export async function loadFairPriceTable(rewards, options = {}) {
+  if (options.prices) {
+    return Object.fromEntries(Object.entries(options.prices).map(([slug, entry]) => [slug,
+      slug === '__meta' ? entry : { ...entry, reliable: entry?.reliable ?? true }]));
+  }
+  const base = await loadPriceTable();
+  const prices = {};
+  for (const [slug, entry] of Object.entries(base)) {
+    if (slug === '__meta') continue;
+    prices[slug] = { ...entry };
+  }
+  const slugs = [...new Set((rewards || []).map((reward) => reward?.slug).filter((slug) => slug && prices[slug]))];
+  const { fetchTradeStatistics } = await import('./trader-shopping.mjs');
+  await mapLimit(slugs, 4, async (slug) => {
+    const entry = prices[slug];
+    const quote = await fetchTradeStatistics(slug, Boolean(entry.isMod));
+    if (!quote?.platinum) return;
+    entry.p = quote.platinum;
+    entry.marketBasis = quote.basis;
+    entry.dailyVolume = quote.dailyVolume;
+    entry.reliable = true;
+    entry.stale = Boolean(quote.stale);
+  });
+  prices.__meta = base.__meta;
+  return prices;
 }
 
 // —— 精炼度与组队期望（2026-08-04，口径对齐 AlecaFrame） ——
@@ -252,10 +296,17 @@ export function appraiseOffline(rewards, prices, squad = 4) {
     const price = entry?.p || 0;
     const ducats = entry?.d || 0;
     const zhName = entry?.zh || reward.name;
-    if (reward.chance <= 3 && (!top || price > (top.price || 0))) top = { name: reward.name, zhName, price: Math.round(price * 10) / 10 };
+    if (reward.chance <= 3 && (!top || price > (top.price || 0))) top = {
+      name: reward.name,
+      zhName,
+      price: Math.round(price * 10) / 10,
+      marketBasis: entry?.marketBasis || null,
+      dailyVolume: entry?.dailyVolume ?? null,
+    };
     if (!topDucat || ducats > (topDucat.ducats || 0)) topDucat = { name: reward.name, zhName, ducats };
   }
-  return { expected: Math.round(expected * 10) / 10, expectedDucats: Math.round(expectedDucats), top, topDucat };
+  const priceReliable = rewards.every((reward) => !reward.slug || Boolean(prices[reward.slug]?.reliable));
+  return { expected: Math.round(expected * 10) / 10, expectedDucats: Math.round(expectedDucats), top, topDucat, priceReliable };
 }
 
 // 目标商品模式：一次开奖中先比较每个实际候选奖励的经济盈余，再按开奖概率求期望。
@@ -371,7 +422,8 @@ export async function recommendFissures(relics, options = {}) {
   if (!localDb) {
     return { ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, error: 'no_local_relic_db', fetchedAt: new Date().toISOString() };
   }
-  const prices = options.prices || await loadPriceTable();
+  const relevantRewards = owned.flatMap((entry) => localDb.rewardsByBase.get(entry.base) || []);
+  const prices = await loadFairPriceTable(relevantRewards, options);
   const priceStaleAt = prices.__meta?.stale ? prices.__meta.cachedAt : null;
 
   // 3) 全量离线估值（组队口径）+ 精炼建议
@@ -384,7 +436,8 @@ export async function recommendFissures(relics, options = {}) {
     const targetEconomy = ducatGoal ? appraiseTraderTarget(rewards, prices, squad, ducatGoal) : null;
     appraisedAll.push({ ...entry, refinements: [...entry.refinements], ...appraiseOffline(rewards, prices, squad), refine, targetEconomy });
   }
-  const appraised = appraisedAll.filter((entry) => entry.era !== 'Requiem');
+  const appraised = appraisedAll.filter((entry) => entry.era !== 'Requiem'
+    && (mode === 'ducat' && !ducatGoal ? true : entry.priceReliable));
 
   // 4) 先按遗物价值排，再为每枚遗物挑最多两条当前路线。
   // 全能=可承载全部非安魂候选（game-knowledge：全能可开除安魂外任意遗物）。
@@ -431,7 +484,8 @@ export async function recommendFissures(relics, options = {}) {
   // 裂缝先行：每条当前裂缝只出现一次，再从兼容库存中挑价值最高的遗物。
   // 用于主人私聊的「裂缝」库存增强；排序由裂缝查询卡负责，这里不再混入旧任务权重。
   if (perspective === 'fissure') {
-    const eligibleAll = ducatGoal ? appraisedAll.filter((entry) => valueOf(entry) > 0) : appraisedAll;
+    const reliableAll = mode === 'ducat' && !ducatGoal ? appraisedAll : appraisedAll.filter((entry) => entry.priceReliable);
+    const eligibleAll = ducatGoal ? reliableAll.filter((entry) => valueOf(entry) > 0) : reliableAll;
     const bestForTier = (tier) => {
       const pool = tier === 'Omnia'
         ? eligibleAll.filter((entry) => entry.era !== 'Requiem')
@@ -518,10 +572,6 @@ export async function recommendRefinement(relics, options = {}) {
     try { localDb = await loadLocalRelicDb(options.alecaDir); } catch { localDb = null; }
   }
   if (!localDb) return { ok: false, kind: 'refine-recommend', mode, squad, error: 'no_local_relic_db', fetchedAt: new Date().toISOString() };
-  const prices = options.prices || await loadPriceTable();
-  const priceStaleAt = prices.__meta?.stale ? prices.__meta.cachedAt : null;
-  const priceOf = (reward) => (reward.slug ? prices[reward.slug] : null);
-
   // 库存合并（含安魂：安魂 Mod 可交易，精炼同样有效）
   const byBase = new Map();
   for (const item of relics) {
@@ -530,14 +580,24 @@ export async function recommendRefinement(relics, options = {}) {
     entry.vaulted = entry.vaulted || Boolean(item.vaulted);
     byBase.set(item.baseName, entry);
   }
+  const relevantRewards = [...byBase.values()].flatMap((entry) => localDb.rewardsByBase.get(entry.base) || []);
+  const prices = await loadFairPriceTable(relevantRewards, options);
+  const priceStaleAt = prices.__meta?.stale ? prices.__meta.cachedAt : null;
+  const priceOf = (reward) => (reward.slug ? prices[reward.slug] : null);
   const rows = [];
   for (const entry of [...byBase.values()].filter((item) => item.count > 0)) {
     const rewards = localDb.rewardsByBase.get(entry.base);
     if (!rewards) continue;
     const { tiers, suggest } = appraiseRefinements(rewards, priceOf, { squad, mode });
     const topRare = rewards.filter((reward) => reward.chance <= 3)
-      .map((reward) => ({ zhName: priceOf(reward)?.zh || reward.name, price: priceOf(reward)?.p || 0 }))
+      .map((reward) => ({
+        zhName: priceOf(reward)?.zh || reward.name,
+        price: priceOf(reward)?.p || 0,
+        marketBasis: priceOf(reward)?.marketBasis || null,
+        dailyVolume: priceOf(reward)?.dailyVolume ?? null,
+      }))
       .sort((a, b) => b.price - a.price)[0] || null;
+    if (mode === 'plat' && rewards.some((reward) => reward.slug && !prices[reward.slug]?.reliable)) continue;
     rows.push({
       base: entry.base,
       zh: relicZh(entry.base),
@@ -639,6 +699,6 @@ export function formatRecommend(data) {
   });
   if (data.requiem) lines.push(`另有安魂裂缝 ${data.requiem.fissures} 条，你有安魂遗物 ${data.requiem.relics} 个。`);
   const preferenceNote = data.preference === 'speed' ? '每枚遗物优先匹配捕获/歼灭' : data.preference === 'comfort' ? '每枚遗物优先匹配防御/生存' : data.preference === 'yield' ? '每枚遗物优先匹配九重天→钢铁→无尽' : '遗物按期望收益排序，每枚最多两条路线';
-  lines.push(`${preferenceNote}；${ducatMode ? (data.ducatGoal ? '按目标商品动态盈亏线逐次开奖选择，不读取实时奖励' : '普通模式按毛杜卡德期望排序，不扣白金') : `期望按完整精炼度·${squadZh}开奖取最优·市场加权均价估算`}，仅供参考。`);
+  lines.push(`${preferenceNote}；${ducatMode ? (data.ducatGoal ? '按目标商品动态盈亏线逐次开奖选择，不读取实时奖励' : '普通模式按毛杜卡德期望排序，不扣白金') : `期望按完整精炼度·${squadZh}开奖取最优·可靠成交中位估算`}，仅供参考。`);
   return lines.join('\n');
 }

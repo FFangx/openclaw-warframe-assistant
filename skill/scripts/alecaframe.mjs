@@ -394,32 +394,32 @@ function categoryKeyOf(meta) {
 
 // 全库存统一估值条目：[{catKey, uniqueName, name, englishName, count, rank, refinement, unit, total, ducats}]
 // 价格分档：0 级/无档=p0；升过级的 MOD/赋能按满级档 pMax（wm 行情只有两档，非满级按满级算并在 detail 标注）
-export async function assembleInventoryValuation(snapshot) {
-  const [drops, { getMarketPriceIndex }] = await Promise.all([import('./drops.mjs'), import('./wfdata.mjs')]);
-  const [catalog, priceIndex] = await Promise.all([drops.loadCatalog(snapshot.alecaDir), getMarketPriceIndex()]);
-  const squash = (value) => String(value || '').normalize('NFKC').trim().toLowerCase().replace(/\s+/gu, '');
+export async function assembleInventoryValuation(snapshot, options = {}) {
+  const drops = await import('./drops.mjs');
+  const [{ fetchTradeStatistics }, catalog, marketEntries] = await Promise.all([
+    import('./trader-shopping.mjs'),
+    drops.loadCatalog(snapshot.alecaDir),
+    drops.marketSlugMap(),
+  ]);
   // 赋能升级=叠加同名张数：rank N 等价 0 级张数（市场可买 N 张自合，换算成立）；满级档行情封顶
   const ARCANE_COPIES = [1, 3, 6, 10, 15, 21];
-  const priceOf = (meta, rank) => {
-    const key = squash(meta.englishName);
-    if (!key) return null;
-    // 遗物 wm 商品名带 Relic 尾缀且不分精炼度；部件商品可能带 Blueprint 尾缀（双键老坑）
-    const baseKey = meta.category === 'Relics' ? squash(meta.englishName.replace(/\s+(Intact|Exceptional|Flawless|Radiant)$/iu, ' Relic')) : key;
-    const entry = priceIndex[baseKey] || priceIndex[`${baseKey}blueprint`] || null;
-    if (!entry) return null;
-    if (rank > 0) {
-      // 满级按满级档；非满级赋能按等价张数换算；非满级 MOD 按 0 级价（升级花的 endo 卖不回来，宁低估不虚高）
-      if (entry.maxRank != null && rank >= entry.maxRank && entry.pMax != null) return { price: entry.pMax, tier: '满级档' };
-      if (meta.category === 'Arcanes' && entry.p0 != null) {
-        const copies = ARCANE_COPIES[Math.min(rank, ARCANE_COPIES.length - 1)] ?? 1;
-        const converted = entry.p0 * copies;
-        return { price: entry.pMax != null ? Math.min(converted, entry.pMax) : converted, tier: `按 ${copies} 张 0 级换算` };
-      }
-      const price = entry.p0 ?? entry.pMax;
-      return Number.isFinite(price) ? { price, tier: entry.p0 != null ? '按 0 级价' : '满级档' } : null;
+  const marketNameOf = (meta) => meta.category === 'Relics'
+    ? meta.englishName.replace(/\s+(Intact|Exceptional|Flawless|Radiant)$/iu, ' Relic')
+    : meta.englishName;
+  const quoteOf = async (entry) => {
+    const marketEntry = drops.findMarketEntry(marketEntries, marketNameOf(entry.meta));
+    if (!marketEntry?.slug) return null;
+    const rankable = entry.meta.category === 'Mods' || entry.meta.category === 'Arcanes';
+    const exact = await fetchTradeStatistics(marketEntry.slug, rankable ? { rank: entry.rank } : false);
+    if (exact?.platinum != null) return { ...exact, price: exact.platinum, tier: entry.rank > 0 ? `${entry.rank} 级成交` : '' };
+    if (!rankable || entry.rank <= 0) return null;
+    const base = await fetchTradeStatistics(marketEntry.slug, { rank: 0 });
+    if (!base?.platinum) return null;
+    if (entry.meta.category === 'Arcanes') {
+      const copies = ARCANE_COPIES[Math.min(entry.rank, ARCANE_COPIES.length - 1)] ?? 1;
+      return { ...base, price: base.platinum * copies, tier: `按 ${copies} 张 0 级成交中位换算` };
     }
-    const price = entry.p0 ?? entry.pMax;
-    return Number.isFinite(price) ? { price, tier: '' } : null;
+    return { ...base, price: base.platinum, tier: '按 0 级成交中位保守估算' };
   };
   const grouped = new Map();
   const put = (uniqueName, count, rank) => {
@@ -453,16 +453,29 @@ export async function assembleInventoryValuation(snapshot) {
     try { rank = safeNumber(JSON.parse(item.UpgradeFingerprint || '{}').lvl); } catch { rank = 0; }
     put(item.ItemType, 1, rank);
   }
-  const entries = [];
-  for (const entry of grouped.values()) {
-    const quote = priceOf(entry.meta, entry.rank);
-    entries.push({
-      ...entry, meta: undefined,
-      unit: quote ? Math.round(quote.price * 10) / 10 : null,
-      tierNote: quote?.tier || '',
-      total: quote ? Math.round(quote.price * entry.count * 10) / 10 : 0,
-    });
-  }
+  const categoryKeys = options.categoryKeys
+    ? new Set(Array.isArray(options.categoryKeys) ? options.categoryKeys : [options.categoryKeys])
+    : null;
+  const sourceEntries = [...grouped.values()].filter((entry) => !categoryKeys || categoryKeys.has(entry.catKey));
+  const entries = new Array(sourceEntries.length);
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(4, sourceEntries.length) }, async () => {
+    while (cursor < sourceEntries.length) {
+      const index = cursor;
+      cursor += 1;
+      const entry = sourceEntries[index];
+      const quote = await quoteOf(entry);
+      entries[index] = {
+        ...entry, meta: undefined,
+        unit: quote ? Math.round(quote.price * 10) / 10 : null,
+        marketBasis: quote?.basis || null,
+        dailyVolume: quote?.dailyVolume ?? null,
+        marketStatsStale: Boolean(quote?.stale),
+        tierNote: quote?.tier || '',
+        total: quote ? Math.round(quote.price * entry.count * 10) / 10 : 0,
+      };
+    }
+  }));
   return annotateParentOwnership(entries, snapshot.inventory);
 }
 
@@ -492,6 +505,7 @@ function valuationRowDetail(entry) {
   if (entry.unit == null) parts.push(`${entry.count} 个 · 暂无行情`);
   else if (entry.count > 1) parts.push(`${entry.count} 个 × 单价 ${entry.unit}p`);
   else parts.push(`单价 ${entry.unit}p`);
+  if (entry.unit != null) parts.push(`${entry.marketBasis === 'today' ? '今日中位' : '90日中位'} · 日均 ${entry.dailyVolume ?? '—'}`);
   if (entry.tierNote && entry.tierNote !== '满级档') parts.push(entry.tierNote);
   if (entry.catKey === 'part' && entry.ducats) parts.push(`${entry.ducats * entry.count} 杜卡德`);
   return parts.join(' · ');
@@ -501,7 +515,7 @@ async function inventoryQuery(snapshot, rawQuery) {
   // 「我的库存 赋能/MOD/遗物/部件/杂项」= 分类明细（价值降序，模板同总览）
   const category = resolveInventoryCategory(rawQuery);
   if (category) {
-    const entries = (await assembleInventoryValuation(snapshot)).filter((entry) => entry.catKey === category.key);
+    const entries = await assembleInventoryValuation(snapshot, { categoryKeys: category.key });
     entries.sort((a, b) => b.total - a.total || b.count - a.count || a.name.localeCompare(b.name, 'zh-CN'));
     const totalValue = entries.reduce((sum, entry) => sum + entry.total, 0);
     const data = {
@@ -555,7 +569,7 @@ async function inventoryQuery(snapshot, rawQuery) {
       totalPlat: totalValue,
       totalCount: entries.reduce((sum, entry) => sum + entry.count, 0),
     };
-    const text = `${formatInventory(data, '')}\n估值=星际战甲市场近日成交均价，只计可交易且有行情的物品。`;
+    const text = `${formatInventory(data, '')}\n估值优先采用可靠今日成交中位，样本不足回退 90 日成交中位；只计可交易且有可靠成交的物品。`;
     return { data, text };
   }
   const [localize, catalog] = await Promise.all([
@@ -747,7 +761,11 @@ export async function runAlecaMessage(message, options = {}) {
     // 未开封价格：wm 普通市场最低在线卖单，拉挂静默无价
     try {
       const prices = await getVeiledPrices(data.veiled.map((v) => v.en));
-      for (const v of data.veiled) if (prices[v.en] != null) v.price = prices[v.en];
+      for (const v of data.veiled) if (prices[v.en] != null) {
+        v.price = prices[v.en].platinum;
+        v.marketBasis = prices[v.en].basis;
+        v.dailyVolume = prices[v.en].dailyVolume;
+      }
     } catch { /* 降级无价 */ }
     if (!data.opened.length && !data.veiled.length) {
       return { handled: true, ok: true, command: 'rivens', text: '快照里没有紫卡。' };
@@ -873,7 +891,7 @@ export async function runAlecaMessage(message, options = {}) {
   if (parsed.command === 'ducat-plan') {
     const { parseDucatSpec, buildDucatPlan, formatDucatPlan } = await import('./ducat-planner.mjs');
     const spec = parseDucatSpec(parsed.query);
-    const entries = await assembleInventoryValuation(snapshot);
+    const entries = await assembleInventoryValuation(snapshot, { categoryKeys: 'part' });
     const data = await buildDucatPlan(entries, spec, { syncedAt: snapshot.syncedAt, ...(options.ducatOptions || {}) });
     // 行内物品图沿用库存卡三层链；只给实际方案行拉图，避免清仓扫描打爆素材源
     try {
@@ -907,14 +925,14 @@ export async function runAlecaMessage(message, options = {}) {
     } catch { mediaUrl = null; }
     return {
       handled: true, ok: data.ok, command: 'ducat-plan', query: parsed.query, data, mediaUrl,
-      followupText: mediaUrl ? '机会成本优先取今日成交中位，样本不足回退 90 日中位；最低卖单仅作辅助参考，不参与方案排序。仅提供建议，不会修改库存。' : null,
+      followupText: mediaUrl ? '机会成本优先取可靠今日成交中位，样本不足或偏差异常时回退 90 日中位；不使用最低卖单估值。仅提供建议，不会修改库存。' : null,
       text: formatDucatPlan(data),
     };
   }
   if (parsed.command === 'trader-shopping') {
     const { traderShopping, formatTraderShopping } = await import('./trader-shopping.mjs');
     let inventoryValuation = null;
-    try { inventoryValuation = await assembleInventoryValuation(snapshot); } catch { inventoryValuation = null; }
+    try { inventoryValuation = await assembleInventoryValuation(snapshot, { categoryKeys: 'part' }); } catch { inventoryValuation = null; }
     // 官方源只给路径无英文名：lang 表中文名兑付（读不到静默降级，wm 目录中文名仍可匹配）
     let zhOf = null;
     try {
@@ -983,7 +1001,7 @@ export async function runAlecaMessage(message, options = {}) {
       try {
         const { traderShopping, selectTraderGoal } = await import('./trader-shopping.mjs');
         let inventoryValuation = null;
-        try { inventoryValuation = await assembleInventoryValuation(snapshot); } catch { inventoryValuation = null; }
+        try { inventoryValuation = await assembleInventoryValuation(snapshot, { categoryKeys: 'part' }); } catch { inventoryValuation = null; }
         let zhOf = null;
         try {
           const { getLangTable } = await import('./wfdata.mjs');

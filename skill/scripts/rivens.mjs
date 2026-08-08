@@ -109,23 +109,21 @@ export function getWeeklyRivenStats() {
   return weeklyStatsPromise;
 }
 
-// 未开封紫卡价格：wm 普通市场最低在线卖单（veiledName → slug 固定映射）；失败逐项降级 null
+// 未开封紫卡估值：wm 普通市场今日/90 日可靠成交中位（veiledName → slug 固定映射）；失败逐项降级 null
 const VEILED_SLUG = Object.freeze({
   'Rifle Riven Mod': 'rifle_riven_mod_(veiled)', 'Shotgun Riven Mod': 'shotgun_riven_mod_(veiled)', 'Pistol Riven Mod': 'pistol_riven_mod_(veiled)',
   'Melee Riven Mod': 'melee_riven_mod_(veiled)', 'Zaw Riven Mod': 'zaw_riven_mod_(veiled)', 'Kitgun Riven Mod': 'kitgun_riven_mod_(veiled)',
   'Archgun Riven Mod': 'archgun_riven_mod_(veiled)', 'Companion Weapon Riven Mod': 'companion_weapon_riven_mod_(veiled)', 'Sentinel Weapon Riven Mod': 'companion_weapon_riven_mod_(veiled)',
 });
-export async function getVeiledPrices(names, fetcher = null) {
+export async function getVeiledPrices(names, statisticsFetcher = null) {
   const out = {};
+  const { fetchTradeStatistics } = await import('./trader-shopping.mjs');
   await Promise.all([...new Set(names)].map(async (name) => {
     const slug = VEILED_SLUG[name];
     if (!slug) return;
     try {
-      const url = `https://api.warframe.market/v2/orders/item/${encodeURIComponent(slug)}/top`;
-      const body = fetcher ? await fetcher(url) : await fetchJson(url);
-      // ⚠ wm top 列表不按价格排序（已知坑），最低价用 Math.min
-      const prices = (body?.data?.sell || []).map((o) => Number(o.platinum)).filter(Number.isFinite);
-      if (prices.length) out[name] = Math.min(...prices);
+      const quote = await fetchTradeStatistics(slug, { rank: 0 }, statisticsFetcher);
+      if (quote?.platinum != null) out[name] = quote;
     } catch { /* 单项失败不影响其余 */ }
   }));
   return out;
@@ -224,6 +222,12 @@ export function rivenName(fp, itemType, table) {
 export async function assembleRivens({ inventory, table, attrZh = {}, lang = null, veiledPrices = {} }) {
   const zhOf = (tag, fallback) => attrZh[tag] || fallback || tag;
   const weaponZh = (compat) => lang?.[compat]?.zh?.name || null;
+  const veiledValue = (name) => {
+    const quote = veiledPrices[name];
+    if (quote == null) return { price: null, marketBasis: null, dailyVolume: null };
+    if (typeof quote === 'number') return { price: quote, marketBasis: null, dailyVolume: null };
+    return { price: quote.platinum ?? null, marketBasis: quote.basis ?? null, dailyVolume: quote.dailyVolume ?? null };
+  };
 
   const unveiled = [];
   for (const u of inventory?.Upgrades || []) {
@@ -263,7 +267,7 @@ export async function assembleRivens({ inventory, table, attrZh = {}, lang = nul
     if (!/\/Randomized\//u.test(u.ItemType || '')) continue;
     const meta = table?.dataByRivenInternalID?.[u.ItemType];
     const en = meta?.veiledName || u.ItemType.split('/').pop();
-    veiled.push({ zh: VEILED_ZH[en] || en, en, count: u.ItemCount || 1, challenge: null, price: veiledPrices[en] ?? null });
+    veiled.push({ zh: VEILED_ZH[en] || en, en, count: u.ItemCount || 1, challenge: null, ...veiledValue(en) });
   }
   for (const u of inventory?.Upgrades || []) {
     if (!/\/Randomized\//u.test(u.ItemType || '')) continue;
@@ -275,7 +279,7 @@ export async function assembleRivens({ inventory, table, attrZh = {}, lang = nul
     veiled.push({
       zh: VEILED_ZH[en] || en, en, count: 1,
       challenge: { progress: fp.challenge.Progress || 0, required: fp.challenge.Required || 0 },
-      price: veiledPrices[en] ?? null,
+      ...veiledValue(en),
     });
   }
 
@@ -342,7 +346,7 @@ export function buildRivenListCard(data, fetchedAt = new Date().toISOString()) {
       <span style="font-size:13px;color:${C.text}">${escapeHtml(v.zh)}</span>
       ${v.count > 1 ? `<span style="font-size:12px;color:${C.sub}">×${v.count}</span>` : ''}
       ${v.challenge ? `<span style="font-size:11.5px;color:${C.cyan}">开封挑战 ${v.challenge.progress}/${v.challenge.required}</span>` : `<span style="font-size:11.5px;color:${C.dim}">未接挑战</span>`}
-      ${v.price != null ? `<span style="margin-left:auto;font-size:11px;color:${C.dim}">在售最低 </span>${currency('plat', v.price, { size: 12 })}` : ''}</div>`).join('');
+      ${v.price != null ? `<span style="margin-left:auto;font-size:11px;color:${C.dim}">${v.marketBasis === 'today' ? '今日中位' : '90日中位'} · 日均${escapeHtml(v.dailyVolume ?? '—')} </span>${currency('plat', v.price, { size: 12 })}` : ''}</div>`).join('');
 
   // 高度：块头 30（有图 40）+ chips 18 + 词条行 26×n + padding 20
   const blocksH = data.opened.reduce((sum, riven) => sum + (riven.iconDataUri ? 40 : 30) + 18 + riven.attrs.length * 26 + 22, 0);
@@ -356,7 +360,7 @@ export function buildRivenListCard(data, fetchedAt = new Date().toISOString()) {
     ${data.veiled.length ? `<div style="padding:8px 16px 2px;font-size:12px;font-weight:800;color:${C.dim}">未开封</div>${veiledRows}` : ''}
     <div class="footer"><span>计算表:AlecaFrame 本机 · 词条名:warframe.market · 数值=满级口径</span><span>${escapeHtml(new Date(fetchedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))}</span></div></div>`;
   // key=模板版本+内容哈希：洗卡/开封后立刻出新图，改模板后 v 号打散缓存
-  const keySeed = 'rivens-v10|' + data.opened.map((r) => `${r.compat}:${r.attrs.map((a) => a.rollPct).join(',')}:${r.rerolls}:${r.iconDataUri ? 'i' : 'x'}`).join('|')
+  const keySeed = 'rivens-v11|' + data.opened.map((r) => `${r.compat}:${r.attrs.map((a) => a.rollPct).join(',')}:${r.rerolls}:${r.iconDataUri ? 'i' : 'x'}`).join('|')
     + `|veiled:${data.veiled.map((v) => `${v.zh}x${v.count}:${v.challenge?.progress ?? '-'}:${v.price ?? '-'}`).join(',')}`;
   return { html: documentShell(content, height, 800), width: 800, height, key: `rivens-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
@@ -611,7 +615,11 @@ async function main() {
   const data = await assembleRivens({ inventory, table, attrZh, lang });
   try {
     const prices = await getVeiledPrices(data.veiled.map((v) => v.en));
-    for (const v of data.veiled) if (prices[v.en] != null) v.price = prices[v.en];
+    for (const v of data.veiled) if (prices[v.en] != null) {
+      v.price = prices[v.en].platinum;
+      v.marketBasis = prices[v.en].basis;
+      v.dailyVolume = prices[v.en].dailyVolume;
+    }
   } catch { /* 降级无价 */ }
   console.log(JSON.stringify(data.opened.map((r) => ({ w: r.weaponZh, name: r.name, god: r.god, attrs: r.attrs.map((a) => `${a.zh} ${a.value === null ? '?' : a.value.toFixed(1)}`) })), null, 1));
   console.log('veiled:', JSON.stringify(data.veiled));

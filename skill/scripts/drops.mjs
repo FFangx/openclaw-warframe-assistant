@@ -26,7 +26,6 @@ const execFileAsync = promisify(execFile);
 
 const SNAPSHOT_KEY = Buffer.from([76, 69, 79, 45, 65, 76, 69, 67, 9, 69, 79, 45, 65, 76, 69, 67]);
 const SNAPSHOT_IV = Buffer.from([49, 50, 70, 71, 66, 51, 54, 45, 76, 69, 51, 45, 113, 61, 57, 0]);
-const MARKET_ORDERS_URL = 'https://api.warframe.market/v2/orders/item';
 const MARKET_ITEMS_URL = 'https://api.warframe.market/v2/items';
 const FETCH_TIMEOUT_MS = 20_000;
 // 单次汇报最多联网查价的物品数，防止一次性入库大量物品时打爆市场 API
@@ -302,22 +301,6 @@ async function marketSlugMap() {
   return marketSlugsPromise;
 }
 
-async function lowestSellPrice(slug, { rankZero = false } = {}) {
-  // 掉落的 MOD/赋能是 0 级形态，按 rank=0 询价（满级价虚高误导）
-  const response = await fetch(`${MARKET_ORDERS_URL}/${slug}/top${rankZero ? '?rank=0' : ''}`, {
-    headers: { Platform: 'pc', Crossplay: 'true', Language: 'zh-hans' },
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
-  if (!response.ok) return null;
-  const payload = await response.json();
-  // ⚠ wm /top 列表不按价格排序（实测 9,11,2,12,2），必须取真实最小值
-  const prices = (payload?.data?.sell || [])
-    .filter((order) => order.visible !== false)
-    .map((order) => Number(order.platinum))
-    .filter(Number.isFinite);
-  return prices.length ? Math.min(...prices) : null;
-}
-
 // wm 目录查询：部件商品带 Blueprint 尾缀（Ash Prime Chassis 商品名=…Chassis Blueprint），直查不中时补尾缀再试
 function findMarketEntry(slugs, englishName) {
   const key = String(englishName || '').toLowerCase().replace(/\s+/gu, '');
@@ -329,13 +312,19 @@ function findMarketEntry(slugs, englishName) {
 async function attachPrices(drops) {
   let slugs;
   try { slugs = await marketSlugMap(); } catch { return; }
+  const { fetchTradeStatistics } = await import('./trader-shopping.mjs');
   const priceable = drops.filter((drop) => drop.tradable && drop.englishName).slice(0, MAX_PRICED_ITEMS);
   await Promise.all(priceable.map(async (drop) => {
     const entry = findMarketEntry(slugs, drop.englishName);
     if (!entry) return;
     // Market 的 zh-hans 名比本地词典更贴近交易场景，命中时优先展示
     if (entry.zhName && drop.displayName.startsWith('未收录')) drop.displayName = entry.zhName;
-    try { drop.platinum = await lowestSellPrice(entry.slug, { rankZero: drop.isMod || drop.isArcane }); } catch { drop.platinum = null; }
+    try {
+      const quote = await fetchTradeStatistics(entry.slug, drop.isMod || drop.isArcane);
+      drop.platinum = quote?.platinum ?? null;
+      drop.marketBasis = quote?.basis ?? null;
+      drop.dailyVolume = quote?.dailyVolume ?? null;
+    } catch { drop.platinum = null; }
   }));
 }
 
@@ -548,13 +537,13 @@ async function monitorDrops({ statePath, ledgerPath, target, cardDir, alecaDir, 
       message = `MEDIA:${mediaUrl}`;
     } else {
       const lines = ['🎁 入库新掉落', ...matched.slice(0, MAX_CARD_ROWS).map((drop) => {
-        const tags = [drop.ducats ? `${drop.ducats * drop.gained} 杜卡德` : '', drop.platinum ? `卖单 ${drop.platinum} 白金` : ''].filter(Boolean).join('，');
+        const tags = [drop.ducats ? `${drop.ducats * drop.gained} 杜卡德` : '', drop.platinum ? `${drop.marketBasis === 'today' ? '今日' : '90日'}成交中位 ${drop.platinum} 白金（日均 ${drop.dailyVolume ?? '—'}）` : ''].filter(Boolean).join('，');
         return `• ${drop.displayName} ×${drop.gained}${tags ? `（${tags}）` : ''}`;
       })];
       if (matched.length > MAX_CARD_ROWS) lines.push(`…共 ${matched.length} 项`);
       const ducatsSum = matched.reduce((sum, drop) => sum + (drop.ducats || 0) * drop.gained, 0);
       if (ducatsSum) lines.push(`本批 Prime 部件共可换 ${ducatsSum} 杜卡德。`);
-      lines.push('数据来自本机账号快照，价格为当前在线最低卖单，仅供参考。');
+      lines.push('数据来自本机账号快照；估值优先采用可靠今日成交中位，样本不足回退 90 日成交中位。');
       message = lines.join('\n');
     }
     // 先落盘再投递：即使 cron 在发送期间强杀进程，下一轮仍能从欠账队列补投。

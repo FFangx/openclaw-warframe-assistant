@@ -102,7 +102,7 @@ test('目标规划优先选择白金机会成本最低的有界组合', () => {
   assert.equal(plan.rows[0].name, '乙');
 });
 
-test('杜卡德机会成本使用成交中位，最低卖单只作辅助展示', async () => {
+test('杜卡德机会成本只使用成交中位，不再混入最低卖单', async () => {
   const plan = await buildDucatPlan([
     part({ count: 2, parentOwned: true }),
   ], parseDucatSpec('杜卡德 清仓'), {
@@ -113,10 +113,9 @@ test('杜卡德机会成本使用成交中位，最低卖单只作辅助展示',
       '48hours': [{ datetime: new Date().toISOString(), median: 3, volume: 8 }],
       '90days': [{ datetime: '2026-08-06T00:00:00.000Z', median: 4, volume: 900 }],
     } } }),
-    orderFetcher: async () => 1,
   });
   assert.equal(plan.rows[0].unitPlat, 3);
-  assert.equal(plan.rows[0].lowestSell, 1);
+  assert.equal(plan.rows[0].lowestSell, undefined);
   assert.equal(plan.rows[0].marketBasis, 'today');
   assert.equal(plan.rows[0].dailyVolume, 10);
   assert.equal(plan.totalPlat, 6);
@@ -209,11 +208,18 @@ test('成交统计优先今日中位且样本不足回退 90 天中位', () => {
     ],
   } } };
   assert.deepEqual(summarizeTradeStatistics(payload, true, now), {
-    platinum: 30, basis: 'today', todayVolume: 5, median90: 24, dailyVolume: 2,
+    platinum: 30, basis: 'today', todayVolume: 5, todayMedian: 30,
+    median90: 24, deviationPct: 25, dailyVolume: 2,
   });
   payload.payload.statistics_closed['48hours'][1].volume = 1;
   assert.equal(summarizeTradeStatistics(payload, true, now).basis, '90days');
   assert.equal(summarizeTradeStatistics(payload, true, now).platinum, 24);
+
+  payload.payload.statistics_closed['48hours'][1] = { datetime: '2026-08-07T03:00:00.000Z', median: 60, volume: 4, mod_rank: 0 };
+  assert.equal(summarizeTradeStatistics(payload, true, now).basis, '90days');
+  payload.payload.statistics_closed['48hours'][1].volume = 9;
+  assert.equal(summarizeTradeStatistics(payload, true, now).basis, 'today');
+  assert.equal(summarizeTradeStatistics(payload, true, now).platinum, 60);
 });
 
 test('奸商每件商品独立使用当前余额，不按展示顺序累扣', async () => {
@@ -266,6 +272,8 @@ test('杜卡德卡片名称变化时不会复用旧图片缓存', () => {
   const stale = buildDucatPlanCard({ ...data, rows: [{ ...row, name: '帕里斯 Prime 握柄' }] });
   assert.notEqual(corrected.key, stale.key);
   assert.match(corrected.html, /狼牙 Prime 握柄/u);
+  const incomplete = buildDucatPlanCard({ ...data, complete: false, shortfall: 275 });
+  assert.match(incomplete.html, /还差\s+<span[^>]*>.*?<img[^>]+>.*?275/su);
 });
 
 test('安全库存无法补足时不会误报奸商路线划算', async () => {

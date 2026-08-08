@@ -636,8 +636,9 @@ async function enrichRelicReward(reward, marketItems, platform, crossplay) {
     chance: Number(reward.chance),
     rarity: rarityFromChance(reward.chance),
     ducats: null,
-    lowestSell: null,
-    highestBuy: null,
+    platinum: null,
+    marketBasis: null,
+    dailyVolume: null,
     ducatsPerPlatinum: null,
     thumb: null,
     icon: null,
@@ -646,22 +647,21 @@ async function enrichRelicReward(reward, marketItems, platform, crossplay) {
   if (!slug) return base;
   try {
     const headers = marketHeaders(platform, crossplay);
-    const [detailResponse, ordersResponse] = await Promise.all([
+    const [detailResponse, quote] = await Promise.all([
       getJson(`${MARKET_BASE}/v2/item/${slug}`, headers),
-      getJson(`${MARKET_BASE}/v2/orders/item/${slug}/top`, headers),
+      import('./trader-shopping.mjs').then(({ fetchTradeStatistics }) => fetchTradeStatistics(slug, false)),
     ]);
     const detail = detailResponse.data || {};
-    const sell = pickOrders(ordersResponse.data?.sell);
-    const buy = pickOrders(ordersResponse.data?.buy, 'buy');
     const ducats = detail.ducats ?? null;
-    const lowestSell = sell[0]?.platinum ?? null;
+    const platinum = quote?.platinum ?? null;
     return {
       ...base,
       zhName: detail.i18n?.['zh-hans']?.name || base.zhName,
       ducats,
-      lowestSell,
-      highestBuy: buy[0]?.platinum ?? null,
-      ducatsPerPlatinum: ducats && lowestSell ? Math.round(ducats / lowestSell) : null,
+      platinum,
+      marketBasis: quote?.basis ?? null,
+      dailyVolume: quote?.dailyVolume ?? null,
+      ducatsPerPlatinum: ducats && platinum ? Math.round(ducats / platinum) : null,
       icon: detail.i18n?.en?.icon || null,
       thumb: detail.i18n?.en?.thumb || null,
       subIcon: detail.i18n?.en?.subIcon || null,
@@ -686,8 +686,8 @@ async function queryRelicForward(parsed, platform, crossplay, squad = 4) {
   const rewards = await mapLimit(relic.rewards || [], 3, (reward) =>
     enrichRelicReward(reward, marketItems, platform, crossplay));
   rewards.sort((a, b) => (RARITY_ORDER[a.rarity] - RARITY_ORDER[b.rarity]) || a.zhName.localeCompare(b.zhName, 'zh-CN'));
-  // 精炼四档期望：同卡同口径（在线最低卖单），与行内价格自洽；杜卡德用官方固定值
-  const refine = appraiseRefinements(rewards, (reward) => ({ p: reward.lowestSell || 0, d: reward.ducats || 0 }), { squad });
+  // 精炼四档期望：同卡同口径（可靠成交中位），与行内估值自洽；杜卡德用官方固定值
+  const refine = appraiseRefinements(rewards, (reward) => ({ p: reward.platinum || 0, d: reward.ducats || 0 }), { squad });
   // 掉落来源 top3（WFCD drop-data 反查索引，缓存 7 天）：已入库遗物天然无掉点，卡片按「已入库」文案兜住
   let sources = [];
   try {
@@ -981,16 +981,16 @@ function formatRelic(result) {
   const relic = result.relic;
   const lines = [
     `【${relic.vaulted ? '已入库遗物' : '未入库遗物'}｜${relic.zhName}】`,
-    '奖励｜最低在线卖价｜杜卡德｜杜卡德/白金',
+    '奖励｜成交中位估值｜杜卡德｜杜卡德/白金',
   ];
   const rarityLabel = { common: '常见', uncommon: '罕见', rare: '稀有' };
   for (const reward of relic.rewards) {
-    const price = reward.lowestSell == null ? '—' : `${reward.lowestSell}白金`;
+    const price = reward.platinum == null ? '—' : `${reward.platinum}白金（${reward.marketBasis === 'today' ? '今日' : '90日'}，日均${reward.dailyVolume ?? '—'}）`;
     const ducats = reward.ducats == null ? '—' : `${reward.ducats}`;
     const efficiency = reward.ducatsPerPlatinum == null ? '—' : `${reward.ducatsPerPlatinum}`;
     lines.push(`- ${rarityLabel[reward.rarity]}｜${reward.zhName}｜${price}｜${ducats}｜${efficiency}`);
   }
-  lines.push('', '价格采用当前在线最低卖单，不冒充历史成交均价。', `跨平台交易｜${formatTime(result.fetchedAt)}｜遗物资料＋星际战甲市场`);
+  lines.push('', '估值优先采用可靠今日成交中位，样本不足回退 90 日成交中位。', `跨平台交易｜${formatTime(result.fetchedAt)}｜遗物资料＋星际战甲市场`);
   return lines.join('\n');
 }
 
@@ -1105,8 +1105,12 @@ function buildRelicCard(data) {
     ? `<img src="${reward.iconDataUri}" style="width:34px;height:34px;object-fit:contain;vertical-align:middle;margin-right:8px">`
     : '<span style="display:inline-block;width:42px"></span>';
   const anyIcon = relic.rewards.some((reward) => reward.iconDataUri);
-  const rows = relic.rewards.map((reward) => `<tr class="reward"><td class="rarity ${escapeHtml(reward.rarity)}">${escapeHtml(rarityLabel[reward.rarity])}</td><td class="reward-name">${anyIcon ? rewardIcon(reward) : ''}${escapeHtml(reward.zhName)}</td><td class="plat">${reward.lowestSell == null ? '—' : currency('plat', reward.lowestSell, { size: 12, color: '#e8d58c', weight: 800 })}</td><td class="ducat">${reward.ducats == null ? '—' : currency('ducat', reward.ducats, { size: 12, color: '#f0d48e', weight: 800 })}</td><td class="eff">${escapeHtml(reward.ducatsPerPlatinum ?? '—')}</td></tr>`).join('');
-  // 精炼四档期望区：★=建议档；口径与上表一致（在线最低卖单）
+  const rows = relic.rewards.map((reward) => {
+    const basis = reward.marketBasis === 'today' ? '今日' : reward.marketBasis === '90days' ? '90日' : '';
+    const price = reward.platinum == null ? '—' : `${currency('plat', reward.platinum, { size: 12, color: '#e8d58c', weight: 800 })}<div style="margin-top:1px;font-size:8px;color:#7f8b97;font-weight:600">${basis} · 日均${escapeHtml(reward.dailyVolume ?? '—')}</div>`;
+    return `<tr class="reward" style="height:52px"><td class="rarity ${escapeHtml(reward.rarity)}">${escapeHtml(rarityLabel[reward.rarity])}</td><td class="reward-name">${anyIcon ? rewardIcon(reward) : ''}${escapeHtml(reward.zhName)}</td><td class="plat" style="height:52px">${price}</td><td class="ducat">${reward.ducats == null ? '—' : currency('ducat', reward.ducats, { size: 12, color: '#f0d48e', weight: 800 })}</td><td class="eff">${escapeHtml(reward.ducatsPerPlatinum ?? '—')}</td></tr>`;
+  }).join('');
+  // 精炼四档期望区：★=建议档；口径与上表一致（可靠成交中位）
   const refine = relic.refine;
   const refineRows = refine ? refine.tiers.map((tier) => {
     const picked = tier.key === refine.suggest.key;
@@ -1119,15 +1123,16 @@ function buildRelicCard(data) {
     ? sources.map((source) => `<tr class="reward" style="height:38px"><td></td><td class="reward-name" colspan="2" style="height:38px;font-size:14px;font-weight:600;color:#cfd6dc">${escapeHtml(source.place)}</td><td class="eff" colspan="2" style="height:38px">${escapeHtml(Math.round(source.chance * 10) / 10)}%</td></tr>`).join('')
     : `<tr class="reward" style="height:38px"><td></td><td colspan="4" style="height:38px;font-size:13px;color:#9aa3ad">${relic.vaulted ? '已入库：无常规掉点，靠开袋复刻、瓦奇娅或玩家交易获取' : '当前掉落表查无常规掉点'}</td></tr>`;
   const sourceBlock = `<tr class="section"><td colspan="5">掉落来源${sources.length ? ' · 概率最高前 ' + sources.length : ''}</td></tr>${sourceRows}`;
-  const height = 438 + (refine ? 28 + refine.tiers.length * 47 : 0) + 28 + Math.max(sources.length, 1) * 39;
+  const height = 468 + (refine ? 28 + refine.tiers.length * 47 : 0) + 28 + Math.max(sources.length, 1) * 39;
   // 标题头纪元图标：英文遗物名首段即 tier 键（Lith S3），无素材退无图
   const headTier = String(relic.name || '').match(/^(Lith|Meso|Neo|Axi|Requiem|Omnia)/iu)?.[1];
   const headTierKey = headTier ? headTier[0].toUpperCase() + headTier.slice(1).toLowerCase() : '';
   const headIcon = RELIC_ICON_DATA[headTierKey]
     ? `<img src="${RELIC_ICON_DATA[headTierKey]}" width="46" height="46" style="flex:0 0 auto;object-fit:contain">`
     : '';
-  const content = `<div class="card"><div class="relic-head" style="display:flex;align-items:center;gap:14px">${headIcon}<div style="min-width:0"><div class="relic-title">${relic.vaulted ? '已入库遗物' : '未入库遗物'}</div><div class="relic-code">${escapeHtml(relic.zhName)}</div></div><div class="relic-note">价格 = 当前在线最低卖价<br>效率 = 杜卡德 ÷ 白金（越高越适合换杜）</div></div><table><colgroup><col style="width:10%"><col style="width:48%"><col style="width:16%"><col style="width:13%"><col style="width:13%"></colgroup><thead class="relic-table-head"><tr><th></th><th class="reward-col">奖励</th><th>价格</th><th>杜卡德</th><th>效率</th></tr></thead><tbody>${rows}${refineBlock}${sourceBlock}</tbody></table><div class="foot"><span>遗物资料＋星际战甲市场；发「遗物 编号 单人」换单人口径</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
-  return { html: cardDocument(content, height), width: 600, height, key: `relic8-${relic.name}-s${data.squad ?? 4}-i${relic.rewards.filter((reward) => reward.iconDataUri).length}-d${sources.length}` };
+  const content = `<div class="card"><div class="relic-head" style="display:flex;align-items:center;gap:14px">${headIcon}<div style="min-width:0"><div class="relic-title">${relic.vaulted ? '已入库遗物' : '未入库遗物'}</div><div class="relic-code">${escapeHtml(relic.zhName)}</div></div><div class="relic-note">估值 = 今日/90日成交中位<br>效率 = 杜卡德 ÷ 白金（越高越适合换杜）</div></div><table><colgroup><col style="width:10%"><col style="width:48%"><col style="width:16%"><col style="width:13%"><col style="width:13%"></colgroup><thead class="relic-table-head"><tr><th></th><th class="reward-col">奖励</th><th>估值</th><th>杜卡德</th><th>效率</th></tr></thead><tbody>${rows}${refineBlock}${sourceBlock}</tbody></table><div class="foot"><span>遗物资料＋星际战甲市场；发「遗物 编号 单人」换单人口径</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
+  const quoteKey = relic.rewards.map((reward) => `${reward.slug || reward.name}:${reward.platinum ?? ''}:${reward.marketBasis || ''}:${reward.dailyVolume ?? ''}`).join('|');
+  return { html: cardDocument(content, height), width: 600, height, key: `relic9-${relic.name}-s${data.squad ?? 4}-i${relic.rewards.filter((reward) => reward.iconDataUri).length}-d${sources.length}-${createHash('sha1').update(quoteKey).digest('hex').slice(0, 8)}` };
 }
 
 function localizeRelicName(name) {
@@ -1352,7 +1357,7 @@ function compactFollowup(data) {
   if (data.mode === 'reverse') {
     return `“${data.query}”反向查询：共找到 ${data.total} 个相关遗物；卡片最多显示前18项。`;
   }
-  return `${data.relic.zhName}｜价格采用当前在线最低卖单，不是历史成交均价。`;
+  return `${data.relic.zhName}｜估值优先采用可靠今日成交中位，样本不足回退 90 日成交中位。`;
 }
 
 // ---- 自然语言问价（试点）：识别「X多少钱/什么价」类问句 ----

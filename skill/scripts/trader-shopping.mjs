@@ -13,9 +13,11 @@ const OFFICIAL_WORLDSTATE_URL = 'https://api.warframe.com/cdn/worldState.php';
 const MARKET_BASE = 'https://api.warframe.market';
 const TIMEOUT_MS = 20_000;
 const CATALOG_CACHE_TTL_MS = 60 * 60 * 1000;
-const STATISTICS_CACHE_TTL_MS = 15 * 60 * 1000;
+const STATISTICS_CACHE_TTL_MS = 60 * 60 * 1000;
 const PRICE_CONCURRENCY = 3;
-const TODAY_MIN_VOLUME = 3;
+const TODAY_MIN_VOLUME = 5;
+const TODAY_STRONG_VOLUME = 10;
+const TODAY_MAX_MEDIAN_DEVIATION = 0.30;
 
 // 巴洛到访中继站（ExportRegions + dict.zh 实证，专名官方保留英文）
 const RELAY_ZH = Object.freeze({
@@ -190,8 +192,14 @@ const beijingDayKey = (value) => {
   return `${part('year')}-${part('month')}-${part('day')}`;
 };
 
-const validStatisticRows = (rows, isMod) => (Array.isArray(rows) ? rows : []).filter((row) => {
-  if (isMod && Number(row?.mod_rank) !== 0) return false;
+const statisticRank = (rankFilter) => {
+  if (rankFilter && typeof rankFilter === 'object' && Number.isInteger(Number(rankFilter.rank))) return Number(rankFilter.rank);
+  return rankFilter === true ? 0 : null;
+};
+
+const validStatisticRows = (rows, rankFilter) => (Array.isArray(rows) ? rows : []).filter((row) => {
+  const rank = statisticRank(rankFilter);
+  if (rank != null && Number(row?.mod_rank) !== rank) return false;
   return Number.isFinite(Number(row?.median)) && Number(row?.volume) > 0 && !Number.isNaN(new Date(row?.datetime).getTime());
 });
 
@@ -210,39 +218,47 @@ const weightedMedian = (rows) => {
   return round1(ordered.at(-1).median);
 };
 
-export function summarizeTradeStatistics(payload, isMod, now = Date.now()) {
+export function summarizeTradeStatistics(payload, rankFilter, now = Date.now()) {
   const closed = payload?.payload?.statistics_closed || payload?.statistics_closed || {};
-  const hourly = validStatisticRows(closed['48hours'], isMod);
-  const daily = validStatisticRows(closed['90days'], isMod);
+  const hourly = validStatisticRows(closed['48hours'], rankFilter);
+  const daily = validStatisticRows(closed['90days'], rankFilter);
   const todayKey = beijingDayKey(now);
   const todayRows = hourly.filter((row) => beijingDayKey(row.datetime) === todayKey);
   const todayVolume = todayRows.reduce((sum, row) => sum + Number(row.volume), 0);
   const total90Volume = daily.reduce((sum, row) => sum + Number(row.volume), 0);
   const todayMedian = weightedMedian(todayRows);
   const median90 = weightedMedian(daily);
-  const useToday = todayMedian != null && todayVolume >= TODAY_MIN_VOLUME;
+  const deviation = todayMedian != null && median90 != null && median90 > 0
+    ? Math.abs(todayMedian - median90) / median90
+    : null;
+  const useToday = todayMedian != null && (
+    todayVolume >= TODAY_STRONG_VOLUME
+    || (todayVolume >= TODAY_MIN_VOLUME && deviation != null && deviation <= TODAY_MAX_MEDIAN_DEVIATION)
+  );
   const platinum = useToday ? todayMedian : median90;
   if (platinum == null) return null;
   return {
     platinum,
     basis: useToday ? 'today' : '90days',
     todayVolume,
+    todayMedian,
     median90,
+    deviationPct: deviation == null ? null : Math.round(deviation * 100),
     dailyVolume: dailyAverage(total90Volume),
   };
 }
 
-// —— 单件估值：优先今日真实成交中位（至少 3 笔），样本不足回退 90 天成交中位；失败退统计缓存 ——
-export async function fetchTradeStatistics(slug, isMod, statisticsFetcher) {
+// —— 单件估值：今日 >=10 笔直接采用；5~9 笔且相对 90 日中位偏差 <=30% 时采用；否则回退 90 日中位。——
+export async function fetchTradeStatistics(slug, rankFilter, statisticsFetcher) {
   try {
-    if (statisticsFetcher) return summarizeTradeStatistics(await statisticsFetcher(slug, isMod), isMod);
+    if (statisticsFetcher) return summarizeTradeStatistics(await statisticsFetcher(slug, rankFilter), rankFilter);
     const { staleCachedJson } = await import('./wfdata.mjs');
     const result = await staleCachedJson(`market-statistics-${slug}`, {
       ttlMs: STATISTICS_CACHE_TTL_MS, version: 1,
     }, () => getJson(`${MARKET_BASE}/v1/items/${slug}/statistics`, {
       Platform: 'pc', Crossplay: 'true', Language: 'zh-hans',
     }));
-    const summary = summarizeTradeStatistics(result.data, isMod);
+    const summary = summarizeTradeStatistics(result.data, rankFilter);
     return summary ? { ...summary, stale: result.stale, cachedAt: result.cachedAt } : null;
   } catch {
     return null;
