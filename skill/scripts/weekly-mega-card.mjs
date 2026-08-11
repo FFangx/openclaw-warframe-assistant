@@ -1,7 +1,7 @@
 // 周常一图流 v2「周报级」卡片 —— 按 K3 设计规范实现（正式版，weekly.mjs 装配数据后调用）
 // 规范要点：1000px 逻辑宽 / scale 2 输出、深色底 + 圆角卡、6 板块、
 //           每项任务「条件 + 奖励 + 打卡」三件套、图标全 SVG、零外网依赖。
-// 词缀/奖励/译名的静态映射在同目录 weekly-static.json，版本更新手改 JSON 即可。
+// 科研词缀优先走 Oracle 世界状态词典；weekly-static.json 只保留离线兜底与其他静态文案。
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -141,16 +141,18 @@ function archonSection(data) {
 }
 
 // —— S2 科研双联：每个科研一张全宽详情卡，铺全变体/风险/个人词缀的效果描述 ——
-function labsSection(data) {
+export function labsSection(data) {
   const modLine = (tag, tagColor, mod, height = 30) => `
     <div style="height:${height}px;display:flex;align-items:center;gap:10px;padding-left:44px">
       <span style="flex:0 0 auto;padding:2px 9px;border-radius:6px;font-size:14px;font-weight:800;color:${tagColor};border:1px solid ${tagColor}">${tag}</span>
       <span style="flex:0 0 auto;font-size:17px;font-weight:850;color:${C.text}">${escapeHtml(mod.name)}</span>
       <span style="font-size:16px;color:${C.sub};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(mod.desc)}</span></div>`;
   const blockH = 42 + 32 + 30 + 30 + 14;
-  const personalRows = Math.max(...data.labs.map((lab) => lab.personal.length));
-  const bodyH = 48 + 46 + blockH * 3 + 34 + personalRows * 30 + 36;
-  const cards = data.labs.map((lab) => {
+  const rendered = data.labs.map((lab) => {
+    const available = lab.missions.length >= 3 && lab.personal.length > 0;
+    const bodyH = available
+      ? 48 + 46 + blockH * lab.missions.length + 34 + lab.personal.length * 30 + 36
+      : 200;
     const blocks = lab.missions.map((mission, index) => `
       <div style="margin-top:${index ? 14 : 0}px;border-bottom:1px solid #262A38;padding-bottom:0">
         <div style="height:42px;display:flex;align-items:center;gap:12px">
@@ -165,22 +167,26 @@ function labsSection(data) {
         <span style="flex:0 0 auto;color:${lab.accent};font-weight:900">◆</span>
         <span style="flex:0 0 auto;font-size:17px;font-weight:850;color:${C.text}">${escapeHtml(mod.name)}</span>
         <span style="font-size:16px;color:${C.sub};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(mod.desc)}</span></div>`).join('');
+    const detail = available ? `${blocks}
+      <div style="height:34px;margin-top:0;display:flex;align-items:flex-end;font-size:15px;letter-spacing:2px;color:${C.dim};font-weight:800">本周个人词缀（精英难度 · 每人随机分配）</div>
+      ${personal}` : `<div style="height:70px;display:flex;align-items:center;gap:16px;padding:0 18px;border:1px solid rgba(240,180,41,.35);border-radius:12px;background:rgba(240,180,41,.07)">
+        <span style="font-size:20px;font-weight:900;color:#F0B429">轮换数据暂不可用</span>
+        <span style="font-size:16px;color:${C.sub}">已保留打卡状态；接口恢复后重新生成周报即可</span></div>`;
     const inner = `
       <div style="height:46px;display:flex;align-items:flex-start;justify-content:space-between">
         <div style="display:flex;align-items:baseline;gap:14px"><div style="font-size:24px;font-weight:900;color:${C.text}">${escapeHtml(lab.title)}</div>
         <div style="font-size:16px;color:${C.sub}">${escapeHtml(lab.place)}</div></div>
         ${checkinBadge(lab.number, lab.done, false, lab.skipped)}</div>
-      ${dimIf(lab.done || lab.skipped, `${blocks}
-      <div style="height:34px;margin-top:0;display:flex;align-items:flex-end;font-size:15px;letter-spacing:2px;color:${C.dim};font-weight:800">本周个人词缀（精英难度 · 每人随机分配）</div>
-      ${personal}
+      ${dimIf(lab.done || lab.skipped, `${detail}
       <div style="height:36px;display:flex;align-items:flex-end;gap:10px">
         <span style="font-size:15px;letter-spacing:2px;color:${C.dim};font-weight:800">奖励</span>
         <span style="font-size:18px;font-weight:800;color:${C.text}">${escapeHtml(lab.rewardLine)}</span></div>`)}`;
-    return card(inner, { height: bodyH, accent: lab.accent, done: lab.done });
-  }).join(`<div style="height:${GAP}px"></div>`);
+    return { html: card(inner, { height: bodyH, accent: lab.accent, done: lab.done }), h: bodyH };
+  });
+  const cards = rendered.map((item) => item.html).join(`<div style="height:${GAP}px"></div>`);
   const html = sectionHeader('每周科研', C.deep)
     + cards;
-  return { html, h: 88 + bodyH * 2 + GAP };
+  return { html, h: 88 + rendered.reduce((sum, item) => sum + item.h, 0) + GAP * Math.max(0, rendered.length - 1) };
 }
 
 // —— S3 每周固定功课：衰退室 / 沉沦之地×2 / 击溃合一众，2×2 同构小卡 ——
@@ -382,8 +388,15 @@ export function buildWeeklyMegaCard(data) {
   const sections = [quickRow(data), archonSection(data), labsSection(data), routineSection(data), circuitSection(data), nightwaveSection(data), calendarSection(data)];
   const footerH = 76;
   const height = 216 + sections.reduce((sum, section) => sum + section.h, 0) + footerH + 28;
+  const sourceLabel = !data.worldStateAvailable
+    ? '公共世界状态暂不可用（已降级）'
+    : data.worldStateStale
+      ? '公共世界状态（本周可靠缓存）'
+      : !data.archimedeasAvailable
+        ? '公共世界状态（科研轮换缺失）'
+        : '公共世界状态';
   const footer = `<div style="height:${footerH}px;margin-top:28px;display:flex;align-items:center;justify-content:space-between;padding:0 ${MX}px;border-top:1px solid ${C.cardBorder}">
-    <span style="font-size:16px;color:${C.dim}">数据：公共世界状态 · 完成度：本地记录${data.autoNote ? ` · ${escapeHtml(data.autoNote)}` : ''} · 生成于 ${escapeHtml(data.generatedAt)}</span>
+    <span style="font-size:16px;color:${C.dim}">数据：${sourceLabel} · 完成度：本地记录${data.autoNote ? ` · ${escapeHtml(data.autoNote)}` : ''} · 生成于 ${escapeHtml(data.generatedAt)}</span>
     <span style="font-size:16px;color:${C.sub};font-weight:700">打卡：完成 1 3｜撤销 3｜跳过 5｜取消跳过 5｜清空周常</span></div>`;
   const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><style>
     *{box-sizing:border-box;margin:0}html,body{width:${W}px;background:${C.bg}}

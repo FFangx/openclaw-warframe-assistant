@@ -18,7 +18,7 @@ import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { stripDataUriReplacer } from './wfdata.mjs';
+import { getMarketPriceIndex, stripDataUriReplacer } from './wfdata.mjs';
 import { promisify } from 'node:util';
 import { buildDropsAlertCard, renderWarframeCard } from './warframe-cards.mjs';
 
@@ -28,9 +28,10 @@ const SNAPSHOT_KEY = Buffer.from([76, 69, 79, 45, 65, 76, 69, 67, 9, 69, 79, 45,
 const SNAPSHOT_IV = Buffer.from([49, 50, 70, 71, 66, 51, 54, 45, 76, 69, 51, 45, 113, 61, 57, 0]);
 const MARKET_ITEMS_URL = 'https://api.warframe.market/v2/items';
 const FETCH_TIMEOUT_MS = 20_000;
-// 单次汇报最多联网查价的物品数，防止一次性入库大量物品时打爆市场 API
-const MAX_PRICED_ITEMS = 6;
 const MAX_CARD_ROWS = 12;
+// 查价覆盖卡片实际展示的全部行，但固定限并发，避免一次性请求打爆市场 API。
+const MAX_PRICED_ITEMS = MAX_CARD_ROWS;
+const PRICE_CONCURRENCY = 3;
 // 投递欠账保留 48 小时：网络恢复后自动补投，超期丢弃防无限堆积
 const PENDING_TTL_MS = 48 * 60 * 60 * 1000;
 // cron 最长运行 120 秒；超过两分钟的锁不可能再属于正常任务，可安全回收。
@@ -308,24 +309,61 @@ function findMarketEntry(slugs, englishName) {
   return slugs.get(key) || slugs.get(`${key}blueprint`) || null;
 }
 
+async function mapLimit(values, limit, mapper) {
+  const results = new Array(values.length);
+  let index = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, values.length) }, async () => {
+    while (index < values.length) {
+      const current = index;
+      index += 1;
+      results[current] = await mapper(values[current], current);
+    }
+  }));
+  return results;
+}
+
+const priceIndexKey = (value) => String(value || '').normalize('NFKC').trim().toLowerCase().replace(/\s+/gu, '');
+
 // 给可交易掉落补市价；失败静默降级为无价格，绝不伪造
-async function attachPrices(drops) {
-  let slugs;
-  try { slugs = await marketSlugMap(); } catch { return; }
-  const { fetchTradeStatistics } = await import('./trader-shopping.mjs');
+async function attachPrices(drops, options = {}) {
+  let slugs = options.slugs;
+  if (!slugs) {
+    try { slugs = await marketSlugMap(); } catch { slugs = new Map(); }
+  }
+  const quoteFetcher = options.quoteFetcher
+    || (await import('./trader-shopping.mjs')).fetchTradeStatistics;
   const priceable = drops.filter((drop) => drop.tradable && drop.englishName).slice(0, MAX_PRICED_ITEMS);
-  await Promise.all(priceable.map(async (drop) => {
+  if (!priceable.length) return;
+  // 每日成交索引与逐件中位价并行预热；只有统计接口失败时才采用其中明确标为 closed 的成交均价。
+  const priceIndexPromise = options.priceIndex !== undefined
+    ? Promise.resolve(options.priceIndex)
+    : getMarketPriceIndex();
+  await mapLimit(priceable, PRICE_CONCURRENCY, async (drop) => {
     const entry = findMarketEntry(slugs, drop.englishName);
     if (!entry) return;
+    drop.marketSlug = entry.slug;
     // Market 的 zh-hans 名比本地词典更贴近交易场景，命中时优先展示
     if (entry.zhName && drop.displayName.startsWith('未收录')) drop.displayName = entry.zhName;
     try {
-      const quote = await fetchTradeStatistics(entry.slug, drop.isMod || drop.isArcane);
+      const quote = await quoteFetcher(entry.slug, drop.isMod || drop.isArcane);
       drop.platinum = quote?.platinum ?? null;
       drop.marketBasis = quote?.basis ?? null;
       drop.dailyVolume = quote?.dailyVolume ?? null;
+      drop.marketStatsStale = Boolean(quote?.stale);
     } catch { drop.platinum = null; }
-  }));
+  });
+
+  let priceIndex = {};
+  try { priceIndex = await priceIndexPromise; } catch { priceIndex = {}; }
+  for (const drop of priceable) {
+    if (drop.platinum != null) continue;
+    const fallback = priceIndex?.[priceIndexKey(drop.englishName)];
+    // 掉落均为刚入库的 0 级 MOD/赋能；只接受真实 closed 成交行，不拿最低卖单冒充估值。
+    if (fallback?.p0Basis !== 'closed' || !Number.isFinite(Number(fallback.p0))) continue;
+    drop.platinum = Number(fallback.p0);
+    drop.marketBasis = 'daily-closed';
+    drop.dailyVolume = null;
+  }
 }
 
 // ---------- 基线状态 ----------
@@ -537,7 +575,10 @@ async function monitorDrops({ statePath, ledgerPath, target, cardDir, alecaDir, 
       message = `MEDIA:${mediaUrl}`;
     } else {
       const lines = ['🎁 入库新掉落', ...matched.slice(0, MAX_CARD_ROWS).map((drop) => {
-        const tags = [drop.ducats ? `${drop.ducats * drop.gained} 杜卡德` : '', drop.platinum ? `${drop.marketBasis === 'today' ? '今日' : '90日'}成交中位 ${drop.platinum} 白金（日均 ${drop.dailyVolume ?? '—'}）` : ''].filter(Boolean).join('，');
+        const estimate = drop.marketBasis === 'daily-closed'
+          ? `近期成交均价 ${drop.platinum} 白金`
+          : `${drop.marketBasis === 'today' ? '今日' : '90日'}成交中位 ${drop.platinum} 白金（日均 ${drop.dailyVolume ?? '—'}）`;
+        const tags = [drop.ducats ? `${drop.ducats * drop.gained} 杜卡德` : '', drop.platinum ? estimate : ''].filter(Boolean).join('，');
         return `• ${drop.displayName} ×${drop.gained}${tags ? `（${tags}）` : ''}`;
       })];
       if (matched.length > MAX_CARD_ROWS) lines.push(`…共 ${matched.length} 项`);
@@ -593,7 +634,7 @@ async function main() {
   process.exitCode = 1;
 }
 
-export { monitorDrops, dropMatches, countInventory, loadCatalog, describeDrop, defaultAlecaDir, marketSlugMap, findMarketEntry, marketDisplayImagePath, marketDisplayImageUrl, withLock };
+export { monitorDrops, dropMatches, countInventory, loadCatalog, describeDrop, defaultAlecaDir, marketSlugMap, findMarketEntry, marketDisplayImagePath, marketDisplayImageUrl, attachPrices, withLock };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {

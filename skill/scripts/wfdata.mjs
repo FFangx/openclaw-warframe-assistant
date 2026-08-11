@@ -26,6 +26,8 @@ const ARBY_TIERS_URL = 'https://browse.wf/supplemental-data/arbyTiers.js';
 
 const CHALLENGE_CACHE = path.join(DATA_CACHE_DIR, 'challenge-zh.json');
 const EVENT_CACHE = path.join(DATA_CACHE_DIR, 'event-zh.json');
+const ORACLE_CONQUEST_CACHE = path.join(DATA_CACHE_DIR, 'oracle-conquest-zh.json');
+const OFFICIAL_TEXT_CACHE = path.join(DATA_CACHE_DIR, 'official-text-zh.json');
 const ARBY_CACHE = path.join(DATA_CACHE_DIR, 'arby-tiers.json');
 const BOUNTY_CACHE = path.join(DATA_CACHE_DIR, 'bounty-zh.json');
 const CALENDAR_CHALLENGE_CACHE = path.join(DATA_CACHE_DIR, 'calendar-challenge.json');
@@ -295,6 +297,67 @@ export function getOracleEventMap() {
   return eventZhPromise;
 }
 
+// —— 科研词缀：Map<英文显示名, [{ name, desc, descEn, key }]> ——
+// warframestat 的科研对象只给英文显示名/说明，不给 /Lotus/ 语言键；Oracle 词典保留同一显示名
+// 对应的正式简中名称与相邻 _Desc 键。按显示名建索引，并保留重名候选供调用方按英文说明判别。
+let oracleConquestPromise = null;
+export function getOracleConquestMap() {
+  oracleConquestPromise ??= (async () => {
+    try {
+      const entries = await cachedBuild(ORACLE_CONQUEST_CACHE, EVENT_TTL_MS, 1, async () => {
+        const [en, zh] = await Promise.all([fetchJson(ORACLE_DICT_EN_URL), fetchJson(ORACLE_DICT_ZH_URL)]);
+        const grouped = new Map();
+        for (const [key, english] of Object.entries(en)) {
+          if (!key.startsWith('/Lotus/Language/Conquest/') || key.endsWith('_Desc')) continue;
+          const chinese = zh[key];
+          if (!english || !chinese || english === chinese) continue;
+          const descKey = `${key}_Desc`;
+          const candidate = {
+            key,
+            name: chinese,
+            descEn: en[descKey] || '',
+            desc: zh[descKey] && zh[descKey] !== en[descKey] ? zh[descKey] : '',
+          };
+          const name = String(english).trim();
+          grouped.set(name, [...(grouped.get(name) || []), candidate]);
+        }
+        if (!grouped.size) throw new Error('Oracle 科研词缀映射为空');
+        return [...grouped.entries()];
+      });
+      return new Map(entries);
+    } catch {
+      return new Map();
+    }
+  })();
+  return oracleConquestPromise;
+}
+
+// —— Public Export 完整文本词典：Map<规范化英文原文, 官方简中> ——
+// 用于 worldstate 只返回英文显示名、但不返回语言键的短文本（如灵化武器轮换）。
+let officialTextPromise = null;
+export function getOfficialTextMap() {
+  officialTextPromise ??= (async () => {
+    try {
+      const entries = await cachedBuild(OFFICIAL_TEXT_CACHE, CHALLENGE_TTL_MS, 1, async () => {
+        const [en, zh] = await Promise.all([fetchJson(DICT_EN_URL), fetchJson(DICT_ZH_URL)]);
+        const map = new Map();
+        for (const [key, english] of Object.entries(en)) {
+          const chinese = zh[key];
+          if (!english || !chinese || english === chinese) continue;
+          const normalized = normTitle(english);
+          if (normalized && !map.has(normalized)) map.set(normalized, chinese);
+        }
+        if (!map.size) throw new Error('Public Export 文本词典为空');
+        return [...map.entries()];
+      });
+      return new Map(entries);
+    } catch {
+      return new Map();
+    }
+  })();
+  return officialTextPromise;
+}
+
 // —— 仲裁场地评级：{ SolNode450: 'S', ... }；失败返回空对象 ——
 let arbyTiersPromise = null;
 export function getArbyTiers() {
@@ -384,13 +447,17 @@ let calendarChallengePromise = null;
 export function getCalendarChallengeMap() {
   calendarChallengePromise ??= (async () => {
     try {
-      return await cachedBuild(CALENDAR_CHALLENGE_CACHE, CALENDAR_CHALLENGE_TTL_MS, 1, async () => {
-        const [challenges, zh] = await Promise.all([fetchJson(CHALLENGE_URL), fetchJson(DICT_ZH_URL)]);
+      return await cachedBuild(CALENDAR_CHALLENGE_CACHE, CALENDAR_CHALLENGE_TTL_MS, 2, async () => {
+        const [challenges, en, zh] = await Promise.all([fetchJson(CHALLENGE_URL), fetchJson(DICT_EN_URL), fetchJson(DICT_ZH_URL)]);
         const map = {};
         for (const [challengePath, meta] of Object.entries(challenges)) {
           const tail = challengePath.match(/\/Calendar1999\/([A-Za-z0-9]+)$/u)?.[1];
           if (!tail) continue;
-          map[tail.toLowerCase()] = { zh: zh[meta?.name] || null, required: Number(meta?.requiredCount) || 0 };
+          map[tail.toLowerCase()] = {
+            zh: zh[meta?.name] || en[meta?.name] || null,
+            desc: zh[meta?.description] || en[meta?.description] || null,
+            required: Number(meta?.requiredCount) || 0,
+          };
         }
         if (!Object.keys(map).length) throw new Error('日历挑战映射为空');
         return map;
@@ -535,7 +602,7 @@ let priceIndexPromise = null;
 export function getMarketPriceIndex() {
   priceIndexPromise ??= (async () => {
     try {
-      return await cachedBuild(PRICE_INDEX_CACHE, PRICE_INDEX_TTL_MS, 3, async () => {
+      return await cachedBuild(PRICE_INDEX_CACHE, PRICE_INDEX_TTL_MS, 4, async () => {
         let dump = null;
         for (let back = 0; back < 3 && !dump; back += 1) {
           const day = new Date(Date.now() - back * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -552,14 +619,19 @@ export function getMarketPriceIndex() {
           // 口径=closed 成交加权均价（真实、保守）；无成交的冷门物品退 sell 挂价
           const pick = (rank) => {
             const ofRank = rows.filter((row) => (Number(row?.mod_rank) > 0) === rank);
-            const row = ofRank.find((item) => item.order_type === 'closed') || ofRank.find((item) => item.order_type === 'sell');
+            const closed = ofRank.find((item) => item.order_type === 'closed');
+            const row = closed || ofRank.find((item) => item.order_type === 'sell');
             const price = Number(row?.wa_price ?? row?.avg_price);
-            return Number.isFinite(price) ? { price: Math.round(price * 10) / 10, maxRank: Number(row?.mod_rank) || 0 } : null;
+            return Number.isFinite(price) ? {
+              price: Math.round(price * 10) / 10,
+              maxRank: Number(row?.mod_rank) || 0,
+              basis: closed ? 'closed' : 'sell',
+            } : null;
           };
           const base = pick(false);
           const max = pick(true);
-          if (base) entry.p0 = base.price;
-          if (max) { entry.pMax = max.price; entry.maxRank = max.maxRank; }
+          if (base) { entry.p0 = base.price; entry.p0Basis = base.basis; }
+          if (max) { entry.pMax = max.price; entry.pMaxBasis = max.basis; entry.maxRank = max.maxRank; }
         }
         if (!Object.keys(index).length) throw new Error('价格索引为空');
         return index;
@@ -572,11 +644,13 @@ export function getMarketPriceIndex() {
 }
 
 // 测试打桩：注入预置结果并复位单例
-export function __resetWfdataForTest({ challengeMap, eventMap, arbyTiers, bountyZh, calendarChallenges, seasonRequired, relicSources, priceIndex, langTable } = {}) {
+export function __resetWfdataForTest({ challengeMap, eventMap, oracleConquestMap, officialTextMap, arbyTiers, bountyZh, calendarChallenges, seasonRequired, relicSources, priceIndex, langTable } = {}) {
   langTablePromises = new Map();
   langTableStub = langTable;
   challengeZhPromise = challengeMap !== undefined ? Promise.resolve(challengeMap) : null;
   eventZhPromise = eventMap !== undefined ? Promise.resolve(eventMap) : null;
+  oracleConquestPromise = oracleConquestMap !== undefined ? Promise.resolve(oracleConquestMap) : null;
+  officialTextPromise = officialTextMap !== undefined ? Promise.resolve(officialTextMap) : null;
   arbyTiersPromise = arbyTiers !== undefined ? Promise.resolve(arbyTiers) : null;
   bountyZhPromise = bountyZh !== undefined ? Promise.resolve(bountyZh) : null;
   calendarChallengePromise = calendarChallenges !== undefined ? Promise.resolve(calendarChallenges) : null;

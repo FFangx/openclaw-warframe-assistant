@@ -12,12 +12,19 @@
 
 ## 世界状态与静态资料
 
-- 世界状态：`GET https://api.warframestat.us/{platform}`
+- 世界状态：`GET https://api.warframestat.us/{platform}`；科研轮换可用子端点 `GET /{platform}/archimedeas` 做字段级补取
+- 科研词缀中文：`oracle.browse.wf/dicts/en.json` × `zh.json`，按英文显示名与相邻 `_Desc` 语言键自动配对；缓存 24 小时
+- 灵化武器等短文本：`browse.wf/warframe-public-export-plus/dict.en.json` × `dict.zh.json` 完整反向索引；缓存 7 天
+- 1999 挑战：`ExportChallenges.json` 提供语言键与 `requiredCount`，中文标题/说明从 Public Export 词典读取并替换 `|COUNT|`
+- 1999 奖励：优先使用官方 `KnownCalendarSeasons.Days[].events[].reward` StoreItem 路径反查中文，不依赖解析器英文显示名
 - 平台路径：`pc / ps4 / xb1 / swi`；mobile 世界状态不支持
 - PC 实测顶层字段包括 `timestamp`、`fissures`、`alerts`、`invasions`、`voidTraders`、开放世界周期、`nightwave`、`arbitration`、`steelPath`、`archonHunt` 与 `duviriCycle`
 - 静态资料：`GET /warframes|weapons|items/search/{query}`；实测 `gauss` 和 `ignis` 成功
 - 所有网络请求统一使用 20 秒超时；搜索需区分“无匹配”与网络或 HTTP 失败
 - 该服务为社区数据源，实时答案必须显示 `timestamp`，不能把缓存知识冒充实时状态
+- 周报只缓存同一周内通过完整性校验的世界状态（LAB/HEX 各至少三关且未过期）；顶层响应漏科研字段时补取子端点，Cloudflare/接口临时失败时仅回退本周可靠缓存，不跨周复用
+- 科研词缀优先使用 Oracle 世界状态专用中英词典；在线刷新失败时退陈旧词典缓存，再退 `weekly-static.json`，无需逐周手工补表
+- 1999 日历按官方路径逐事件对齐奖励/增益，挑战行同时显示官方标题、具体要求量和可用的个人进度
 
 ## Warframe.Market v2
 

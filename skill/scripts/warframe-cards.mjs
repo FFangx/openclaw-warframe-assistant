@@ -609,7 +609,9 @@ export function buildDropsAlertCard(data) {
     const iconBox = drop.iconDataUri
       ? `<div style="width:40px;height:40px;border-radius:8px;display:grid;place-items:center;background:rgba(255,255,255,.07);overflow:hidden"><img src="${drop.iconDataUri}" style="max-width:36px;max-height:36px;object-fit:contain"></div>`
       : `<div style="width:32px;height:32px;border-radius:8px;display:grid;place-items:center;background:${mark.color};color:#14181d;font-size:15px;font-weight:900">${mark.text}</div>`;
-    const estimateBasis = drop.platinum != null ? `${drop.marketBasis === 'today' ? '今日中位' : '90日中位'} · 日均 ${drop.dailyVolume ?? '—'}` : '';
+    const estimateBasis = drop.platinum == null ? ''
+      : drop.marketBasis === 'daily-closed' ? '近期成交均价'
+        : `${drop.marketBasis === 'today' ? '今日中位' : '90日中位'} · 日均 ${drop.dailyVolume ?? '—'} 笔交易${drop.marketStatsStale ? ' · 缓存' : ''}`;
     const detailParts = [drop.isRelic ? (drop.vaulted ? '已入库' : '未入库') : '', drop.rarityZh, drop.condition, estimateBasis].filter(Boolean);
     const priceText = drop.platinum != null ? currency('plat', drop.platinum, { size: 11, weight: 800 }) : (drop.tradable ? '暂无可靠估值' : '不可交易');
     // 杜卡德优先占副行（Prime 部件固定价值比浮动市价更可靠），市价退到同行拼接
@@ -618,8 +620,10 @@ export function buildDropsAlertCard(data) {
   }).join('');
   const empty = '<div style="position:relative;z-index:1;height:62px;display:grid;place-items:center;color:#8995a1;font-size:14px">没有可显示的新掉落</div>';
   const totalDucats = Number(data.totalDucats) || 0;
-  const content = `<div class="card"><div class="header" style="height:86px">${glyphOrIcon(data.glyphDataUri, 'target')}<div style="min-width:0"><div class="kicker">个人掉落 · 本机只读</div><div class="title" style="font-size:23px">入库新掉落 · ${total} 项</div></div><div class="header-meta"><strong style="color:#75dcca">仅用户私聊</strong><span>${escapeHtml(localTime(data.syncedAt))} 同步</span></div></div>${rows || empty}<div class="footer" style="height:34px"><span>${totalDucats ? `本批共可换 <strong style="color:#f0c765">${totalDucats}</strong> 杜卡德 · ` : ''}来源：本机账号快照</span><span>${total > drops.length ? `显示 ${drops.length}/${total} · ` : ''}估值=可靠成交中位</span></div></div>`;
-  const keySeed = `drops-v6|${data.syncedAt}|${data.glyphDataUri ? 'g' : 'x'}|${drops.map((drop) => `${drop.uniqueName}:${drop.gained}:${drop.marketBasis || ''}:${drop.platinum ?? ''}:${drop.isRelic ? (drop.vaulted ? 'v' : 'u') : '-'}`).join('|')}`;
+  const hasDailyFallback = drops.some((drop) => drop.marketBasis === 'daily-closed');
+  const estimateNote = hasDailyFallback ? '估值=成交中位；故障时用近期成交均价' : '估值=可靠成交中位';
+  const content = `<div class="card"><div class="header" style="height:86px">${glyphOrIcon(data.glyphDataUri, 'target')}<div style="min-width:0"><div class="kicker">个人掉落 · 本机只读</div><div class="title" style="font-size:23px">入库新掉落 · ${total} 项</div></div><div class="header-meta"><strong style="color:#75dcca">仅用户私聊</strong><span>${escapeHtml(localTime(data.syncedAt))} 同步</span></div></div>${rows || empty}<div class="footer" style="height:34px"><span>${totalDucats ? `本批共可换 <strong style="color:#f0c765">${totalDucats}</strong> 杜卡德 · ` : ''}来源：本机账号快照</span><span>${total > drops.length ? `显示 ${drops.length}/${total} · ` : ''}${estimateNote}</span></div></div>`;
+  const keySeed = `drops-v8|${data.syncedAt}|${data.glyphDataUri ? 'g' : 'x'}|${drops.map((drop) => `${drop.uniqueName}:${drop.gained}:${drop.marketBasis || ''}:${drop.platinum ?? ''}:${drop.isRelic ? (drop.vaulted ? 'v' : 'u') : '-'}`).join('|')}`;
   return { html: documentShell(content, height), width: 600, height, key: `drops-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 
