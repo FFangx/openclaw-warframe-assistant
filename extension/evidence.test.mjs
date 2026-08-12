@@ -37,3 +37,14 @@ test('已经过期的实时结果不能继续证明当前状态', () => {
   assert.equal(evidence.freshness, 'expired');
   assert.equal(evidence.finding, 'stale_evidence');
 });
+
+test('订阅诊断是审计证据而非当前世界状态', () => {
+  const evidence = buildEvidenceEnvelope({
+    ok: true, kind: 'subscription-diagnosis', facts: {
+      type: 'subscription-diagnosis', finding: 'audit_report', checkedAt: '2026-08-13T00:00:00.000Z',
+    },
+  }, 'subscription_diagnosis', '尖刃弹头');
+  assert.equal(evidence.scope, 'subscription_audit');
+  assert.equal(evidence.evidenceType, 'local_audit_log');
+  assert.equal(evidence.finding, 'audit_report');
+});

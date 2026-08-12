@@ -29,6 +29,9 @@ export function buildEvidenceEnvelope(result, operation = 'command', query = '')
     else if (lookupKind === 'sp-incursions') scope = 'current_day';
     else if (STATIC_LOOKUPS.has(lookupKind)) scope = 'static_reference';
     evidenceType = scope === 'static_reference' ? 'reference' : 'direct_snapshot';
+  } else if (operation === 'subscription_diagnosis') {
+    scope = 'subscription_audit';
+    evidenceType = 'local_audit_log';
   } else if (operation === 'subscription') {
     scope = 'subscription_ledger';
     evidenceType = 'local_state';
@@ -53,6 +56,7 @@ export function buildEvidenceEnvelope(result, operation = 'command', query = '')
   if (facts?.type === 'bounty-reward-current-check') {
     finding = facts.currentlyAvailable === true ? 'confirmed_present' : 'confirmed_absent_in_scope';
   }
+  if (facts?.type === 'subscription-diagnosis') finding = facts.finding || 'audit_report';
   if (freshness === 'expired' && scope !== 'static_reference') finding = 'stale_evidence';
 
   return {

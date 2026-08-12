@@ -35,6 +35,8 @@ const TRADER_SOURCE_STALE_MS = 10 * 60 * 1000;
 const TRADER_TRANSITION_RETRY_MS = 2 * 60 * 1000;
 const TRADER_TRANSITION_GRACE_MS = 5 * 60 * 1000;
 const TRADER_SCHEDULE_POLICY_VERSION = 2;
+const AUDIT_LIMIT = 1200;
+const AUDIT_PER_SUBSCRIPTION_LIMIT = 120;
 
 const REWARD_ZH = Object.freeze({
   'Fieldron': '电磁力场装置',
@@ -228,7 +230,7 @@ function parseArgs(argv) {
 }
 
 function emptyLedger() {
-  return { version: 1, updatedAt: new Date().toISOString(), subscriptions: [], schedules: {} };
+  return { version: 2, updatedAt: new Date().toISOString(), subscriptions: [], schedules: {}, audit: [] };
 }
 
 async function readLedger(statePath) {
@@ -241,15 +243,104 @@ async function readLedger(statePath) {
       ownerId: String(item.ownerId || '').toLowerCase(),
     }));
     return {
-      version: 1,
+      version: 2,
       updatedAt: parsed.updatedAt || null,
       subscriptions,
       schedules: parsed.schedules && typeof parsed.schedules === 'object' ? parsed.schedules : {},
+      audit: Array.isArray(parsed.audit) ? parsed.audit : [],
     };
   } catch (error) {
     if (error?.code === 'ENOENT') return emptyLedger();
     throw error;
   }
+}
+
+function snapshotId(items) {
+  const keys = items.map((item) => `${item.id || ''}@${item.expiry || ''}`).sort();
+  return createHash('sha1').update(keys.join('|')).digest('hex').slice(0, 16);
+}
+
+function snapshotExpiry(items) {
+  const values = items.map((item) => item.expiry).filter(Boolean)
+    .sort((a, b) => Date.parse(a) - Date.parse(b));
+  return values[0] || null;
+}
+
+function appendSubscriptionAudit(ledger, entry) {
+  const audit = Array.isArray(ledger.audit) ? ledger.audit : [];
+  audit.push({ checkedAt: new Date().toISOString(), ...entry });
+  const perSubscription = new Map();
+  ledger.audit = audit.reverse().filter((item) => {
+    const key = String(item.subscriptionId || '');
+    const count = (perSubscription.get(key) || 0) + 1;
+    perSubscription.set(key, count);
+    return count <= AUDIT_PER_SUBSCRIPTION_LIMIT;
+  }).reverse().slice(-AUDIT_LIMIT);
+}
+
+function matchingSubscriptions(ledger, context, query) {
+  const mine = ledger.subscriptions.filter((item) => item.target === context.target && item.ownerId === context.ownerId);
+  const needle = normalizeFilter(query)
+    .replace(/(?:订阅|提醒|赏金|悬赏|怎么|为什么|多久|轮换|出现|推送|通知|查询|诊断|检查|记录|以后|之后|上次|再次|又|了|吗|呢)/gu, ' ')
+    .replace(/\s+/gu, ' ').trim();
+  if (!needle) return mine;
+  return mine.filter((item) => {
+    const label = normalizeFilter(`${subscriptionLabel(item)} ${item.filter}`);
+    return label.includes(needle) || needle.includes(normalizeFilter(item.filter));
+  });
+}
+
+async function diagnoseSubscriptions(statePath, context, query) {
+  const ledger = await readLedger(statePath);
+  const selected = matchingSubscriptions(ledger, context, query);
+  if (!selected.length) {
+    return {
+      ok: true, kind: 'subscription-diagnosis', found: false,
+      text: `当前会话没有找到与“${normalize(query)}”匹配的订阅。`,
+      facts: { type: 'subscription-diagnosis', finding: 'subscription_not_found', checkedAt: new Date().toISOString() },
+    };
+  }
+  const reports = selected.map((subscription) => {
+    const events = (ledger.audit || []).filter((item) => item.subscriptionId === subscription.id)
+      .sort((a, b) => String(a.checkedAt).localeCompare(String(b.checkedAt)));
+    const snapshots = [...new Set(events.filter((item) => item.sourceStatus === 'available').map((item) => item.snapshotId).filter(Boolean))];
+    const notifications = events.filter((item) => Number(item.newMatchCount) > 0);
+    const failures = events.filter((item) => item.sourceStatus === 'unavailable');
+    const last = events.at(-1) || null;
+    const lastNotification = notifications.at(-1) || null;
+    const checksAfterNotification = lastNotification
+      ? events.filter((item) => String(item.checkedAt) > String(lastNotification.checkedAt))
+      : events;
+    return {
+      id: subscription.id, type: subscription.type, filter: subscription.filter,
+      enabled: subscription.enabled, initialized: subscription.initialized,
+      createdAt: subscription.createdAt, checks: events.length, distinctSnapshots: snapshots.length,
+      notificationsPrepared: notifications.length, lastCheckAt: last?.checkedAt || null,
+      lastSnapshotExpiry: last?.snapshotExpiry || null,
+      lastNotificationAt: lastNotification?.checkedAt || null,
+      checksAfterLastNotification: checksAfterNotification.length,
+      matchesAfterLastNotification: checksAfterNotification.filter((item) => Number(item.matchCount) > 0).length,
+      sourceFailuresAfterLastNotification: checksAfterNotification.filter((item) => item.sourceStatus === 'unavailable').length,
+      lastSourceError: failures.at(-1)?.error || null,
+      lastOutcome: last?.outcome || 'no_audit_history',
+      auditAvailableFrom: events[0]?.checkedAt || null,
+    };
+  });
+  const lines = reports.map((report) => {
+    if (!report.checks) return `${TYPE_LABEL[report.type] || report.type} · ${report.filter || '全部'}：订阅存在，但旧版尚未留下逐轮审计；从下一次实际刷新开始记录。`;
+    const after = report.lastNotificationAt
+      ? `上次生成提醒后检查 ${report.checksAfterLastNotification} 次，其中再次匹配 ${report.matchesAfterLastNotification} 次、数据源失败 ${report.sourceFailuresAfterLastNotification} 次。`
+      : `已有 ${report.checks} 次检查记录，尚未生成过新提醒。`;
+    return `${TYPE_LABEL[report.type] || report.type} · ${report.filter || '全部'}：${report.enabled ? '启用中' : '已暂停'}。${after}`;
+  });
+  return {
+    ok: true, kind: 'subscription-diagnosis', found: true, reports,
+    text: lines.join('\n'),
+    facts: {
+      type: 'subscription-diagnosis', finding: 'audit_report', checkedAt: new Date().toISOString(),
+      auditScope: 'only checks recorded after audit feature deployment',
+    },
+  };
 }
 
 async function writeLedger(statePath, ledger) {
@@ -1340,11 +1431,23 @@ async function monitorTarget(target, statePath, cardDir, dryRun = false) {
       return { output: 'NO_REPLY\n', data: { ok: true, reason: 'not_due', schedule: ledger.schedules[target] } };
     }
 
-    const [state] = await Promise.all([
-      fetchWorldState(),
-      activeTypes.has('alert') || activeTypes.has('invasion') ? primeRewardTranslations() : Promise.resolve(false),
-      activeTypes.has('event') ? primeOracleEventMap() : Promise.resolve(false),
-    ]);
+    let state;
+    try {
+      [state] = await Promise.all([
+        fetchWorldState(),
+        activeTypes.has('alert') || activeTypes.has('invasion') ? primeRewardTranslations() : Promise.resolve(false),
+        activeTypes.has('event') ? primeOracleEventMap() : Promise.resolve(false),
+      ]);
+    } catch (error) {
+      for (const subscription of subscriptions) appendSubscriptionAudit(ledger, {
+        subscriptionId: subscription.id, type: subscription.type, filter: subscription.filter,
+        sourceStatus: 'unavailable', outcome: 'source_unavailable', error: String(error?.message || error),
+        candidateCount: 0, matchCount: 0, newMatchCount: 0,
+      });
+      await writeLedger(statePath, ledger);
+      throw error;
+    }
+    const typeSource = Object.fromEntries([...activeTypes].map((type) => [type, { status: 'available', error: null }]));
     if (activeTypes.has('arbitration') && (!state.arbitration || state.arbitration.expired)) {
       state.arbitration = await scheduledArbitration(statePath);
     } else if (activeTypes.has('arbitration') && state.arbitration && !state.arbitration.arbyTier) {
@@ -1355,19 +1458,27 @@ async function monitorTarget(target, statePath, cardDir, dryRun = false) {
     }
     if (activeTypes.has('incursion')) {
       // 拉挂了静默跳过本轮（调度 6h 兜底会再试），不拖垮其他订阅类型
-      try { state.steelIncursions = await scheduledIncursions(statePath); } catch { /* skip this round */ }
+      try { state.steelIncursions = await scheduledIncursions(statePath); }
+      catch (error) { typeSource.incursion = { status: 'unavailable', error: String(error?.message || error) }; }
     }
     if (activeTypes.has('bounty')) {
       // 译名映射拉挂了静默跳过本轮（syndicateMissions 已在 state 里，零额外请求）
       try {
         const { bountyCandidatesFromSyndicates } = await import('./bounties.mjs');
         state.bountyCandidates = await bountyCandidatesFromSyndicates(state.syndicateMissions);
-      } catch { /* skip this round */ }
+      } catch (error) { typeSource.bounty = { status: 'unavailable', error: String(error?.message || error) }; }
+      if (typeSource.bounty.status === 'available' && !state.bountyCandidates?.length) {
+        typeSource.bounty = { status: 'unavailable', error: '赏金候选池为空，不能据此判定本轮未命中' };
+      }
     }
     const candidates = allCandidates(state);
     if (activeTypes.has('shop') || activeTypes.has('vendor-item')) {
       // 商店数据源挂了静默跳过本轮，不拖垮其他订阅
-      try { await appendShopCandidates(candidates, subscriptions, state); } catch { /* skip this round */ }
+      try { await appendShopCandidates(candidates, subscriptions, state); }
+      catch (error) {
+        if (activeTypes.has('shop')) typeSource.shop = { status: 'unavailable', error: String(error?.message || error) };
+        if (activeTypes.has('vendor-item')) typeSource['vendor-item'] = { status: 'unavailable', error: String(error?.message || error) };
+      }
     }
     // 轮换提醒：到点的一次性订阅自生候选（subOnly 只匹配自己）
     if (activeTypes.has('rotation')) {
@@ -1384,8 +1495,10 @@ async function monitorTarget(target, statePath, cardDir, dryRun = false) {
     const freshById = new Map();
     const closingById = new Map();
     for (const subscription of subscriptions) {
-      const current = (candidates[subscription.type] || []).filter((item) => matches(subscription, item));
+      const pool = candidates[subscription.type] || [];
+      const current = pool.filter((item) => matches(subscription, item));
       const seen = new Set(Array.isArray(subscription.seen) ? subscription.seen : []);
+      const freshCurrent = subscription.initialized ? current.filter((item) => !seen.has(item.id)) : [];
       const closingMarks = [];
       if (subscription.initialized) {
         for (const item of current) {
@@ -1415,6 +1528,17 @@ async function monitorTarget(target, statePath, cardDir, dryRun = false) {
       }
       subscription.initialized = true;
       subscription.seen = [...new Set([...(subscription.seen || []), ...current.map((item) => item.id), ...closingMarks])].slice(-600);
+      const source = typeSource[subscription.type] || { status: 'available', error: null };
+      appendSubscriptionAudit(ledger, {
+        subscriptionId: subscription.id, type: subscription.type, filter: subscription.filter,
+        sourceStatus: source.status, ...(source.error ? { error: source.error } : {}),
+        snapshotId: snapshotId(pool), snapshotExpiry: snapshotExpiry(pool),
+        candidateCount: pool.length, matchCount: current.length, newMatchCount: freshCurrent.length,
+        preparedNotification: freshCurrent.length > 0,
+        outcome: source.status !== 'available' ? 'source_unavailable'
+          : freshCurrent.length ? 'notification_prepared'
+            : current.length ? 'matched_already_seen' : 'no_match',
+      });
     }
     // 一次性订阅：本轮命中（进 fresh）即消费，同一事务内删除——即使后续渲染失败也有文字兜底发出
     const onceConsumed = new Set();
@@ -1538,6 +1662,12 @@ async function main() {
     process.stdout.write(result.output);
     return;
   }
+  if (command === 'diagnose') {
+    outputJson(await diagnoseSubscriptions(statePath, {
+      target: normalizeId(args.target), ownerId: normalizeId(args.owner),
+    }, normalize(args.query)));
+    return;
+  }
   if (command === 'query-arbitration') {
     outputJson(await queryArbitration(statePath, args['card-dir'] ? path.resolve(String(args['card-dir'])) : null));
     return;
@@ -1550,11 +1680,11 @@ async function main() {
     outputJson(await seedDefaults({ target: normalize(args.target), ownerId: normalize(args.owner), ownerName: normalize(args['owner-name']) || normalize(args.owner) }, statePath));
     return;
   }
-  outputJson({ ok: false, error: '用法：manage、monitor、query-arbitration、query-intel 或 seed；请按技能说明提供参数' });
+  outputJson({ ok: false, error: '用法：manage、monitor、diagnose、query-arbitration、query-intel 或 seed；请按技能说明提供参数' });
   process.exitCode = 1;
 }
 
-export { manageCommand, monitorTarget, parseSubscriptionSpec, queryArbitration, queryIntel, seedDefaults, closingLabel, translateEventName, primeOracleEventMap, refreshArbitrationCache, refreshIncursionsCache, scheduledIncursions, arbitrationMatches, allCandidates, monitorIsDue, traderEffectivelyActive, traderWindow, updateSchedule, worldStateIsStale };
+export { manageCommand, monitorTarget, diagnoseSubscriptions, parseSubscriptionSpec, queryArbitration, queryIntel, seedDefaults, closingLabel, translateEventName, primeOracleEventMap, refreshArbitrationCache, refreshIncursionsCache, scheduledIncursions, arbitrationMatches, allCandidates, monitorIsDue, traderEffectivelyActive, traderWindow, updateSchedule, worldStateIsStale };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {

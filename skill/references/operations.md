@@ -12,6 +12,7 @@ SKILL.md 瘦身移入（2026-08-07）。这些规则的执行主体是脚本与 
 - scheduled 记录 `nextCheckAt`：cron 可每分钟调，未到点只读本地状态输出 `NO_REPLY` 不联网
 - `--card-dir` 存在时发现新情报生成深色提醒卡，仅输出一条 `MEDIA:` 指令（cron 直投路径不走 QQ 流式，MEDIA: 可用）；渲染失败退文字
 - cron 直投的命令（drops/subscriptions monitor、weekly remind）异常时必须输出 NO_REPLY，不得裸 JSON
+- 联网订阅每次真正刷新时写入通用审计：数据源状态、候选快照、匹配数、新匹配数和是否已生成提醒；`subscription_diagnosis` 只依据该流水回答历史/漏报问题。`seen` 只负责去重，不能再充当历史记录。
 
 ## 订阅调度
 

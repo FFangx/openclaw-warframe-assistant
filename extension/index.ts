@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
 import { directIntelType, isPersonalAccountCommand, isShortcut, isSubscriptionCommand } from './routing.mjs';
 import { buildEvidenceEnvelope, STATE_ASSERTION_POLICY } from './evidence.mjs';
+import { classifyNaturalWarframeQuery, DYNAMIC_QUERY_POLICY } from './intent-policy.mjs';
 
 const execFileAsync = promisify(execFile);
 const pluginDir = path.dirname(fileURLToPath(import.meta.url));
@@ -70,6 +71,37 @@ async function findCronsByKey(_api: any, declarationKey: string): Promise<any[]>
 
 async function findSubscriptionCrons(api: any, target: string): Promise<any[]> {
   return findCronsByKey(api, subscriptionDeclarationKey(target));
+}
+
+async function subscriptionDeliveryAudit(api: any, target: string): Promise<any> {
+  try {
+    const jobs = await findSubscriptionCrons(api, target);
+    const job = jobs[0];
+    if (!job?.id) return { available: false, reason: 'monitor_job_not_found' };
+    const payload = parseCliJson(await runOpenclawCron(['runs', '--id', String(job.id), '--limit', '200']));
+    const entries = Array.isArray(payload?.entries) ? payload.entries : [];
+    const notifications = entries.filter((entry: any) => {
+      const summary = String(entry?.diagnostics?.summary || '').trim();
+      return summary && summary !== 'NO_REPLY';
+    });
+    const latest = entries[0] || null;
+    const lastNotification = notifications[0] || null;
+    return {
+      available: true,
+      monitorEnabled: job.enabled !== false,
+      monitorStatus: job.status || job.lastRunStatus || null,
+      consecutiveErrors: Number(job?.state?.consecutiveErrors || 0),
+      lastRunAt: latest?.tsIso || (latest?.runAtMs ? new Date(latest.runAtMs).toISOString() : null),
+      notificationRunsInWindow: notifications.length,
+      lastNotificationRunAt: lastNotification?.tsIso || (lastNotification?.runAtMs ? new Date(lastNotification.runAtMs).toISOString() : null),
+      lastNotificationDelivered: lastNotification ? Boolean(lastNotification.delivered) : null,
+      lastNotificationDeliveryStatus: lastNotification?.deliveryStatus || null,
+      historyLimit: entries.length,
+    };
+  } catch (error) {
+    api.logger.error(`Warframe subscription delivery audit failed: ${String(error)}`);
+    return { available: false, reason: 'cron_history_unavailable' };
+  }
 }
 
 async function ensureSubscriptionCron(api: any, target: string): Promise<void> {
@@ -152,6 +184,17 @@ function agentContextIsGroup(ctx: any): boolean {
   const chat = ctx?.channelContext?.chat || {};
   const hints = [ctx?.sessionKey, chat.type, chat.kind, chat.scope, chat.chatType].filter(Boolean).join(':').toLowerCase();
   return /(?:^|:)(?:group|guild|channel)(?::|$)/u.test(hints);
+}
+
+function messageText(value: any): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map((item) => messageText(item?.text || item?.content || '')).join(' ');
+  return messageText(value?.content || value?.text || '');
+}
+
+function hasWarframeContext(prompt: string, messages: any[]): boolean {
+  const recent = [prompt, ...messages.slice(-8).map(messageText)].join(' ');
+  return /(?:Warframe|星际战甲|赏金|悬赏|遗物|裂缝|仲裁|尖刃弹头|Bladed Rounds|Prime|杜卡德|虚空商人|AlecaFrame|WFInfo)/iu.test(recent);
 }
 
 async function handleFastCommand(api: any, event: any): Promise<any | undefined> {
@@ -320,8 +363,8 @@ const warframeToolSchema = {
   properties: {
     operation: {
       type: 'string',
-      enum: ['command', 'lookup', 'subscription'],
-      description: 'command=生成既有查询/个人/周常卡；lookup=查底层白名单资料；subscription=管理当前 QQ 用户的订阅。',
+      enum: ['command', 'lookup', 'subscription', 'subscription_diagnosis'],
+      description: 'command=生成既有查询/个人/周常卡；lookup=查底层白名单资料；subscription=管理订阅；subscription_diagnosis=查订阅检查、匹配和提醒审计。',
     },
     query: {
       type: 'string',
@@ -431,6 +474,8 @@ function createWarframeTool(api: any, ctx: any): any {
       'operation=command 时 query 必须是现有规范命令，例如：wm 物品、遗物 Axi A22、裂缝、赏金、仲裁、警报、入侵、活动、突击、钢铁侵袭、虚空商人、哪里买 物品、我的库存 物品、我的遗物 代号、我的紫卡 武器、周报、完成 深层科研、开遗物、精炼推荐、杜卡德推荐、奸商推荐、商店、本周好货、轮换日历。',
       'operation=lookup 用于不适合卡片的底层资料，query 格式只能是：worldstate 板块、vendor 商人、dict 词、drops 关键词、recipe 名字、bounties、sp-incursions、item /Lotus/...。问某武器灵化安装材料时直接用 recipe <武器名>灵化之源，不要逐步试探多个查询。',
       'operation=subscription 用于用户明确要求新增、取消、暂停、恢复或列出订阅，query 使用规范订阅命令。个人数据和写操作会由可信会话身份强制鉴权。可为一个复合问题多次调用。',
+      'operation=subscription_diagnosis 用于“为什么没提醒、上次提醒后又出现过吗、多久没轮换到、是不是漏推送”等历史/故障问题；query 只传物品或订阅条件。不得用静态 drops 查询替代。',
+      DYNAMIC_QUERY_POLICY,
     ].join(' '),
     parameters: warframeToolSchema,
     async execute(_toolCallId: string, raw: any) {
@@ -485,7 +530,18 @@ function createWarframeTool(api: any, ctx: any): any {
         return jsonToolResult(decorateToolResult({ ...result, ...(cronWarning ? { warning: cronWarning } : {}) }, false, operation, query));
       }
 
-      return jsonToolResult({ ok: false, error: 'operation 必须是 command、lookup 或 subscription。' });
+      if (operation === 'subscription_diagnosis') {
+        if (channel && channel !== 'qqbot') return jsonToolResult({ ok: false, error: '订阅诊断只允许从 QQ 会话发起。' });
+        if (!target || !sender) return jsonToolResult({ ok: false, error: '当前会话缺少可信 QQ 身份，不能查询订阅记录。' });
+        const result = await runJsonScript(subscriptionScript, [
+          'diagnose', '--state', subscriptionState,
+          '--query', query, '--target', target, '--owner', sender,
+        ], 15_000);
+        const deliveryAudit = await subscriptionDeliveryAudit(api, target);
+        return jsonToolResult(decorateToolResult({ ...result, deliveryAudit }, false, operation, query));
+      }
+
+      return jsonToolResult({ ok: false, error: 'operation 必须是 command、lookup、subscription 或 subscription_diagnosis。' });
     },
   };
 }
@@ -496,6 +552,15 @@ export default definePluginEntry({
   description: 'Read-only Warframe market, relic, fissure, local account snapshot and persistent subscription commands for QQ.',
   register(api) {
     api.registerTool((ctx) => createWarframeTool(api, ctx), { name: 'warframe_assistant' });
+    // 对时效/订阅故障问句做每轮确定性约束。只注入“必须走哪类工具”，
+    // 物品和参数仍由模型从自然语言提取，避免退化成关键词命令表。
+    api.on('before_prompt_build', async (event) => {
+      const intent = classifyNaturalWarframeQuery(event.prompt);
+      if (!intent.requiredOperation || !hasWarframeContext(event.prompt, event.messages || [])) return;
+      return {
+        prependContext: `[Warframe 动态查询门禁] 本轮问题属于订阅历史/漏提醒诊断。必须先调用 warframe_assistant operation=${intent.requiredOperation}，query 只传用户关注的物品或订阅条件；若还问当前轮，再追加对应 operation=command 当前查询。禁止用 lookup drops、静态 wiki 或模型记忆替代。`,
+      };
+    }, { priority: 1800 });
     // 长期会话可能仍保留旧版“直接 exec 脚本”的上下文。阻止模型绕过注册工具，
     // 让它收到明确错误后改调 warframe_assistant；插件自己的 execFile 不经过此钩子。
     api.on('before_tool_call', async (event) => {

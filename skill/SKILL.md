@@ -76,6 +76,7 @@ node {baseDir}/scripts/alecaframe.mjs parse "我的账号"
   1. `operation=command`：把用户意图规范为现有模板命令（问价→`wm X`、库存→`我的库存 X`、周报→`周报`、核销→`完成 X` 等）。QQ 会话中工具会直接发送生成的卡片；返回 `mediaDelivered:true` 时只需简短解释，禁止再输出图片标签。若直接发送失败，工具会在 `presentation` 中明确要求最终回复包含 `<qqimg>绝对路径</qqimg>` 作为兜底。无图转述 `text`。个人数据与周报由工具使用可信会话身份鉴权，模型不得自行声称已授权。
   2. `operation=lookup`：无卡片模板的数据问题，query 使用 `worldstate/vendor/dict/drops/recipe/bounties/sp-incursions/item` 白名单格式；按返回的 `source/fetchedAt/data` 作答。
   3. `operation=subscription`：用户明确要求新增、取消、暂停、恢复或查看订阅时直接调用；目标会话和主人身份由插件注入，禁止让用户提供或让模型伪造 target/owner。
+  4. `operation=subscription_diagnosis`：凡问“为什么没提醒、提醒后又出现过吗、多久没轮换到、是否漏推送”，必须调用；query 只传物品/条件。它查询逐轮审计，禁止用静态掉落表代替。审计上线前的历史若不可追溯，要明确说明记录边界。
 - **自然语言五级决策（顺序不可乱）**：
   1. **结构化工具（首选）**：能由 `warframe_assistant` 覆盖就必须调用。模板目录见 `dispatch.mjs list`；一个复合问题可拆为至多必要的多个调用。
   2. **查询手册**：无模板但可查证的数据问题（货单/复刻档期/掉率/译名/**配方——禁止改用网页搜，网页会截断出残答案**）→ 跑 `lookup.mjs <子命令>`，按返回 JSON 纯文字作答，结尾标「数据来源：<source 域名>」。禁止自己直连 API 或写临时脚本。**物品获取途径（哪里出/怎么获得/哪个集团换）必须双查，严禁凭记忆**：① `lookup.mjs drops <英文名>`（中文名先 `dict` 反查）② `dispatch.mjs run "哪里买 X"`；两路都查无才升第 3 级——「某 MOD 是某集团奖励」这类训练记忆错误率极高，一律以工具结果为准
