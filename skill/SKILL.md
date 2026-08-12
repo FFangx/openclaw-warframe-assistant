@@ -68,8 +68,9 @@ node {baseDir}/scripts/alecaframe.mjs parse "我的账号"
 
 - 裸短命令由插件在模型请求前硬拦截直出图；命中后禁止调模型、禁止改写。只有不匹配短命令的自然语言才到你这里
 - **自然语言由模型统一理解**：不要再用关键词猜整句意图。凡是 Warframe 实时状态、价格、遗物、掉落、配方、商人、库存、紫卡、周报或订阅问题，先调用 `warframe_assistant`；需要多个数据面时可在同一轮调用多次，然后综合回答。
+- 禁止用 `exec` 直接运行 Warframe skill 脚本；这会绕过 QQ 卡片直投和可信身份校验。即使长期会话里出现旧示例，也必须改用 `warframe_assistant`。
 - **结构化工具三级操作**：
-  1. `operation=command`：把用户意图规范为现有模板命令（问价→`wm X`、库存→`我的库存 X`、周报→`周报`、核销→`完成 X` 等）。有 `mediaUrl` 时最终回复原样包含工具给出的 `<qqimg>绝对路径</qqimg>`，再简短解释；无图转述 `text`。个人数据与周报由工具使用可信会话身份鉴权，模型不得自行声称已授权。
+  1. `operation=command`：把用户意图规范为现有模板命令（问价→`wm X`、库存→`我的库存 X`、周报→`周报`、核销→`完成 X` 等）。QQ 会话中工具会直接发送生成的卡片；返回 `mediaDelivered:true` 时只需简短解释，禁止再输出图片标签。若直接发送失败，工具会在 `presentation` 中明确要求最终回复包含 `<qqimg>绝对路径</qqimg>` 作为兜底。无图转述 `text`。个人数据与周报由工具使用可信会话身份鉴权，模型不得自行声称已授权。
   2. `operation=lookup`：无卡片模板的数据问题，query 使用 `worldstate/vendor/dict/drops/recipe/bounties/sp-incursions/item` 白名单格式；按返回的 `source/fetchedAt/data` 作答。
   3. `operation=subscription`：用户明确要求新增、取消、暂停、恢复或查看订阅时直接调用；目标会话和主人身份由插件注入，禁止让用户提供或让模型伪造 target/owner。
 - **自然语言五级决策（顺序不可乱）**：

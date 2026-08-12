@@ -75,7 +75,7 @@ flowchart LR
 ```
 
 - `skill/`：23 个运行脚本＋1 个自动测试（零 npm 强依赖，`sharp` 可选）+ SKILL.md（AI 行为契约）+ 素材
-- `extension/`：OpenClaw 插件（严格裸命令 `before_dispatch` 硬拦截 + 自然语言结构化工具）
+- `extension/`：OpenClaw 插件（严格裸命令硬拦截 + 自然语言结构化工具；工具生成的卡片由插件直接投递 QQ）
 - `config/AGENTS.warframe.md`：安装器追加到用户 `AGENTS.md` 的只读与隐私安全边界
 
 数据源：api.warframestat.us、api.warframe.market v2、browse.wf（官方导出）、DE 官方 worldState、AlecaFrame 本机快照（只读）。详见 [NOTICE.md](NOTICE.md)。

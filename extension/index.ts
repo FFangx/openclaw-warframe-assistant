@@ -374,13 +374,44 @@ function toolIsGroup(ctx: any): boolean {
   return /(?:^|:)(?:group|guild|channel)(?::|$)/u.test(hints);
 }
 
-function decorateToolResult(result: any): any {
+function decorateToolResult(result: any, mediaDelivered = false): any {
   const mediaUrl = String(result?.mediaUrl || '').trim();
   if (!mediaUrl) return result;
+  if (mediaDelivered) {
+    return {
+      ...result,
+      mediaDelivered: true,
+      presentation: '卡片已经由工具直接发送到当前 QQ 会话。最终回复只需简短解释，不要再输出 <qqimg>、MEDIA: 或重复发送图片。',
+    };
+  }
   return {
     ...result,
     presentation: `卡片已生成。最终回复必须原样包含 <qqimg>${mediaUrl}</qqimg>，再按用户问题简短解释；不要声称没有数据。`,
   };
+}
+
+async function sendToolMedia(api: any, ctx: any, mediaUrl: string): Promise<boolean> {
+  const channel = String(ctx?.messageChannel || ctx?.deliveryContext?.channel || '').trim().toLowerCase();
+  const target = toolTarget(ctx);
+  if (channel !== 'qqbot' || !target || !mediaUrl) return false;
+  try {
+    const adapter = await api.runtime.channel.outbound.loadAdapter('qqbot');
+    if (!adapter?.sendMedia) return false;
+    const result = await adapter.sendMedia({
+      cfg: ctx?.getRuntimeConfig?.() || ctx?.runtimeConfig || ctx?.config || api.config,
+      to: target,
+      accountId: ctx?.deliveryContext?.accountId || ctx?.agentAccountId,
+      threadId: ctx?.deliveryContext?.threadId,
+      text: '',
+      mediaUrl,
+      mediaLocalRoots: [cardDir, subscriptionCardDir],
+    });
+    if (result?.error) throw new Error(String(result.error));
+    return true;
+  } catch (error) {
+    api.logger.error(`Warframe tool card direct delivery failed, falling back to model tag: ${String(error)}`);
+    return false;
+  }
 }
 
 function createWarframeTool(api: any, ctx: any): any {
@@ -415,7 +446,9 @@ function createWarframeTool(api: any, ctx: any): any {
           '--owner', sender || 'anonymous',
           '--card-dir', cardDir,
         ]);
-        return jsonToolResult(decorateToolResult(result));
+        const mediaUrl = String(result?.mediaUrl || '').trim();
+        const mediaDelivered = mediaUrl ? await sendToolMedia(api, ctx, mediaUrl) : false;
+        return jsonToolResult(decorateToolResult(result, mediaDelivered));
       }
 
       if (operation === 'lookup') {
@@ -460,6 +493,17 @@ export default definePluginEntry({
   description: 'Read-only Warframe market, relic, fissure, local account snapshot and persistent subscription commands for QQ.',
   register(api) {
     api.registerTool((ctx) => createWarframeTool(api, ctx), { name: 'warframe_assistant' });
+    // 长期会话可能仍保留旧版“直接 exec 脚本”的上下文。阻止模型绕过注册工具，
+    // 让它收到明确错误后改调 warframe_assistant；插件自己的 execFile 不经过此钩子。
+    api.on('before_tool_call', async (event) => {
+      if (event.toolName !== 'exec') return;
+      const command = String(event.params?.command || '');
+      if (!/warframe-assistant[\\/].*scripts[\\/](?:dispatch|shortcuts|lookup|subscriptions|weekly|alecaframe|warframe)\.mjs/iu.test(command)) return;
+      return {
+        block: true,
+        blockReason: 'Warframe 查询脚本不得通过 exec 直接运行；请改用 warframe_assistant 结构化工具，以确保 QQ 卡片可靠投递和个人权限校验。',
+      };
+    }, { priority: 1900 });
     // This is the authoritative QQ ingress gate. It runs before agent/model
     // dispatch, sends the deterministic card through QQ's native outbound
     // adapter, and then consumes the turn so no LLM can replace the result.
