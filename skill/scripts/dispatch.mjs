@@ -51,6 +51,20 @@ export const TEMPLATE_CATALOG = Object.freeze([
 
 const normalize = (value) => String(value ?? '').normalize('NFKC').trim().replace(/^\//u, '').replace(/[\u3000\s]+/gu, ' ');
 
+function evidenceMeta(result) {
+  const data = result?.data || {};
+  const fetchedAt = result?.fetchedAt || data?.fetchedAt || null;
+  const sourceTimestamp = result?.sourceTimestamp || data?.sourceTimestamp || null;
+  const expiry = result?.expiry || data?.expiry || null;
+  const source = result?.source || data?.source || null;
+  return {
+    ...(fetchedAt ? { fetchedAt } : {}),
+    ...(sourceTimestamp ? { sourceTimestamp } : {}),
+    ...(expiry ? { expiry } : {}),
+    ...(source ? { source } : {}),
+  };
+}
+
 // 与插件 isPersonalAccountCommand 同一套判定（改动要双侧同步）
 function isPersonalCommand(text) {
   // 带上下文指代的问句必须先由模型展开上一轮实体，不能把“这些遗物”
@@ -99,7 +113,7 @@ export async function dispatchCommand(message, options = {}) {
     }
     const { runAlecaMessage } = await import('./alecaframe.mjs');
     const result = await runAlecaMessage(text, { cardDir });
-    if (result.handled) return { handled: true, ok: result.ok !== false, kind: result.command || 'account', mediaUrl: result.mediaUrl || null, text: result.text || '', followupText: result.followupText || null };
+    if (result.handled) return { handled: true, ok: result.ok !== false, kind: result.command || 'account', mediaUrl: result.mediaUrl || null, text: result.text || '', followupText: result.followupText || null, ...evidenceMeta(result) };
     return { handled: false, reason: 'personal-unparsed' };
   }
 
@@ -107,13 +121,13 @@ export async function dispatchCommand(message, options = {}) {
     const { manageWeekly } = await import('./weekly.mjs');
     const context = { target: options.target || 'model:fallback', ownerId: options.owner || 'owner', ownerName: options.ownerName || '' };
     const result = await manageWeekly(text, context, options.weeklyState || DEFAULT_WEEKLY_STATE, cardDir);
-    return { handled: true, ok: result.ok !== false, kind: 'weekly', mediaUrl: result.mediaUrl || null, text: result.text || '' };
+    return { handled: true, ok: result.ok !== false, kind: 'weekly', mediaUrl: result.mediaUrl || null, text: result.text || '', ...evidenceMeta(result) };
   }
 
   if (/^(?:仲裁|当前仲裁)$/u.test(text)) {
     const { queryArbitration } = await import('./subscriptions.mjs');
     const result = await queryArbitration(options.subscriptionState || DEFAULT_SUBSCRIPTION_STATE, cardDir);
-    return { handled: true, ok: result.ok !== false, kind: 'arbitration', mediaUrl: result.mediaUrl || null, text: result.text || '' };
+    return { handled: true, ok: result.ok !== false, kind: 'arbitration', mediaUrl: result.mediaUrl || null, text: result.text || '', ...evidenceMeta(result) };
   }
 
   const intelType = directIntelType(text);
@@ -122,11 +136,11 @@ export async function dispatchCommand(message, options = {}) {
     if (intelType === 'trader' && personalAllowed) {
       const { runAlecaMessage } = await import('./alecaframe.mjs');
       const result = await runAlecaMessage('奸商推荐', { cardDir });
-      if (result.handled) return { handled: true, ok: result.ok !== false, kind: 'trader-shopping', mediaUrl: result.mediaUrl || null, text: result.text || '', followupText: result.followupText || null };
+      if (result.handled) return { handled: true, ok: result.ok !== false, kind: 'trader-shopping', mediaUrl: result.mediaUrl || null, text: result.text || '', followupText: result.followupText || null, ...evidenceMeta(result) };
     }
     const { queryIntel } = await import('./subscriptions.mjs');
     const result = await queryIntel(intelType, cardDir, options.subscriptionState || DEFAULT_SUBSCRIPTION_STATE);
-    return { handled: true, ok: result.ok !== false, kind: intelType, mediaUrl: result.mediaUrl || null, text: result.text || '' };
+    return { handled: true, ok: result.ok !== false, kind: intelType, mediaUrl: result.mediaUrl || null, text: result.text || '', ...evidenceMeta(result) };
   }
 
   // 订阅族：不代办（账本按真实 QQ 会话隔离），返回引导文案
@@ -142,6 +156,7 @@ export async function dispatchCommand(message, options = {}) {
     handled: true, ok: result.ok !== false, kind: result.command,
     query: result.query || '', mediaUrl: result.mediaUrl || null,
     text: result.text || '', followupText: result.followupText || null,
+    ...evidenceMeta(result),
     ...(result.facts ? { facts: result.facts } : {}),
   };
 
