@@ -5,6 +5,9 @@
   "activation": {
     "onStartup": true
   },
+  "contracts": {
+    "tools": ["warframe_assistant"]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

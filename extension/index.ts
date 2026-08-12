@@ -4,10 +4,13 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
+import { directIntelType, isPersonalAccountCommand, isShortcut, isSubscriptionCommand } from './routing.mjs';
 
 const execFileAsync = promisify(execFile);
 const pluginDir = path.dirname(fileURLToPath(import.meta.url));
 const shortcutScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'shortcuts.mjs');
+const dispatchScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'dispatch.mjs');
+const lookupScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'lookup.mjs');
 const subscriptionScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'subscriptions.mjs');
 const dropsScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'drops.mjs');
 const weeklyScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'weekly.mjs');
@@ -17,155 +20,6 @@ const dropsState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-
 const weeklyState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-weekly.json');
 const cardDir = path.resolve(pluginDir, '..', '..', '..', '.cache', 'warframe-cards');
 const subscriptionCardDir = path.resolve(pluginDir, '..', '..', '..', 'media', 'qqbot', 'warframe-cards');
-
-function isShortcut(content: string): boolean {
-  const text = String(content || '').normalize('NFKC').trim();
-  return /^\/?wm(?![a-z])/iu.test(text)
-    || /^\/?遗物(?:\s+|$)/u.test(text)
-    || /^\/?(?:裂缝推荐|推荐裂缝)(?:\s+|$)/u.test(text)
-    || /^\/?(?:(?:钢铁|普通|全能|安魂)(?:虚空)?|虚空)?裂缝(?:\s+|$)/iu.test(text)
-    || /^\/?(?:帮助|help|菜单|功能|功能列表|命令列表|使用说明|说明书|怎么用)$/iu.test(text)
-    // 哪里买：全商人反查（非个人）；「哪里买 X」与「X哪里买」两种句式
-    || /^\/?哪里买(?:\s+|$)/u.test(text)
-    || /^\/?.{1,20}(?:在|去)?哪(?:里|儿)?买[？?！!。.\s]*$/u.test(text)
-    // 星球悬赏：总览/单区/奖励反查（公开数据）
-    || /^\/?(?:悬赏|赏金)(?:\s+|$)/u.test(text)
-    || isArbitrationShortcut(text)
-    || isPersonalAccountCommand(text)
-    || isWeeklyCommand(text)
-    || Boolean(directIntelType(text));
-}
-
-function isPersonalAccountCommand(content: string): boolean {
-  const text = String(content || '').normalize('NFKC').trim().replace(/^\//u, '');
-  // 指代词需要上一轮对话才能解析。绝不能把“我有这些遗物吗”硬拦成
-  // 库存物品名“这些遗物”；放行给模型继承上一轮实体列表后再调模板。
-  if (/^(?:我有|我的库存|我的遗物).*(?:这些|那些|它们|上面(?:这些|那些)?|刚才(?:这些|那些)?)/u.test(text)) return false;
-  return /^(?:我的账号|账号状态|我的状态|账号周常|我的周常状态|周常同步状态|刷新账号|刷新库存)$/u.test(text)
-    // 「开遗物」是遗物先行的个人库存推荐；「裂缝/裂缝推荐」走公开任务卡，主人私聊自动增强。
-    || /^(?:开遗物|遗物推荐|开什么遗物|开什么)(?:\s+.*)?$/u.test(text)
-    // 精炼推荐：库存全扫哪些遗物值得花光体（同属个人数据）
-    || /^(?:精炼推荐|遗物精炼|值得精炼|精炼什么)(?:\s+\S+){0,2}$/u.test(text)
-    // 杜卡德兑换：Prime 部件库存 × 当前行情，属于个人数据
-    || /^(?:杜卡德|杜卡德推荐|杜卡德兑换)(?:\s+.*)?$/u.test(text)
-    || /^(?:奸商推荐|奸商买什么|奸商购物|虚空商人推荐|虚空商人买什么)$/u.test(text)
-    // 商店总览/详情：已购标注读快照 → 个人数据通道（与 dispatch.mjs isPersonalCommand 同步）
-    || /^商店(?:\s+\S+)?$/u.test(text)
-    // 本周好货直查（周一推送同款卡）：已购标读快照 → 个人数据通道
-    || /^(?:本周好货|好货|好货清单)$/u.test(text)
-    // 轮换日历：「已有」标读快照 → 个人数据通道
-    || /^(?:轮换日历|排期|日历|未来轮换)$/u.test(text)
-    // 我的紫卡：快照指纹离线复算 → 个人数据通道；带武器名=详情卡
-    || /^(?:我的紫卡|紫卡列表|紫卡)(?:\s+\S+)*$/u.test(text)
-    || /^(?:我的遗物|我的赋能|我的库存)(?:\s+.*)?$/u.test(text)
-    // 「我有…」只拦纯数量问句；带卖/推荐/建议等决策词的复合问句放行给模型组合回答（曾把整句塞进库存查询 0 匹配）
-    || (/^我(?:有多少|有).+(?:吗|么|？|\?)?$/u.test(text) && !/卖|推荐|建议|该不该|要不要|值不值|留着|出手/u.test(text));
-}
-
-function isWeeklyCommand(content: string): boolean {
-  const text = String(content || '').normalize('NFKC').trim().replace(/^\//u, '');
-  return /^(?:周常|当前周常|周常清单|周常列表|本周周常|周报|周常帮助|清空周常)$/u.test(text)
-    || /^(?:完成|撤销|跳过|取消跳过)\s+\S.*$/u.test(text);
-}
-
-function isArbitrationShortcut(content: string): boolean {
-  const text = String(content || '').normalize('NFKC').trim();
-  return /^\/?(?:仲裁|当前仲裁)$/u.test(text);
-}
-
-function directIntelType(content: string): string | null {
-  const text = String(content || '').normalize('NFKC').trim().replace(/^\//u, '');
-  if (text === '警报' || text === '当前警报') return 'alert';
-  if (text === '入侵' || text === '当前入侵') return 'invasion';
-  if (text === '活动' || text === '当前活动') return 'event';
-  if (text === '虚空商人' || text === '奸商' || text === '当前虚空商人') return 'trader';
-  if (text === '突击' || text === '当前突击' || text === '今日突击') return 'sortie';
-  if (text === '钢铁侵袭' || text === '钢铁之路侵袭' || text === '今日钢铁侵袭' || text === '侵袭') return 'incursion';
-  return null;
-}
-
-function isSubscriptionCommand(content: string): boolean {
-  const text = String(content || '').normalize('NFKC').trim().replace(/^\//u, '');
-  return /^(?:订阅|提醒|我的订阅|订阅列表|我的提醒|取消订阅|取消提醒|暂停订阅|暂停提醒|恢复订阅|恢复提醒|订阅帮助|提醒帮助)(?:\s*.*)?$/u.test(text);
-}
-
-// 自然语言问价的便宜关键词门：只决定要不要花 45s 跑脚本，精确意图解析在脚本侧
-function maybeNaturalPriceQuestion(content: string): boolean {
-  const text = String(content || '').normalize('NFKC').trim();
-  if (!text || text.length > 40) return false;
-  return /(?:多少钱|什么价|啥价|价格|市价|值多少|卖多少|多少\s*(?:p|白金|铂金))/iu.test(text);
-}
-
-// 世界/个人状态类自然语言的便宜门；精确路由在 shortcuts.mjs route（零网络）
-function maybeNaturalWorldQuestion(content: string): boolean {
-  const text = String(content || '').normalize('NFKC').trim();
-  if (!text || text.length > 40) return false;
-  return /(?:值得开|开什么|开啥|怎么开遗物|如何开遗物|开遗物.{0,6}(?:合适|划算|好)|好裂缝|好遗物|好货|值得买|奸商|虚空商人|杜卡德|突击|侵袭|钢铁精华|悬赏|赏金|复刻|回廊|轮换|周常|这周|本周|哪里出|哪儿出|哪出|哪里掉|哪里刷|哪个遗物|功能|命令|怎么用|使用帮助|你能干|你会|你能做|本事|值得精炼|精炼什么|精炼啥|哪里买|哪儿买|哪买|在哪买|哪里换|商店|泰辛|瓦奇娅|圣言者|言录使|切片哥|璨璨珍宝|鸟三|达尔沃|特惠)/iu.test(text);
-}
-
-// 通用点评素材：把脚本结果浓缩成注入文本；各功能取自己最有信息量的字段
-function buildGenericModelContext(kind: string, result: any): string {
-  let facts = '';
-  if (kind === 'trader' || kind === 'sortie' || kind === 'incursion') {
-    facts = JSON.stringify({ 条目: result.items || [], 数据时间: result.fetchedAt });
-  } else if (kind === 'weekly') {
-    const tasks = Array.isArray(result.tasks) ? result.tasks : [];
-    facts = JSON.stringify({
-      已完成: tasks.filter((t: any) => t.done).map((t: any) => t.title || t.name),
-      未完成: tasks.filter((t: any) => !t.done).map((t: any) => t.title || t.name),
-      本周截止: result.nextReset,
-    });
-  } else {
-    // recommend / relic-reverse：脚本 text 已是中文摘要，截断防 prompt 膨胀
-    facts = String(result.text || '').slice(0, 1200);
-  }
-  const taskHint = kind === 'trader' ? '奸商在不在/还有多久来或走'
-    : kind === 'trader-shopping' ? '哪几件最该买、杜卡德够不够'
-    : kind === 'sortie' ? '今天三段难不难、哪段词缀要注意（如仅限武器/元素强化）'
-    : kind === 'incursion' ? '今天六节点里哪几个任务最顺手好速刷（如捕获/歼灭）'
-    : kind === 'bounty' ? '哪个赏金最值得跑（看顶奖概率与声望性价比）、快轮换了提醒一句'
-    : kind === 'rotation-calendar' ? '未来几周里哪周最值得蹲（缺的战甲/好泰辛货/瓦奇娅换期），可提一句订阅轮换'
-    : kind === 'weekly' ? '还剩哪几项没做、周日前还来得及吗'
-    : kind === 'recommend' ? '现在开哪个最划算、大概能赚多少'
-    : kind === 'refine' ? '哪几个遗物最值得花光体精炼、哪些直接开就行'
-    : kind === 'shop' ? '本周精选值不值得买、哪家快轮换了该赶紧看'
-    : kind === 'weekly-deals' ? '本周哪件最该抢（必抢档优先）、已购的不用再提'
-    : kind === 'where-to-buy' ? '哪个货源最方便入手（常驻优先）、有没有声望/等级门槛'
-    : kind === 'help' ? '一句话欢迎，点出两三个最常用玩法（如发「wm 物品名」问价、发「裂缝」看现况、「订阅 …」设提醒），提醒说人话提问也能识别'
-    : '哪个遗物最好刷、是否已入库';
-  return [
-    '[Warframe 助手·本轮系统上下文]',
-    '用户这句话已由确定性脚本处理：结果卡片图刚刚已经直接发送给用户，用户看得到图。',
-    `卡片对应的数据（你唯一可用的数据来源，禁止另行检索或编造）：${facts}`,
-    `你的任务：只依据上面这份数据，用一两句口语化中文给出重点或建议（例如：${taskHint}），不要复读整个清单。`,
-    '硬性禁止：再发任何图片或 MEDIA: 标记；说「我帮你查一下」之类的过程话术；解释系统机制或道歉。直接给结论。',
-  ].join('\n');
-}
-
-// 发图那轮暂存点评素材，同会话的 before_prompt_build 取走注入给模型；短 TTL 防串轮
-const pendingModelContext = new Map<string, { context: string; expiresAt: number }>();
-const PENDING_CONTEXT_TTL_MS = 120_000;
-
-function pendingContextKey(ctx: any): string | null {
-  const key = String(ctx?.sessionKey || ctx?.conversationId || '').trim().toLowerCase();
-  return key || null;
-}
-
-function stashModelContext(key: string | null, context: string): void {
-  const entry = { context, expiresAt: Date.now() + PENDING_CONTEXT_TTL_MS };
-  if (key) pendingModelContext.set(key, entry);
-  // dispatch 侧与 agent 侧的 sessionKey 来源不同，可能对不上；
-  // 单主人低并发场景下用 * 兜底，实测日志确认精确键命中后可收紧
-  pendingModelContext.set('*', entry);
-}
-
-function takeModelContext(key: string | null): string | null {
-  const entry = (key ? pendingModelContext.get(key) : null) ?? pendingModelContext.get('*');
-  if (!entry) return null;
-  if (key) pendingModelContext.delete(key);
-  pendingModelContext.delete('*');
-  return entry.expiresAt >= Date.now() ? entry.context : null;
-}
 
 function qqTarget(event: { isGroup?: boolean; conversationId?: string; senderId?: string }): string | null {
   // QQ 事件里的 openid 大小写不稳定（实测同一用户出现过大写与小写），全链路统一小写
@@ -460,79 +314,160 @@ async function sendDirectQQReply(api: any, event: any, ctx: any, reply: any): Pr
   if (result?.error) throw new Error(`QQ delivery failed: ${String(result.error)}`);
 }
 
+const warframeToolSchema = {
+  type: 'object',
+  properties: {
+    operation: {
+      type: 'string',
+      enum: ['command', 'lookup', 'subscription'],
+      description: 'command=生成既有查询/个人/周常卡；lookup=查底层白名单资料；subscription=管理当前 QQ 用户的订阅。',
+    },
+    query: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 300,
+      description: '提取并规范化后的命令。不要把解释、寒暄或整段用户原话塞进来。',
+    },
+  },
+  required: ['operation', 'query'],
+  additionalProperties: false,
+};
+
+function jsonToolResult(value: any): any {
+  return {
+    content: [{ type: 'text', text: JSON.stringify(value) }],
+    details: value,
+  };
+}
+
+async function runJsonScript(script: string, args: string[], timeoutMs = 60_000): Promise<any> {
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [script, ...args], {
+      timeout: timeoutMs,
+      windowsHide: true,
+      maxBuffer: 4 * 1024 * 1024,
+      encoding: 'utf8',
+      env: { ...process.env, WARFRAME_CARD_DIR: cardDir },
+    });
+    return JSON.parse(stdout);
+  } catch (error: any) {
+    const stdout = String(error?.stdout || '').trim();
+    if (stdout) {
+      try { return JSON.parse(stdout); } catch { /* use sanitized error below */ }
+    }
+    return { ok: false, error: String(error?.message || error) };
+  }
+}
+
+function toolTarget(ctx: any): string | null {
+  const sender = String(ctx?.requesterSenderId || '').trim().toLowerCase();
+  const rawTo = String(ctx?.deliveryContext?.to || '').trim().toLowerCase();
+  if (/^qqbot:(?:c2c|group):/u.test(rawTo)) return rawTo;
+  if (toolIsGroup(ctx) && rawTo) return `qqbot:group:${rawTo}`;
+  if (sender) return `qqbot:c2c:${sender}`;
+  return null;
+}
+
+function toolIsGroup(ctx: any): boolean {
+  const hints = [ctx?.messageChannel, ctx?.sessionKey, ctx?.deliveryContext?.to]
+    .filter(Boolean).join(':').toLowerCase();
+  return /(?:^|:)(?:group|guild|channel)(?::|$)/u.test(hints);
+}
+
+function decorateToolResult(result: any): any {
+  const mediaUrl = String(result?.mediaUrl || '').trim();
+  if (!mediaUrl) return result;
+  return {
+    ...result,
+    presentation: `卡片已生成。最终回复必须原样包含 <qqimg>${mediaUrl}</qqimg>，再按用户问题简短解释；不要声称没有数据。`,
+  };
+}
+
+function createWarframeTool(api: any, ctx: any): any {
+  const sender = String(ctx?.requesterSenderId || '').trim().toLowerCase();
+  const target = toolTarget(ctx);
+  const channel = String(ctx?.messageChannel || ctx?.deliveryContext?.channel || '').trim().toLowerCase();
+  const personalAllowed = channel === 'qqbot' && !toolIsGroup(ctx)
+    && (ctx?.senderIsOwner === true || isExactOwner(api, sender));
+  return {
+    name: 'warframe_assistant',
+    label: 'Warframe Assistant',
+    description: [
+      '处理所有 Warframe/星际战甲事实查询与操作。凡用户在问实时状态、价格、遗物、裂缝、掉落、配方、商人、库存、紫卡、周报/周常或订阅，都应先调用本工具，不要凭模型记忆回答。',
+      'operation=command 时 query 必须是现有规范命令，例如：wm 物品、遗物 Axi A22、裂缝、赏金、仲裁、警报、入侵、活动、突击、钢铁侵袭、虚空商人、哪里买 物品、我的库存 物品、我的遗物 代号、我的紫卡 武器、周报、完成 深层科研、开遗物、精炼推荐、杜卡德推荐、奸商推荐、商店、本周好货、轮换日历。',
+      'operation=lookup 用于不适合卡片的底层资料，query 格式只能是：worldstate 板块、vendor 商人、dict 词、drops 关键词、recipe 名字、bounties、sp-incursions、item /Lotus/...。问某武器灵化安装材料时直接用 recipe <武器名>灵化之源，不要逐步试探多个查询。',
+      'operation=subscription 用于用户明确要求新增、取消、暂停、恢复或列出订阅，query 使用规范订阅命令。个人数据和写操作会由可信会话身份强制鉴权。可为一个复合问题多次调用。',
+    ].join(' '),
+    parameters: warframeToolSchema,
+    async execute(_toolCallId: string, raw: any) {
+      const operation = String(raw?.operation || '').trim();
+      const query = String(raw?.query || '').normalize('NFKC').trim();
+      if (!query || query.length > 300) return jsonToolResult({ ok: false, error: 'query 不能为空且最多 300 字。' });
+
+      if (operation === 'command') {
+        if (/^(?:周常|当前周常|周常清单|周常列表|本周周常|周报|周常帮助|清空周常|完成\s|撤销\s|跳过\s|取消跳过\s)/u.test(query) && !personalAllowed) {
+          return jsonToolResult({ ok: false, error: '周报和周常核销只允许用户本人在 QQ 私聊中操作。' });
+        }
+        const result = await runJsonScript(dispatchScript, [
+          'run', query,
+          '--personal-allowed', personalAllowed ? 'true' : 'false',
+          '--target', target || 'model:public',
+          '--owner', sender || 'anonymous',
+          '--card-dir', cardDir,
+        ]);
+        return jsonToolResult(decorateToolResult(result));
+      }
+
+      if (operation === 'lookup') {
+        const match = query.match(/^(worldstate|vendor|dict|drops|recipe|bounties|sp-incursions|item)(?:\s+([\s\S]+))?$/u);
+        if (!match) return jsonToolResult({ ok: false, error: 'lookup 只允许 worldstate/vendor/dict/drops/recipe/bounties/sp-incursions/item。' });
+        if (match[1] === 'item' && !String(match[2] || '').trim().startsWith('/Lotus/')) {
+          return jsonToolResult({ ok: false, error: 'item 只接受 /Lotus/... 路径。' });
+        }
+        const args = [match[1], ...(match[2] ? [match[2].trim()] : [])];
+        return jsonToolResult(await runJsonScript(lookupScript, args));
+      }
+
+      if (operation === 'subscription') {
+        if (channel && channel !== 'qqbot') return jsonToolResult({ ok: false, error: '订阅写操作只允许从 QQ 会话发起。' });
+        if (!target || !sender) return jsonToolResult({ ok: false, error: '当前会话缺少可信 QQ 身份，不能修改订阅。' });
+        const result = await runJsonScript(subscriptionScript, [
+          'manage', '--state', subscriptionState,
+          '--message', query, '--target', target, '--owner', sender,
+          '--owner-name', sender,
+          '--personal-allowed', personalAllowed ? 'true' : 'false',
+        ], 15_000);
+        let cronWarning = '';
+        try {
+          if (result.cronAction === 'ensure') await ensureSubscriptionCron(api, target);
+          else if (result.cronAction === 'remove') await removeSubscriptionCron(api, target);
+          if (result.dropsCronAction === 'ensure') await ensureDropsCron(api, target);
+          else if (result.dropsCronAction === 'remove') await removeDropsCron(api, target);
+        } catch (error) {
+          cronWarning = `；定时任务同步失败：${String(error)}`;
+        }
+        return jsonToolResult({ ...result, ...(cronWarning ? { warning: cronWarning } : {}) });
+      }
+
+      return jsonToolResult({ ok: false, error: 'operation 必须是 command、lookup 或 subscription。' });
+    },
+  };
+}
+
 export default definePluginEntry({
   id: 'warframe-fast-commands',
   name: 'Warframe Fast Commands',
   description: 'Read-only Warframe market, relic, fissure, local account snapshot and persistent subscription commands for QQ.',
   register(api) {
+    api.registerTool((ctx) => createWarframeTool(api, ctx), { name: 'warframe_assistant' });
     // This is the authoritative QQ ingress gate. It runs before agent/model
     // dispatch, sends the deterministic card through QQ's native outbound
     // adapter, and then consumes the turn so no LLM can replace the result.
     api.on('before_dispatch', async (event, ctx) => {
       const content = String(event.content || event.body || '');
       if (!isQQChannel(event.channel)) return;
-      // 自然语言两段式：先发确定性卡片图，再把数据暂存给模型点评（不吞消息）；
-      // 任何环节失败都静默放行走普通模型回复，宁可漏不可错发
-      if (!isShortcut(content) && !isSubscriptionCommand(content)) {
-        // 第一级：问价特化路径（带 90 天统计的浓缩素材）
-        if (maybeNaturalPriceQuestion(content)) {
-          try {
-            const { stdout } = await execFileAsync(process.execPath, [shortcutScript, 'ask', content], {
-              timeout: 45_000,
-              windowsHide: true,
-              maxBuffer: 2 * 1024 * 1024,
-              encoding: 'utf8',
-              env: { ...process.env, WARFRAME_CARD_DIR: cardDir },
-            });
-            const result = JSON.parse(stdout);
-            if (!result?.handled || !result.mediaUrl) return;
-            await sendDirectQQReply(api, event, ctx, {
-              text: result.followupText || '',
-              mediaUrl: result.mediaUrl,
-              trustedLocalMedia: true,
-              replyToId: event.replyToId || ctx.replyToId,
-            });
-            stashModelContext(pendingContextKey(ctx), String(result.modelContext || ''));
-            api.logger.info(`Warframe natural price card sent, passing to model: ${content.trim()} (dispatchKey=${pendingContextKey(ctx) || 'none'})`);
-          } catch (error) {
-            api.logger.error(`Warframe natural price path failed open: ${String(error)}`);
-          }
-          return;
-        }
-        // 第二级：世界/个人状态意图 → 映射到既有短命令同款通道
-        if (!maybeNaturalWorldQuestion(content)) return;
-        try {
-          const { stdout: routeOut } = await execFileAsync(process.execPath, [shortcutScript, 'route', content], {
-            timeout: 10_000,
-            windowsHide: true,
-            maxBuffer: 256 * 1024,
-            encoding: 'utf8',
-          });
-          const routed = JSON.parse(routeOut);
-          if (!routed?.handled || !routed.command) return;
-          const isGroup = Boolean(event.isGroup || agentContextIsGroup(ctx));
-          // 个人类意图非主人私聊时静默放行，不发拒绝文字打扰对方
-          if (routed.personal && (isGroup || !isExactOwner(api, event.senderId || ctx.senderId))) return;
-          const reply = await handleFastCommand(api, {
-            channel: 'qqbot',
-            content: routed.command,
-            conversationId: ctx.conversationId,
-            senderId: event.senderId || ctx.senderId,
-            senderName: event.senderName || ctx.channelContext?.sender?.name,
-            senderUsername: event.senderUsername || ctx.channelContext?.sender?.username,
-            isGroup,
-            messageId: event.replyToId || ctx.replyToId,
-          });
-          // 只有真正出图才走两段式；无图/出错一律静默放行
-          if (!reply || reply.isError || !reply.mediaUrl) return;
-          await sendDirectQQReply(api, event, ctx, reply);
-          stashModelContext(pendingContextKey(ctx), buildGenericModelContext(String(routed.kind), reply.raw || {}));
-          api.logger.info(`Warframe natural intent '${String(routed.kind)}' → '${routed.command}' card sent, passing to model (dispatchKey=${pendingContextKey(ctx) || 'none'})`);
-        } catch (error) {
-          api.logger.error(`Warframe natural world path failed open: ${String(error)}`);
-        }
-        return;
-      }
+      // 非严格命令不在 ingress 猜意图，完整放行给模型调用 warframe_assistant。
+      if (!isShortcut(content) && !isSubscriptionCommand(content)) return;
       api.logger.info(`Warframe before_dispatch matched: ${content.trim()}`);
       try {
         const reply = await handleFastCommand(api, {
@@ -554,14 +489,6 @@ export default definePluginEntry({
         return { handled: true, text: 'Warframe 模板生成或发送失败，请稍后重试。' };
       }
     }, { priority: 2000, timeoutMs: 50_000 });
-
-    // 自然语言问价第二段：图已直发，这里把行情数据和点评指令注入当轮 prompt
-    api.on('before_prompt_build', async (_event, ctx) => {
-      const context = takeModelContext(pendingContextKey(ctx));
-      if (!context) return;
-      api.logger.info(`Warframe natural price context injected into prompt (agentKey=${pendingContextKey(ctx) || 'none'})`);
-      return { appendContext: context };
-    }, { timeoutMs: 5_000 });
 
     api.on('inbound_claim', async (event) => {
       const reply = await handleFastCommand(api, event);

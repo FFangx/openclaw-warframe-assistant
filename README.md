@@ -65,7 +65,7 @@ flowchart LR
     QQ[QQ 消息] --> P{OpenClaw 插件}
     P -->|短命令<br/>硬拦截| S[确定性脚本<br/>23 个 .mjs]
     P -->|自然语言| AI[AI 模型]
-    AI -->|五级决策树路由| D[dispatch.mjs / lookup.mjs]
+    AI -->|结构化工具调用| D[warframe_assistant<br/>dispatch / lookup / subscription]
     D --> S
     S --> C[🎴 图片卡]
     S -.本地策略.-> W[WFInfo 游戏覆盖层]
@@ -75,7 +75,7 @@ flowchart LR
 ```
 
 - `skill/`：23 个运行脚本＋1 个自动测试（零 npm 强依赖，`sharp` 可选）+ SKILL.md（AI 行为契约）+ 素材
-- `extension/`：OpenClaw 插件（`before_dispatch` 硬拦截 + 两段式注入）
+- `extension/`：OpenClaw 插件（严格裸命令 `before_dispatch` 硬拦截 + 自然语言结构化工具）
 - `config/AGENTS.warframe.md`：安装器追加到用户 `AGENTS.md` 的只读与隐私安全边界
 
 数据源：api.warframestat.us、api.warframe.market v2、browse.wf（官方导出）、DE 官方 worldState、AlecaFrame 本机快照（只读）。详见 [NOTICE.md](NOTICE.md)。
