@@ -150,8 +150,9 @@ export function labsSection(data) {
   const blockH = 42 + 32 + 30 + 30 + 14;
   const rendered = data.labs.map((lab) => {
     const available = lab.missions.length >= 3 && lab.personal.length > 0;
+    const progressH = lab.progress ? 34 : 0;
     const bodyH = available
-      ? 48 + 46 + blockH * lab.missions.length + 34 + lab.personal.length * 30 + 36
+      ? 48 + progressH + 46 + blockH * lab.missions.length + 34 + lab.personal.length * 30 + 36
       : 200;
     const blocks = lab.missions.map((mission, index) => `
       <div style="margin-top:${index ? 14 : 0}px;border-bottom:1px solid #262A38;padding-bottom:0">
@@ -177,6 +178,7 @@ export function labsSection(data) {
         <div style="display:flex;align-items:baseline;gap:14px"><div style="font-size:24px;font-weight:900;color:${C.text}">${escapeHtml(lab.title)}</div>
         <div style="font-size:16px;color:${C.sub}">${escapeHtml(lab.place)}</div></div>
         ${checkinBadge(lab.number, lab.done, false, lab.skipped)}</div>
+      ${lab.progress ? `<div style="height:34px;display:flex;align-items:center;padding:0 12px;margin-bottom:4px;border-radius:8px;background:rgba(155,126,222,.10);font-size:16px;font-weight:800;color:${lab.accent}">游戏记录：${escapeHtml(lab.progress)}</div>` : ''}
       ${dimIf(lab.done || lab.skipped, `${detail}
       <div style="height:36px;display:flex;align-items:flex-end;gap:10px">
         <span style="font-size:15px;letter-spacing:2px;color:${C.dim};font-weight:800">奖励</span>

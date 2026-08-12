@@ -17,8 +17,8 @@ import {
 } from './warframe-cards.mjs';
 import { nextReset as weeklyNextReset, renderWeeklyDetailCardFor, weekStart as weeklyWeekStart } from './weekly.mjs';
 import { getArbyTiers, getBountyZhMaps, getOracleEventMap, stripDataUriReplacer } from './wfdata.mjs';
+import { loadWorldState } from './worldstate-source.mjs';
 
-const WORLD_STATE_URL = 'https://api.warframestat.us/pc';
 const MARKET_ITEMS_URL = 'https://api.warframe.market/v2/items';
 const ARBITRATION_SCHEDULE_URL = 'https://browse.wf/arbys.txt';
 // 钢铁之路侵袭排期（OpenWF 从 WorldSeed 逆推的预算表，每行 epoch;六节点，00:00 UTC 轮换）
@@ -1005,9 +1005,7 @@ function monitorIsDue(schedule, activeTypes) {
 }
 
 async function fetchWorldState() {
-  const response = await fetch(WORLD_STATE_URL, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-  if (!response.ok) throw new Error(`world state HTTP ${response.status}`);
-  return response.json();
+  return loadWorldState('pc');
 }
 
 async function fetchChecked(url, kind = 'json') {

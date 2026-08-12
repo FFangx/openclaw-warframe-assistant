@@ -38,6 +38,9 @@ function isShortcut(content: string): boolean {
 
 function isPersonalAccountCommand(content: string): boolean {
   const text = String(content || '').normalize('NFKC').trim().replace(/^\//u, '');
+  // 指代词需要上一轮对话才能解析。绝不能把“我有这些遗物吗”硬拦成
+  // 库存物品名“这些遗物”；放行给模型继承上一轮实体列表后再调模板。
+  if (/^(?:我有|我的库存|我的遗物).*(?:这些|那些|它们|上面(?:这些|那些)?|刚才(?:这些|那些)?)/u.test(text)) return false;
   return /^(?:我的账号|账号状态|我的状态|账号周常|我的周常状态|周常同步状态|刷新账号|刷新库存)$/u.test(text)
     // 「开遗物」是遗物先行的个人库存推荐；「裂缝/裂缝推荐」走公开任务卡，主人私聊自动增强。
     || /^(?:开遗物|遗物推荐|开什么遗物|开什么)(?:\s+.*)?$/u.test(text)

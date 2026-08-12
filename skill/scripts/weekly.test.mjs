@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { calendarChallengeLine, calendarRewardZh, calendarUpgradeZh, evaluateAutoCheck, hasCompleteArchimedeas, localizeArchimedeaModifier } from './weekly.mjs';
+import { archimedeaResearchProgress, calendarChallengeLine, calendarRewardZh, calendarUpgradeZh, evaluateAutoCheck, hasCompleteArchimedeas, localizeArchimedeaModifier } from './weekly.mjs';
 import { labsSection } from './weekly-mega-card.mjs';
 
 const calendarDays = [
@@ -52,6 +52,36 @@ test('1999 日历轮次不一致时拒绝使用陈旧快照', () => {
   const result = evaluateAutoCheck(inventory, worldState);
   assert.equal(result.progress['calendar-1999'], undefined);
   assert.equal(result.auto['calendar-1999'], undefined);
+});
+
+test('深层科研 21 点能证明三关全通并显示距精英解锁 4 点', () => {
+  const now = Date.UTC(2026, 7, 12, 4);
+  const syncedAt = new Date(now - 60_000).toISOString();
+  const inventory = { EntratiLabConquestUnlocked: 1, EntratiLabConquestCacheScoreMission: 21 };
+  const progress = archimedeaResearchProgress(inventory, 'EntratiLab', now, syncedAt);
+  assert.equal(progress.completed, true);
+  assert.equal(progress.eliteThresholdReached, false);
+  assert.match(progress.text, /三关已完成.*距精英解锁 4 点/u);
+  const result = evaluateAutoCheck(inventory, null, now, null, syncedAt);
+  assert.equal(result.auto['deep-archimedea'], true);
+});
+
+test('科研 18 点及以下不能证明三关全通', () => {
+  const now = Date.UTC(2026, 7, 12, 4);
+  const syncedAt = new Date(now - 60_000).toISOString();
+  const inventory = { EntratiLabConquestUnlocked: 1, EntratiLabConquestCacheScoreMission: 18 };
+  const result = evaluateAutoCheck(inventory, null, now, null, syncedAt);
+  assert.equal(result.auto['deep-archimedea'], undefined);
+  assert.match(result.progress['deep-archimedea'], /尚不能确认三关全通/u);
+});
+
+test('科研分数不跨周用于自动核销', () => {
+  const now = Date.UTC(2026, 7, 12, 4);
+  const staleSync = new Date(Date.UTC(2026, 7, 9, 12)).toISOString();
+  const inventory = { EntratiLabConquestUnlocked: 1, EntratiLabConquestCacheScoreMission: 27 };
+  const result = evaluateAutoCheck(inventory, null, now, null, staleSync);
+  assert.equal(result.progress['deep-archimedea'], undefined);
+  assert.equal(result.auto['deep-archimedea'], undefined);
 });
 
 function archimedeaFixture(now = Date.now()) {

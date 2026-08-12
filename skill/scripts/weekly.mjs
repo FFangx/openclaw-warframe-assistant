@@ -7,6 +7,7 @@ import { renderWarframeCard } from './warframe-cards.mjs';
 import { buildWeeklyMegaCard } from './weekly-mega-card.mjs';
 import { readSnapshot } from './alecaframe.mjs';
 import { getChallengeZhMap, getCalendarChallengeMap, getLangTable, getOfficialTextMap, getOracleConquestMap, getSeasonChallengeRequired, readAlecaJson, staleCachedJson, stripDataUriReplacer } from './wfdata.mjs';
+import { loadWorldState } from './worldstate-source.mjs';
 
 // 静态参考表：奖励池/电波译名，以及 Oracle 词典暂不可用时的科研词缀兜底。
 const staticData = JSON.parse(await readFile(new URL('./weekly-static.json', import.meta.url), 'utf8'));
@@ -59,6 +60,13 @@ const PLANET_ZH = Object.freeze({
 
 // 1999 日历大奖奖励中文（数量前缀单独处理）
 const CALENDAR_REWARD_ZH = Object.freeze({
+  'CalendarVosforPack': '荧尘储藏箱',
+  'CalendarKuvaBundleLarge': '赤毒储藏箱',
+  'CalendarArtifactPack': '赋能包',
+  'CalendarMajorArtifactPack': '赋能双岚包',
+  'UtilityUnlocker': '战甲特殊功能槽连接器',
+  'CircuitSilverSteelPathFusionBundle': '内融核心包',
+  'FormaAuraBlueprint': '全能 Forma 蓝图',
   'Riven': '裂罅 Mod',
   'Kuva': '赤毒',
   'Endo': '内融核心',
@@ -338,7 +346,7 @@ async function fetchJsonWithRetry(url, attempts = 2) {
 }
 
 async function fetchCompleteWeeklyWorldState(seed = null) {
-  const value = seed || await fetchJsonWithRetry(WORLD_STATE_URL);
+  const value = seed || await loadWorldState('pc');
   if (!hasCompleteArchimedeas(value?.archimedeas)) {
     const archimedeas = await fetchJsonWithRetry(ARCHIMEDEA_URL);
     if (!hasCompleteArchimedeas(archimedeas)) throw new Error('科研轮换字段不完整');
@@ -363,7 +371,7 @@ async function fetchWorldState(seed = null) {
 const msOf = (value) => Number(value?.$date?.$numberLong ?? NaN);
 
 // 纯函数便于打桩测试；worldState 缺失时跳过需要对账的项（执刑官/电波），其余判据只看快照自身周界
-function evaluateAutoCheck(inventory, worldState, now = Date.now(), challengeRequired = null) {
+function evaluateAutoCheck(inventory, worldState, now = Date.now(), challengeRequired = null, syncedAt = null) {
   const auto = {};      // taskId → true：判据确定的本周完成
   const progress = {};  // taskId → 进度文本（有进度不等于完成）
   if (!inventory) return { auto, progress };
@@ -423,8 +431,31 @@ function evaluateAutoCheck(inventory, worldState, now = Date.now(), challengeReq
     progress['calendar-1999'] = `已推进 ${calInfo.doneCount}/${calInfo.totalCount} 节点`;
     if (calInfo.totalCount > 0 && calInfo.doneCount === calInfo.totalCount) auto['calendar-1999'] = true;
   }
-  // 科研（深层/时光）：快照字段语义未验证（分数制做一半也有分），暂不核销
+  // 科研最佳分：基础 1 点 + 8 个个人/装备参数，每关最多 9 点；只完成
+  // 两关最多 18 点。因此 >=19 能严格证明三关完整通关，低分只展示而不猜。
+  // 分数字段按周重置，但仍要求快照本周同步，防止跨周沿用旧记录。
+  for (const [kind, taskId] of [['EntratiLab', 'deep-archimedea'], ['EchoesHex', 'temporal-archimedea']]) {
+    const research = archimedeaResearchProgress(inventory, kind, now, syncedAt);
+    if (!research) continue;
+    progress[taskId] = research.text;
+    if (research.completed) auto[taskId] = true;
+  }
   return { auto, progress };
+}
+
+export function archimedeaResearchProgress(inventory, kind, now = Date.now(), syncedAt = null) {
+  const syncedMs = Date.parse(String(syncedAt || ''));
+  if (!Number.isFinite(syncedMs) || syncedMs < Date.parse(weekStart(new Date(now)))) return null;
+  const score = Math.max(0, Number(inventory?.[`${kind}ConquestCacheScoreMission`]) || 0);
+  const unlocked = Number(inventory?.[`${kind}ConquestUnlocked`]) > 0;
+  if (!unlocked && score <= 0) return null;
+  const completed = score >= 19;
+  let text = `本周最佳 ${score} 研究点`;
+  if (completed) text += ' · 三关已完成';
+  else text += ' · 尚不能确认三关全通';
+  if (score >= 25) text += ' · 已达精英解锁线';
+  else text += ` · 距精英解锁 ${25 - score} 点`;
+  return { score, completed, eliteThresholdReached: score >= 25, text };
 }
 
 // —— 1999 日历赛季进度（语义 2026-08-05 用户三步实测定死） ——
@@ -481,7 +512,7 @@ async function autoCheckFromSnapshot(worldState) {
     // 电波完成量映射：网络失败返空对象，电波项自然跳过（宁不核销）
     const challengeRequired = worldState ? await getSeasonChallengeRequired() : null;
     // inventory 透传给装配层：回廊进度轨道/商店已购计数都要读它
-    return { ...evaluateAutoCheck(inventory, worldState, Date.now(), challengeRequired), syncedAt, inventory };
+    return { ...evaluateAutoCheck(inventory, worldState, Date.now(), challengeRequired, syncedAt), syncedAt, inventory };
   } catch {
     return null;
   }
@@ -566,10 +597,10 @@ function taskRows(record, worldState, skipped = new Set(), progressMap = {}, res
       if (hunt?.missions?.length) detailLines.push(`任务：${hunt.missions.map((mission) => `${MISSION_ZH[mission.type] || '未知'} ${localizeNode(mission.node)}`).join(' → ')}`);
     } else if (task.id === 'deep-archimedea') {
       detailLines.push(...archimedeaLines(deepEntry));
-      detailLines.push('周日前完成可拿满研究点数；精英难度另计');
+      if (!progressMap['deep-archimedea']) detailLines.push('周日前完成可拿满研究点数；精英难度另计');
     } else if (task.id === 'temporal-archimedea') {
       detailLines.push(...archimedeaLines(temporalEntry));
-      detailLines.push('霍瓦尼亚每周科研任务');
+      if (!progressMap['temporal-archimedea']) detailLines.push('霍瓦尼亚每周科研任务');
     } else if (task.id === 'netracell') {
       detailLines.push('每周 5 次搜索脉冲；可与深层科研共享周奖励上限');
     } else if (task.id === 'descendia-normal') {
@@ -766,6 +797,12 @@ function buildMegaData(record, worldState, skipped = new Set(), autoResult = nul
   let overrideSeen = 0;
   const calChallengeOf = (event) => {
     if (!calMap) return { meta: null, progress: null };
+    const directKey = String(event.challenge?.key || '').toLowerCase();
+    if (directKey && calMap[directKey]) {
+      const meta = calMap[directKey];
+      const active = calInfo?.challenges?.find((item) => item.key === directKey);
+      return { meta, progress: active ? { cur: active.cur, required: meta.required } : null };
+    }
     // worldstate 事件无路径键：先用官方中文标题缩小候选，再用英文说明里的数量区分 Easy/Medium/Hard。
     const zhTitle = challengeTitleZh(event.challenge?.title);
     const rawRequired = Number(String(event.challenge?.description || '').match(/[\d,]+/u)?.[0]?.replace(/,/gu, '')) || 0;
@@ -837,8 +874,8 @@ function buildMegaData(record, worldState, skipped = new Set(), autoResult = nul
       missions: (worldState?.archonHunt?.missions || []).map((mission) => ({ typeZh: MISSION_ZH[mission.type] || '未知任务', nodeZh: localizeNode(mission.node) })),
     },
     labs: [
-      { number: taskNumber('deep-archimedea'), done: done.has('deep-archimedea'), skipped: skipped.has('deep-archimedea'), title: '深层科研', place: '墓志之地 · 死灵中枢', accent: '#9B7EDE', missions: labMissions(deepEntry), personal: labPersonal(deepEntry), rewardLine: '按研究点数分档结算：赋能 · 稀有资源 · 源力石档位（精英难度档更高）' },
-      { number: taskNumber('temporal-archimedea'), done: done.has('temporal-archimedea'), skipped: skipped.has('temporal-archimedea'), title: '时光科研', place: '霍瓦尼亚 · 1999', accent: '#F0B429', missions: labMissions(hexEntry), personal: labPersonal(hexEntry), rewardLine: '按研究点数分档结算：赋能 · 稀有资源 · 源力石档位（与深层独立结算）' },
+      { number: taskNumber('deep-archimedea'), done: done.has('deep-archimedea'), skipped: skipped.has('deep-archimedea'), title: '深层科研', place: '墓志之地 · 死灵中枢', accent: '#9B7EDE', missions: labMissions(deepEntry), personal: labPersonal(deepEntry), progress: autoProgress['deep-archimedea'] || '', rewardLine: '按研究点数分档结算：赋能 · 稀有资源 · 源力石档位（精英难度档更高）' },
+      { number: taskNumber('temporal-archimedea'), done: done.has('temporal-archimedea'), skipped: skipped.has('temporal-archimedea'), title: '时光科研', place: '霍瓦尼亚 · 1999', accent: '#F0B429', missions: labMissions(hexEntry), personal: labPersonal(hexEntry), progress: autoProgress['temporal-archimedea'] || '', rewardLine: '按研究点数分档结算：赋能 · 稀有资源 · 源力石档位（与深层独立结算）' },
     ],
     routines: [
       // 2×2 网格顺序=编号序：上排 衰退室｜击溃合一众，下排 沉沦普通（左）｜沉沦钢铁（右）（2026-08-06 用户拍板）

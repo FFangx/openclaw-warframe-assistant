@@ -11,11 +11,11 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { buildFissureQueryCard, compressCardPng, currency, pruneOldCards, renderWarframeCard, RELIC_ICON_DATA } from './warframe-cards.mjs';
 import { appraiseRefinements, classifyFissure } from './recommend.mjs';
-import { stripDataUriReplacer } from './wfdata.mjs';
+import { readAlecaJson, stripDataUriReplacer } from './wfdata.mjs';
+import { loadWorldState } from './worldstate-source.mjs';
 
 const execFileAsync = promisify(execFile);
 
-const ITEMS_BASE = 'https://api.warframestat.us';
 const RELICS_DATA_URL = 'https://raw.githubusercontent.com/WFCD/warframe-items/master/data/json/Relics.json';
 const MARKET_BASE = 'https://api.warframe.market';
 const TIMEOUT_MS = 20_000;
@@ -671,8 +671,16 @@ async function enrichRelicReward(reward, marketItems, platform, crossplay) {
   }
 }
 
+async function loadRelicDataset() {
+  try {
+    const local = await readAlecaJson('json/Relics.json');
+    if (Array.isArray(local) && local.length) return local;
+  } catch { /* GitHub backup below */ }
+  return getJson(RELICS_DATA_URL);
+}
+
 async function queryRelicForward(parsed, platform, crossplay, squad = 4) {
-  const response = await getJson(`${ITEMS_BASE}/items/search/${encodeURIComponent(parsed.name)}`);
+  const response = await loadRelicDataset();
   const matches = (Array.isArray(response) ? response : []).filter((item) => {
     const baseName = String(item.name || '').replace(/\s+(Intact|Exceptional|Flawless|Radiant)$/iu, '');
     return baseName.toLowerCase() === parsed.name.toLowerCase() && item.type === 'Relic';
@@ -707,7 +715,7 @@ async function queryRelicForward(parsed, platform, crossplay, squad = 4) {
       name: parsed.name,
       zhName: `${ERA_ZH[parsed.era] || parsed.era} ${parsed.code}`,
       vaulted: Boolean(relic.vaulted),
-      imageUrl: relic.imageName ? `https://cdn.warframestat.us/img/${encodeURIComponent(relic.imageName)}` : null,
+      imageUrl: relic.imageName ? `https://cdn.alecaframe.com/warframeData/img/${encodeURIComponent(relic.imageName)}` : null,
       rewards,
       refine,
       sources,
@@ -717,7 +725,7 @@ async function queryRelicForward(parsed, platform, crossplay, squad = 4) {
 
 async function queryRelicReverse(rawQuery, platform, crossplay) {
   const [relics, marketItems] = await Promise.all([
-    getJson(RELICS_DATA_URL),
+    loadRelicDataset(),
     fetchMarketItems(platform, crossplay),
   ]);
   const marketBySlug = new Map(marketItems.map((item) => [item.slug, item]));
@@ -797,7 +805,7 @@ function splitFissureNode(value) {
 
 async function queryFissures(rawQuery = '', platform = DEFAULT_PLATFORM) {
   if (platform === 'mobile') return { ok: false, kind: 'fissure', error: 'unsupported_platform', query: rawQuery };
-  const state = await getJson(`${ITEMS_BASE}/${platform}`);
+  const state = await loadWorldState(platform);
   const filters = parseFissureFilters(rawQuery);
   const now = Date.now();
   let fissures = (Array.isArray(state.fissures) ? state.fissures : [])

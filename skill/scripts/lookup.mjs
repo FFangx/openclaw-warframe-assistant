@@ -15,13 +15,17 @@
 //   item <路径>         物品详情（browse.wf 通用物品 API，/Lotus/... 路径）
 
 import { readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
+import { staleCachedJson } from './wfdata.mjs';
 
 const UA = { 'User-Agent': 'Mozilla/5.0' };
 const TIMEOUT_MS = 20_000;
 const OFFICIAL_WS = 'https://api.warframe.com/cdn/worldState.php';
 const WPEP = 'https://browse.wf/warframe-public-export-plus';
+const execFileAsync = promisify(execFile);
 
 async function fetchJson(url) {
   const response = await fetch(url, { headers: UA, signal: AbortSignal.timeout(TIMEOUT_MS) });
@@ -156,8 +160,24 @@ async function sectionDict(query) {
 
 // —— 掉落表搜索（warframestat drops，社区维护的官方掉率表） ——
 async function sectionDrops(query) {
-  const data = await fetchJson(`https://api.warframestat.us/drops/search/${encodeURIComponent(query)}`);
-  return (Array.isArray(data) ? data : []).slice(0, 30);
+  try {
+    const data = await fetchJson(`https://api.warframestat.us/drops/search/${encodeURIComponent(query)}`);
+    return { source: 'https://api.warframestat.us/drops', data: (Array.isArray(data) ? data : []).slice(0, 30) };
+  } catch {
+    const githubUrl = 'https://raw.githubusercontent.com/WFCD/warframe-drop-data/gh-pages/data/all.slim.json';
+    const result = await staleCachedJson('drop-search-all-slim', { ttlMs: 24 * 60 * 60 * 1000, version: 1 }, async () => {
+      try { return await fetchJson(githubUrl); }
+      catch {
+        const powershell = process.env.SystemRoot ? `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe` : 'powershell.exe';
+        const script = `$ProgressPreference='SilentlyContinue'; (Invoke-WebRequest -UseBasicParsing '${githubUrl}' -TimeoutSec 60).Content`;
+        const { stdout } = await execFileAsync(powershell, ['-NoProfile', '-Command', script], { encoding: 'utf8', timeout: 70_000, windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
+        return JSON.parse(stdout);
+      }
+    });
+    const needle = String(query || '').normalize('NFKC').trim().toLowerCase();
+    const rows = (Array.isArray(result.data) ? result.data : []).filter((entry) => `${entry?.item || ''} ${entry?.place || ''}`.normalize('NFKC').toLowerCase().includes(needle)).slice(0, 30);
+    return { source: githubUrl, data: rows };
+  }
 }
 
 // —— 今日钢铁之路侵袭（browse.wf 排期表 + 区域中文名） ——
@@ -230,7 +250,10 @@ async function main() {
     if (command === 'worldstate') return emit(OFFICIAL_WS, await sectionWorldstate(arg));
     if (command === 'vendor') return emit(`${WPEP}/ExportVendors.json`, await sectionVendor(arg));
     if (command === 'dict') return emit(`${WPEP}/dict.zh.json`, await sectionDict(arg));
-    if (command === 'drops') return emit('https://api.warframestat.us/drops', await sectionDrops(arg));
+    if (command === 'drops') {
+      const result = await sectionDrops(arg);
+      return emit(result.source, result.data);
+    }
     if (command === 'bounties') return emit('https://oracle.browse.wf/bounty-cycle', await fetchJson('https://oracle.browse.wf/bounty-cycle'));
     if (command === 'sp-incursions') return emit('https://browse.wf/sp-incursions.txt', await sectionSpIncursions());
     if (command === 'recipe') return emit(`${WPEP}/ExportRecipes.json`, await sectionRecipe(arg));

@@ -53,6 +53,9 @@ const normalize = (value) => String(value ?? '').normalize('NFKC').trim().replac
 
 // 与插件 isPersonalAccountCommand 同一套判定（改动要双侧同步）
 function isPersonalCommand(text) {
+  // 带上下文指代的问句必须先由模型展开上一轮实体，不能把“这些遗物”
+  // 当成字面库存查询词。展开后的“我的遗物 后纪 A22 B7 …”再进入此处。
+  if (/^(?:我有|我的库存|我的遗物).*(?:这些|那些|它们|上面(?:这些|那些)?|刚才(?:这些|那些)?)/u.test(text)) return false;
   return /^(?:我的账号|账号状态|我的状态|账号周常|我的周常状态|周常同步状态|刷新账号|刷新库存)$/u.test(text)
     || /^(?:开遗物|遗物推荐|开什么遗物|开什么)(?:\s+.*)?$/u.test(text)
     || /^(?:精炼推荐|遗物精炼|值得精炼|精炼什么)(?:\s+\S+){0,2}$/u.test(text)

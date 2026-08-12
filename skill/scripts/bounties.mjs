@@ -7,11 +7,16 @@
 // 约定：网络失败抛错由调用方兜文案；译名查无保留英文（官方名规则）。
 
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { getBountyZhMaps } from './wfdata.mjs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { getBountyZhMaps, staleCachedJson } from './wfdata.mjs';
+import { loadWorldState } from './worldstate-source.mjs';
 
-const SYNDICATE_URL = 'https://api.warframestat.us/pc/syndicateMissions';
 const BOUNTY_CYCLE_URL = 'https://oracle.browse.wf/bounty-cycle';
+const DROP_DATA_BASE = 'https://drops.warframestat.us/data';
+const DROP_DATA_GITHUB = 'https://raw.githubusercontent.com/WFCD/warframe-drop-data/gh-pages/data';
 const FETCH_TIMEOUT_MS = 20_000;
+const execFileAsync = promisify(execFile);
 
 // 三开放世界 + 别名（resolveBountyPlace 用）；顺序=卡片从上到下；standingUnit：Deimos 悬赏给母亲信物不是声望
 // affTag/dailyKey：快照 Affiliations 集团标签与日声望余量键（实验室日余量键=Cavia，2026-08-06 探针实证）
@@ -72,6 +77,62 @@ async function fetchJson(url) {
   const response = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!response.ok) throw new Error(`${url} HTTP ${response.status}`);
   return response.json();
+}
+
+async function loadStaticBountyDrops() {
+  const dropTable = async (name) => {
+    try { return await fetchJson(`${DROP_DATA_BASE}/${name}.json`); }
+    catch {
+      const githubUrl = `${DROP_DATA_GITHUB}/${name}.json`;
+      try { return await fetchJson(githubUrl); }
+      catch {
+        // Windows 上 Node/undici 偶发被边缘节点断开；PowerShell 仅作为固定只读 URL 的传输兜底。
+        const powershell = process.env.SystemRoot ? `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe` : 'powershell.exe';
+        const script = `$ProgressPreference='SilentlyContinue'; (Invoke-WebRequest -UseBasicParsing '${githubUrl}' -TimeoutSec 25).Content`;
+        const { stdout } = await execFileAsync(powershell, ['-NoProfile', '-Command', script], { encoding: 'utf8', timeout: 30_000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
+        return JSON.parse(stdout);
+      }
+    }
+  };
+  const result = await staleCachedJson('bounty-static-drops', { ttlMs: 24 * 60 * 60 * 1000, version: 1 }, async () => {
+    const [cetus, solaris, deimos] = await Promise.all([
+      dropTable('cetusBountyRewards'),
+      dropTable('solarisBountyRewards'),
+      dropTable('deimosRewards'),
+    ]);
+    return { Ostrons: cetus?.cetusBountyRewards || [], 'Solaris United': solaris?.solarisBountyRewards || [], Entrati: deimos?.deimosRewards || [] };
+  });
+  return result.data;
+}
+
+export function attachStaticBountyRewards(syndicates, tables) {
+  return (syndicates || []).map((group) => ({
+    ...group,
+    jobs: (group.jobs || []).map((job) => {
+      if (job.rewardPoolDrops?.length) return job;
+      const [minLevel, maxLevel] = job.enemyLevels || [];
+      const table = (tables?.[group.syndicate] || []).find((entry) => {
+        const levels = String(entry?.bountyLevel || '').match(/Level\s+(\d+)\s*-\s*(\d+)/u);
+        return levels && Number(levels[1]) === Number(minLevel) && Number(levels[2]) === Number(maxLevel);
+      });
+      if (!table) return job;
+      const rotation = String(job.uniqueName || '').match(/Table([A-Z])Rewards$/u)?.[1];
+      const rewards = table.rewards?.[rotation] || Object.values(table.rewards || {})[0] || [];
+      return {
+        ...job,
+        rewardPoolDrops: rewards.map((reward) => ({ item: reward.itemName, rarity: reward.rarity, chance: Number(reward.chance) || 0 })),
+      };
+    }),
+  }));
+}
+
+// warframestat 主源会直接给 rewardPoolDrops；DE 官方备用源只有任务与奖励表路径。
+// 查询和订阅必须共用同一补齐步骤，否则主源 403 时按奖励名订阅会得到永久空候选池。
+export async function ensureBountyRewards(syndicates, loadDrops = loadStaticBountyDrops) {
+  const groups = Array.isArray(syndicates) ? syndicates : [];
+  if (!groups.some((group) => (group.jobs || []).some((job) => !job.rewardPoolDrops?.length))) return groups;
+  try { return attachStaticBountyRewards(groups, await loadDrops()); }
+  catch { return groups; }
 }
 
 // job 尾段（来自 id 去时间戳，如 AttritionBountyLib/DeimosPurifyBounty）→ 官方中文任务名
@@ -177,11 +238,12 @@ function assembleJob(job, maps) {
 // ==== 装配主入口 ====
 // 返回 { places:[{key,zh,npc,planet,expiry,jobs:[…]}], boards:[{key,zh,npc,nodes:[{node,challengeZh}]}], expiry }
 export async function fetchBounties({ syndicates = null, cycle = null, maps = null } = {}) {
-  const [syn, bountyCycle, zhMaps] = await Promise.all([
-    syndicates ? Promise.resolve(syndicates) : fetchJson(SYNDICATE_URL),
+  const [rawSyndicates, bountyCycle, zhMaps] = await Promise.all([
+    syndicates ? Promise.resolve(syndicates) : loadWorldState('pc').then((state) => state.syndicateMissions || []),
     cycle ? Promise.resolve(cycle) : fetchJson(BOUNTY_CYCLE_URL).catch(() => null), // 挑战板挂了不拖垮主体
     maps ? Promise.resolve(maps) : getBountyZhMaps(),
   ]);
+  const syn = await ensureBountyRewards(rawSyndicates);
   const places = [];
   for (const place of BOUNTY_PLACES) {
     const group = (Array.isArray(syn) ? syn : []).find((entry) => entry.syndicate === place.syndicate);
@@ -353,9 +415,10 @@ export async function attachRewardIcons(rewards) {
 // searchText 汇入任务名/地点/全部奖励中英文名，供 genericMatches 的订阅词命中
 export async function bountyCandidatesFromSyndicates(syndicates) {
   const maps = await getBountyZhMaps();
+  const enriched = await ensureBountyRewards(syndicates);
   const candidates = [];
   for (const place of BOUNTY_PLACES) {
-    const group = (Array.isArray(syndicates) ? syndicates : []).find((entry) => entry.syndicate === place.syndicate);
+    const group = enriched.find((entry) => entry.syndicate === place.syndicate);
     if (!group?.jobs?.length) continue;
     for (const raw of group.jobs) {
       const job = assembleJob(raw, maps);

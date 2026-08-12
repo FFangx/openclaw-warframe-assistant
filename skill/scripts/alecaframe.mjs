@@ -74,6 +74,18 @@ function expandQuery(value) {
   return normalize(query.replace(/赋能[·・]?/gu, 'arcane '));
 }
 
+// 显式列举多个物品时逐项核对库存。不能把“延凡草、瑶丛”作为一个名称搜索；
+// 空格仍属于物品名的一部分（如 Wukong Prime），只认明确的中文/标点分隔符。
+export function splitInventoryQueryList(value) {
+  const text = normalize(value);
+  if (!text) return [];
+  const parts = text
+    .split(/\s*(?:[、，,；;]|\s+(?:和|以及|与)\s+)\s*/u)
+    .map((item) => normalize(item))
+    .filter(Boolean);
+  return parts.length > 1 ? parts : [text];
+}
+
 async function readJson(file) {
   return JSON.parse(await readFile(file, 'utf8'));
 }
@@ -300,6 +312,37 @@ async function loadRelics(snapshot) {
 async function relicQuery(snapshot, rawQuery) {
   const all = await loadRelics(snapshot);
   const query = normalizeRelicQuery(rawQuery);
+  const listCodes = [...query.matchAll(/\b([A-Z]\d+)\b/giu)].map((match) => match[1].toUpperCase());
+  const uniqueCodes = [...new Set(listCodes)];
+  if (uniqueCodes.length > 1) {
+    const eraMatch = query.match(/\b(Lith|Meso|Neo|Axi|Requiem)\b/iu);
+    const era = eraMatch ? `${eraMatch[1][0].toUpperCase()}${eraMatch[1].slice(1).toLowerCase()}` : '';
+    const requested = uniqueCodes.map((code) => {
+      const wanted = compact(`${era} ${code}`);
+      const variants = all.filter((item) => compact(item.baseName) === wanted);
+      return {
+        code,
+        name: era ? `${ERA_ZH[era] || era} ${code}` : code,
+        era,
+        count: variants.reduce((sum, item) => sum + item.count, 0),
+        vaulted: variants.some((item) => item.vaulted),
+      };
+    });
+    const data = {
+      kind: 'inventory', subtype: '遗物库存 · 批量核对', title: `我的遗物 · ${requested.length} 枚核对`,
+      syncedAt: snapshot.syncedAt,
+      rows: requested.map((item) => ({
+        name: item.name,
+        value: `${item.count} 个`,
+        detail: item.count > 0 ? (item.vaulted ? '持有 · 已入库' : '持有 · 未入库') : '未持有',
+        detailColor: item.count > 0 ? (item.vaulted ? '#d7a46d' : '#8ee3ad') : '#8995a1',
+        era: item.era,
+      })),
+      totalMatches: requested.length,
+      totalCount: requested.reduce((sum, item) => sum + item.count, 0),
+    };
+    return { data, text: formatInventory(data, '没有找到这些遗物的本地库存记录。') };
+  }
   let matches = all;
   if (query) {
     const key = compact(query);
@@ -579,6 +622,67 @@ async function inventoryQuery(snapshot, rawQuery) {
       return loadCatalog(snapshot.alecaDir, localizeForCatalog);
     })(),
   ]);
+  const requestedItems = splitInventoryQueryList(rawQuery);
+  if (requestedItems.length > 1) {
+    const allOwned = aggregateRows(collectOwned(snapshot.inventory)).map((item) => {
+      const metadata = catalog.get(item.uniqueName);
+      const directName = localize(item.uniqueName);
+      return {
+        ...item,
+        displayName: metadata?.displayName || directName || '未收录物品',
+        englishName: metadata?.englishName || '',
+        type: metadata?.type || '',
+        vaulted: metadata?.type === 'Relics' ? Boolean(metadata.vaulted) : null,
+      };
+    });
+    const catalogItems = [...catalog.values()];
+    const rows = requestedItems.map((requested) => {
+      const key = compact(expandQuery(requested));
+      const scoreFields = (fields) => fields.filter(Boolean).reduce((best, field) => {
+        const candidate = compact(field);
+        if (candidate === key) return Math.min(best, 0);
+        if (candidate.includes(key) || key.includes(candidate)) return Math.min(best, 1 + Math.abs(candidate.length - key.length) / 100);
+        return best;
+      }, Number.POSITIVE_INFINITY);
+      const owned = allOwned
+        .map((item) => ({ ...item, score: scoreFields([item.displayName, item.englishName]) }))
+        .filter((item) => Number.isFinite(item.score))
+        .sort((a, b) => a.score - b.score || b.total - a.total)[0];
+      if (owned) {
+        return {
+          name: owned.displayName,
+          value: `${owned.total} 个`,
+          detail: [owned.type === 'Relics' ? (owned.vaulted ? '已入库' : '未入库') : '', rankText(owned.ranks) || '本机持有'].filter(Boolean).join(' · '),
+          detailColor: owned.type === 'Relics' ? (owned.vaulted ? '#d7a46d' : '#8ee3ad') : undefined,
+          uniqueName: owned.uniqueName,
+          englishName: owned.englishName,
+          era: owned.type === 'Relics' ? owned.englishName.split(' ')[0] : undefined,
+          count: owned.total,
+        };
+      }
+      const known = catalogItems
+        .map((item) => ({ ...item, score: scoreFields([item.displayName, item.englishName]) }))
+        .filter((item) => Number.isFinite(item.score))
+        .sort((a, b) => a.score - b.score)[0];
+      return {
+        name: known?.displayName || requested,
+        value: known ? '0 个' : '—',
+        detail: known ? '未持有' : '名称未收录',
+        uniqueName: known?.uniqueName,
+        englishName: known?.englishName || '',
+        count: 0,
+      };
+    });
+    const totalCount = rows.reduce((sum, item) => sum + item.count, 0);
+    const data = {
+      kind: 'inventory', subtype: '库存查询 · 批量核对', title: `我的库存 · ${requestedItems.join('、')}`, syncedAt: snapshot.syncedAt,
+      rows: rows.map(({ count, ...row }) => row),
+      totalMatches: rows.length,
+      totalCount,
+      countUnit: '个',
+    };
+    return { data, text: formatInventory(data, '没有找到这些物品的本地库存记录。') };
+  }
   const key = compact(query);
   const owned = aggregateRows(collectOwned(snapshot.inventory)).map((item) => {
     const metadata = catalog.get(item.uniqueName);

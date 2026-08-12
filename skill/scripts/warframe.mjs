@@ -5,6 +5,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { buildFissureAlertCard, buildIntelCard, renderWarframeCard } from './warframe-cards.mjs';
+import { loadWorldState } from './worldstate-source.mjs';
 
 const WS_BASE = 'https://api.warframestat.us';
 const MKT_BASE = 'https://api.warframe.market';
@@ -231,7 +232,7 @@ async function cmdStatus(platform) {
   if (!worldStatePlatform) {
     fail('status', `世界状态暂不支持平台：${platform}`);
   }
-  const state = await getJson(`${WS_BASE}/${worldStatePlatform}`);
+  const state = await loadWorldState(worldStatePlatform);
   const active = (values) => Array.isArray(values) ? values.filter((value) => !value.expired) : [];
   const cycle = (value) => value ? { state: ZH_CYCLE[value.state] || '未知状态', timeLeft: zhDuration(value.timeLeft), expiry: value.expiry } : null;
   const trader = state.voidTrader || (Array.isArray(state.voidTraders) ? state.voidTraders[0] : null);
@@ -510,7 +511,7 @@ async function cmdMonitor(platform, args) {
     }
   }
 
-  const state = await getJson(`${WS_BASE}/${worldStatePlatform}`);
+  const state = await loadWorldState(worldStatePlatform);
   const candidates = monitorCandidates(state, mode, args);
   const nextCheckAt = mode === 'scheduled' ? nextScheduledCheck(state)
     : mode === 'fissure' ? nextFissureCheck(state) : null;
@@ -707,19 +708,39 @@ async function cmdSearch(query, type) {
   let successfulResponses = 0;
   let lastError = null;
 
+  const localSearch = async (endpoint) => {
+    const { getLangTable, readAlecaJson } = await import('./wfdata.mjs');
+    const files = endpoint === 'warframes' ? ['Warframes.json']
+      : endpoint === 'weapons' ? ['Primary.json', 'Secondary.json', 'Melee.json', 'Arch-Gun.json', 'Arch-Melee.json', 'SentinelWeapons.json']
+        : ['Arcanes.json', 'Gear.json', 'Misc.json', 'Mods.json', 'Resources.json', 'Relics.json', 'Pets.json', 'Sentinels.json', 'Archwing.json'];
+    const [groups, lang] = await Promise.all([
+      Promise.all(files.map((file) => readAlecaJson(`json/${file}`).catch(() => []))),
+      getLangTable().catch(() => ({})),
+    ]);
+    const needle = String(query).normalize('NFKC').toLowerCase().replace(/[\s_-]+/gu, '');
+    return groups.flat().filter((item) => {
+      const zhName = lang[item?.uniqueName]?.zh?.name || '';
+      return [item?.name, zhName].some((value) => String(value || '').normalize('NFKC').toLowerCase().replace(/[\s_-]+/gu, '').includes(needle));
+    }).map((item) => ({ ...item, localizedName: lang[item?.uniqueName]?.zh?.name || null })).slice(0, 20);
+  };
+
   for (const endpoint of endpoints) {
     try {
-      const results = await getJson(`${WS_BASE}/${endpoint}/search/${encodedQuery}?language=zh`);
+      let results;
+      let dataSource = 'api.warframestat.us';
+      try { results = await getJson(`${WS_BASE}/${endpoint}/search/${encodedQuery}?language=zh`); }
+      catch { results = await localSearch(endpoint); dataSource = 'AlecaFrame/WFCD 本地资料'; }
       successfulResponses++;
       if (!Array.isArray(results) || results.length === 0) continue;
       const result = results[0];
       const allowedTerms = endpoint === 'warframes' ? [result.name] : [];
-      const localizedName = endpoint === 'warframes' ? result.name : zhItem(result.name);
+      const localizedName = result.localizedName || (endpoint === 'warframes' ? result.name : zhItem(result.name));
       out({
         ok: true,
         kind: 'search',
         type: endpoint,
         platformIndependent: true,
+        source: dataSource,
         fetchedAt: new Date().toISOString(),
         resultCount: results.length,
         result: {

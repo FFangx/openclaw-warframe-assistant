@@ -214,7 +214,7 @@ export async function readAlecaJson(relPath, { alecaDir } = {}) {
   }
 }
 
-// lang 表（uniqueName → {zh:{name}}，与本地 lang.json 同构）：本地 → warframestat 重建 → 空表
+// lang 表（uniqueName → {zh:{name}}，与本地 lang.json 同构）：本地 → AlecaFrame CDN → warframestat 重建 → 空表
 // 按目录键缓存（测试注入不同 alecaDir 不串表）；13MB 文件进程内每目录只解析一次；在线重建落盘 7d
 const LANG_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 let langTablePromises = new Map();
@@ -229,7 +229,11 @@ export function getLangTable({ alecaDir } = {}) {
       } catch { /* 本地缺失 */ }
       if (offlineMode()) return {};
       try {
-        const { data } = await staleCachedJson('lang-zh-rebuilt', { ttlMs: LANG_TTL_MS, version: 1 }, async () => {
+        const { data } = await staleCachedJson('lang-zh-rebuilt', { ttlMs: LANG_TTL_MS, version: 2 }, async () => {
+          try {
+            const table = await fetchJson(`${ALECA_CDN}/json/lang.json`);
+            if (table && Object.keys(table).length >= 1000) return table;
+          } catch { /* warframestat legacy fallback below */ }
           const items = await fetchJson('https://api.warframestat.us/items?language=zh&only=uniqueName,name');
           const table = {};
           for (const item of Array.isArray(items) ? items : []) {
@@ -387,7 +391,7 @@ let bountyZhPromise = null;
 export function getBountyZhMaps() {
   bountyZhPromise ??= (async () => {
     try {
-      return await cachedBuild(BOUNTY_CACHE, BOUNTY_TTL_MS, 2, async () => {
+      return await cachedBuild(BOUNTY_CACHE, BOUNTY_TTL_MS, 3, async () => {
         const [challengesRaw, en, zh, regions] = await Promise.all([
           fetchJson(CHALLENGE_URL), fetchJson(DICT_EN_URL), fetchJson(DICT_ZH_URL),
           fetchJson('https://browse.wf/warframe-public-export-plus/ExportRegions.json').catch(() => ({})),
@@ -429,6 +433,7 @@ export function getBountyZhMaps() {
             name: zh[region.name] || region.name,
             planet: region.systemName ? (zh[region.systemName] || region.systemName) : '',
             mission: region.missionName ? (zh[region.missionName] || region.missionName) : '',
+            faction: region.faction || '',
           };
         }
         if (!Object.keys(jobs).length) throw new Error('悬赏任务译名为空');
@@ -499,6 +504,7 @@ export function getSeasonChallengeRequired() {
 const RELIC_SOURCES_CACHE = path.join(DATA_CACHE_DIR, 'relic-sources.json');
 const RELIC_SOURCES_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DROP_DATA_BASE = 'https://drops.warframestat.us/data';
+const DROP_DATA_GITHUB = 'https://raw.githubusercontent.com/WFCD/warframe-drop-data/gh-pages/data';
 // 掉点地名翻译：星球/开放世界用官方中文，节点名保留英文（项目惯例）
 const DROP_PLANET_ZH = {
   Mercury: '水星', Venus: '金星', Earth: '地球', Mars: '火星', Phobos: '火卫一', Deimos: '火卫二',
@@ -526,12 +532,26 @@ export function getRelicSources() {
   relicSourcesPromise ??= (async () => {
     try {
       return await cachedBuild(RELIC_SOURCES_CACHE, RELIC_SOURCES_TTL_MS, 2, async () => {
+        const fetchDropData = async (name) => {
+          try { return await fetchJson(`${DROP_DATA_BASE}/${name}.json`); }
+          catch {
+            const githubUrl = `${DROP_DATA_GITHUB}/${name}.json`;
+            try { return await fetchJson(githubUrl); }
+            catch {
+              const [{ execFile }, { promisify }] = await Promise.all([import('node:child_process'), import('node:util')]);
+              const powershell = process.env.SystemRoot ? `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe` : 'powershell.exe';
+              const script = `$ProgressPreference='SilentlyContinue'; (Invoke-WebRequest -UseBasicParsing '${githubUrl}' -TimeoutSec 45).Content`;
+              const { stdout } = await promisify(execFile)(powershell, ['-NoProfile', '-Command', script], { encoding: 'utf8', timeout: 55_000, windowsHide: true, maxBuffer: 32 * 1024 * 1024 });
+              return JSON.parse(stdout);
+            }
+          }
+        };
         const [missions, transients, cetus, solaris, deimos] = await Promise.all([
-          fetchJson(`${DROP_DATA_BASE}/missionRewards.json`),
-          fetchJson(`${DROP_DATA_BASE}/transientRewards.json`),
-          fetchJson(`${DROP_DATA_BASE}/cetusBountyRewards.json`),
-          fetchJson(`${DROP_DATA_BASE}/solarisBountyRewards.json`),
-          fetchJson(`${DROP_DATA_BASE}/deimosRewards.json`),
+          fetchDropData('missionRewards'),
+          fetchDropData('transientRewards'),
+          fetchDropData('cetusBountyRewards'),
+          fetchDropData('solarisBountyRewards'),
+          fetchDropData('deimosRewards'),
         ]);
         const map = {};
         // 奖励名 "Lith G1 Relic"（悬赏可能带精炼尾缀）→ 基名键；同表同地多轮次只留最高概率

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildWfInfoDucatStrategy, classifyFissure, formatRecommend, parseDucatRecommendTarget, parseFissurePreference, parseFissureScope, parseRelicVaultFilter, recommendFissures, recommendRefinement } from './recommend.mjs';
+import { buildWfInfoDucatStrategy, classifyFissure, formatRecommend, normalizeOfficialFissureWorldState, parseDucatRecommendTarget, parseFissurePreference, parseFissureScope, parseFissureTier, parseRelicVaultFilter, recommendFissures, recommendRefinement } from './recommend.mjs';
 import { parseAlecaMessage } from './alecaframe.mjs';
 import { parseNaturalWorldQuestion, parseShortcutMessage } from './shortcuts.mjs';
 import { buildFissureQueryCard, buildFissureRecommendCard, buildRefineRecommendCard } from './warframe-cards.mjs';
@@ -61,6 +61,27 @@ const worldState = {
   ],
 };
 
+test('normalizes official world state into WarframeStat-compatible fissures', () => {
+  const expiry = Date.now() + 60 * 60 * 1000;
+  const normalized = normalizeOfficialFissureWorldState({
+    ActiveMissions: [{
+      _id: { $oid: 'normal-id' }, Expiry: { $date: { $numberLong: String(expiry) } },
+      Node: 'SolNode56', MissionType: 'MT_SABOTAGE', Modifier: 'VoidT4', Hard: true,
+    }],
+    VoidStorms: [{
+      _id: { $oid: 'storm-id' }, Expiry: { $date: { $numberLong: String(expiry) } },
+      Node: 'CrewBattleNode518', ActiveMissionTier: 'VoidT6',
+    }],
+  }, {
+    SolNode56: { name: '测试节点', planet: '测试星球' },
+    CrewBattleNode518: { name: '测试航道', planet: '比邻星' },
+  });
+  assert.deepEqual(normalized.fissures.map(({ id, tier, missionType, node, isHard, isStorm }) => ({ id, tier, missionType, node, isHard, isStorm })), [
+    { id: 'normal-id', tier: 'Axi', missionType: 'Sabotage', node: '测试节点 (测试星球)', isHard: true, isStorm: false },
+    { id: 'storm-id', tier: 'Omnia', missionType: 'Skirmish', node: '测试航道 (比邻星)', isHard: false, isStorm: true },
+  ]);
+});
+
 async function run(preference) {
   return recommendFissures(relics, { preference, worldState, localDb, prices });
 }
@@ -77,6 +98,13 @@ test('parses a dedicated Steel Path fissure scope', () => {
   assert.equal(parseFissureScope('开遗物 钢铁之路 速刷'), 'steel');
   assert.equal(parseFissureScope('开遗物 速刷'), 'all');
   assert.deepEqual(parseDucatRecommendTarget('钢铁 速刷'), { type: 'none', query: '' });
+});
+
+test('parses fissure eras as filters instead of trader item names', () => {
+  assert.equal(parseFissureTier('单人 古纪 钢铁'), 'Lith');
+  assert.equal(parseFissureTier('开遗物 Axi'), 'Axi');
+  assert.equal(parseFissureTier('全能 收益'), 'Omnia');
+  assert.deepEqual(parseDucatRecommendTarget('单人 古纪 钢铁'), { type: 'none', query: '' });
 });
 
 test('parses relic vault filters without confusing 未入库 with 入库', () => {

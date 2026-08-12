@@ -8,7 +8,6 @@
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-const ITEMS_BASE = 'https://api.warframestat.us';
 const MARKET_BASE = 'https://api.warframe.market';
 const TIMEOUT_MS = 20_000;
 const TOP_RESULTS = 8;
@@ -57,6 +56,16 @@ export const FISSURE_SCOPES = Object.freeze({
   steel: { zh: '仅钢铁', command: '钢铁' },
 });
 
+export const FISSURE_TIERS = Object.freeze({
+  all: { zh: '全部纪元', command: '' },
+  Lith: { zh: '古纪', command: '古纪' },
+  Meso: { zh: '前纪', command: '前纪' },
+  Neo: { zh: '中纪', command: '中纪' },
+  Axi: { zh: '后纪', command: '后纪' },
+  Requiem: { zh: '安魂', command: '安魂' },
+  Omnia: { zh: '全能', command: '全能' },
+});
+
 export function parseFissurePreference(value) {
   const text = String(value || '').normalize('NFKC');
   if (/速刷|快速|快开|效率/iu.test(text)) return 'speed';
@@ -77,11 +86,28 @@ export function parseFissureScope(value) {
   return /钢铁(?:之路)?/u.test(String(value || '').normalize('NFKC')) ? 'steel' : 'all';
 }
 
+export function parseFissureTier(value) {
+  const tokens = String(value || '').normalize('NFKC').split(/\s+/u);
+  const aliases = {
+    古纪: 'Lith', 古: 'Lith', lith: 'Lith',
+    前纪: 'Meso', 前: 'Meso', meso: 'Meso',
+    中纪: 'Neo', 中: 'Neo', neo: 'Neo',
+    后纪: 'Axi', 后: 'Axi', axi: 'Axi',
+    安魂: 'Requiem', requiem: 'Requiem',
+    全能: 'Omnia', omnia: 'Omnia',
+  };
+  for (const token of tokens) {
+    const tier = aliases[token] || aliases[token.toLowerCase()];
+    if (tier) return tier;
+  }
+  return 'all';
+}
+
 export function parseDucatRecommendTarget(value) {
   const text = String(value || '').normalize('NFKC').trim();
   const hasDucatMode = /杜卡德|金币|ducat/iu.test(text);
   if (/(?:^|\s)奸商(?:\s|$)/u.test(text)) return { type: 'trader', query: '' };
-  const modifiers = /^(?:杜卡德|金币|ducat|白金|未入库|已入库|当前可获取|可获取|现役|钢铁|钢铁之路|速刷|快速|快开|效率|舒适|轻松|挂机|收益|额外|长线|单人|solo|1人|一人|组队|4人|四人)$/iu;
+  const modifiers = /^(?:杜卡德|金币|ducat|白金|未入库|已入库|当前可获取|可获取|现役|钢铁|钢铁之路|古纪|古|lith|前纪|前|meso|中纪|中|neo|后纪|后|axi|安魂|requiem|全能|omnia|速刷|快速|快开|效率|舒适|轻松|挂机|收益|额外|长线|单人|solo|1人|一人|组队|4人|四人)$/iu;
   const query = text.split(/\s+/u).filter((token) => !modifiers.test(token)).join(' ').trim();
   if (query) return { type: 'item', query };
   if (hasDucatMode) return { type: 'ordinary', query: '' };
@@ -133,6 +159,79 @@ async function getJson(url, headers = {}, attempt = 0) {
     throw new Error(`HTTP ${response.status}: ${url}`);
   }
   return response.json();
+}
+
+const OFFICIAL_FISSURE_TIERS = Object.freeze({
+  VoidT1: 'Lith',
+  VoidT2: 'Meso',
+  VoidT3: 'Neo',
+  VoidT4: 'Axi',
+  VoidT5: 'Requiem',
+  VoidT6: 'Omnia',
+});
+
+const OFFICIAL_MISSION_TYPES = Object.freeze({
+  MT_EXTERMINATION: 'Extermination',
+  MT_CAPTURE: 'Capture',
+  MT_SABOTAGE: 'Sabotage',
+  MT_RESCUE: 'Rescue',
+  MT_INTEL: 'Spy',
+  MT_DEFENSE: 'Defense',
+  MT_MOBILE_DEFENSE: 'Mobile Defense',
+  MT_TERRITORY: 'Interception',
+  MT_SURVIVAL: 'Survival',
+  MT_EXCAVATE: 'Excavation',
+  MT_DISRUPTION: 'Disruption',
+  MT_ALCHEMY: 'Alchemy',
+  MT_ASSAULT: 'Assault',
+  MT_HIVE: 'Hive',
+  MT_HIJACK: 'Hijack',
+});
+
+function officialDateMs(value) {
+  const raw = value?.$date?.$numberLong ?? value?.$date ?? value;
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric)) return numeric;
+  return Date.parse(String(raw || ''));
+}
+
+function officialNodeName(code, nodes = {}) {
+  const meta = nodes?.[code];
+  if (!meta?.name) return String(code || 'Unknown');
+  return `${meta.name}${meta.planet ? ` (${meta.planet})` : ''}`;
+}
+
+function officialMissionType(value) {
+  if (OFFICIAL_MISSION_TYPES[value]) return OFFICIAL_MISSION_TYPES[value];
+  return String(value || 'Unknown').replace(/^MT_/u, '').toLowerCase().replace(/(^|_)\w/gu, (part) => part.replace('_', ' ').toUpperCase());
+}
+
+export function normalizeOfficialFissureWorldState(raw, nodes = {}, now = Date.now()) {
+  const normalize = (entry, isStorm) => {
+    const expiryMs = officialDateMs(entry?.Expiry);
+    const tierCode = isStorm ? entry?.ActiveMissionTier : entry?.Modifier;
+    return {
+      id: entry?._id?.$oid || `${entry?.Node || 'unknown'}:${expiryMs}`,
+      tier: OFFICIAL_FISSURE_TIERS[tierCode] || String(tierCode || 'Unknown'),
+      missionType: isStorm ? 'Skirmish' : officialMissionType(entry?.MissionType),
+      node: officialNodeName(entry?.Node, nodes),
+      expiry: Number.isFinite(expiryMs) ? new Date(expiryMs).toISOString() : '',
+      expired: !Number.isFinite(expiryMs) || expiryMs <= now,
+      isHard: !isStorm && Boolean(entry?.Hard),
+      isStorm,
+    };
+  };
+  return {
+    fissures: [
+      ...(Array.isArray(raw?.ActiveMissions) ? raw.ActiveMissions.map((entry) => normalize(entry, false)) : []),
+      ...(Array.isArray(raw?.VoidStorms) ? raw.VoidStorms.map((entry) => normalize(entry, true)) : []),
+    ],
+  };
+}
+
+export async function loadFissureWorldState() {
+  const { loadWorldState } = await import('./worldstate-source.mjs');
+  return loadWorldState('pc');
 }
 
 async function mapLimit(values, limit, mapper) {
@@ -443,6 +542,7 @@ export async function recommendFissures(relics, options = {}) {
   const preference = FISSURE_PREFERENCES[options.preference] ? options.preference : parseFissurePreference(options.preference);
   const vaultFilter = RELIC_VAULT_FILTERS[options.vaultFilter] ? options.vaultFilter : parseRelicVaultFilter(options.vaultFilter);
   const fissureScope = FISSURE_SCOPES[options.fissureScope] ? options.fissureScope : parseFissureScope(options.fissureScope);
+  const tierFilter = FISSURE_TIERS[options.tierFilter] ? options.tierFilter : parseFissureTier(options.tierFilter);
   const ducatGoal = mode === 'ducat' && options.ducatGoal ? options.ducatGoal : null;
   const ducatStrategy = mode === 'ducat' ? (ducatGoal ? 'trader' : 'ordinary') : null;
   // 奸商商品模式面向“自己带一枚遗物进野队”，不能把默认 4 人误算成四枚相同遗物。
@@ -459,22 +559,28 @@ export async function recommendFissures(relics, options = {}) {
     byBase.set(item.baseName, entry);
   }
   const allOwned = [...byBase.values()].filter((entry) => entry.count > 0);
-  const owned = allOwned.filter((entry) => vaultFilter === 'vaulted'
+  const tierOwned = allOwned.filter((entry) => tierFilter === 'all'
+    || (tierFilter === 'Omnia' ? entry.era !== 'Requiem' : entry.era === tierFilter));
+  const owned = tierOwned.filter((entry) => vaultFilter === 'vaulted'
     ? entry.vaulted
     : vaultFilter === 'unvaulted'
       ? !entry.vaulted
       : true);
   if (!owned.length && vaultFilter !== 'all' && !ducatGoal) {
-    return { ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, error: 'no_relics_for_vault_filter', fetchedAt: new Date().toISOString() };
+    return { ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, fissureScope, tierFilter, error: 'no_relics_for_vault_filter', fetchedAt: new Date().toISOString() };
+  }
+  if (!owned.length && tierFilter !== 'all' && !ducatGoal) {
+    return { ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, fissureScope, tierFilter, error: 'no_relics_for_tier', fetchedAt: new Date().toISOString() };
   }
   const requiemCount = owned.filter((entry) => entry.era === 'Requiem').reduce((sum, entry) => sum + entry.count, 0);
 
   // 2) 裂缝 + 奖励表 + 价格整表
-  const worldState = options.worldState || await getJson(`${ITEMS_BASE}/pc`);
+  const worldState = options.worldState || await loadFissureWorldState();
   const minRemainMs = Number.isFinite(Number(options.minRemainMs)) ? Math.max(0, Number(options.minRemainMs)) : MIN_REMAIN_MS;
   const fissures = (Array.isArray(worldState.fissures) ? worldState.fissures : [])
     .filter((f) => !f.expired && Date.parse(f.expiry) - now > minRemainMs)
-    .filter((f) => fissureScope !== 'steel' || Boolean(f.isHard));
+    .filter((f) => fissureScope !== 'steel' || Boolean(f.isHard))
+    .filter((f) => tierFilter === 'all' || f.tier === tierFilter || (f.tier === 'Omnia' && tierFilter !== 'Requiem'));
   if (!fissures.length) {
     return { ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, fissureScope, error: fissureScope === 'steel' ? 'no_steel_fissures' : 'no_fissures', fetchedAt: new Date().toISOString() };
   }
@@ -604,6 +710,7 @@ export async function recommendFissures(relics, options = {}) {
       preference,
       vaultFilter,
       fissureScope,
+      tierFilter,
       ducatStrategy,
       ducatGoal,
       squad: appraisalSquad,
@@ -669,6 +776,7 @@ export async function recommendFissures(relics, options = {}) {
     preference,
     vaultFilter,
     fissureScope,
+    tierFilter,
     ducatStrategy,
     ducatGoal,
     squad: appraisalSquad,
@@ -797,6 +905,7 @@ export function formatRecommend(data) {
         ? '你的库存中没有“已入库”遗物，无法按该条件推荐裂缝。'
         : '你的库存中没有“未入库”遗物，无法按该条件推荐裂缝。';
     }
+    if (data.error === 'no_relics_for_tier') return `你的库存中没有“${FISSURE_TIERS[data.tierFilter]?.zh || data.tierFilter}”遗物，无法按该条件推荐裂缝。`;
     if (data.error === 'market_route_better') return `按「${data.ducatGoal?.name || '目标商品'}」当前行情，库存与当前可获取遗物中都没有达到商品保本线的候选；先拿当屏最高白金奖励更稳。`;
     if (data.error === 'no_steel_fissures') return '当前没有剩余时间足够的钢铁裂缝；去掉“钢铁”可查看全部路线。';
     return '当前没有能配上你库存遗物的裂缝（或裂缝列表为空）。';
@@ -806,8 +915,9 @@ export function formatRecommend(data) {
   const preferenceZh = FISSURE_PREFERENCES[data.preference]?.zh || FISSURE_PREFERENCES.balanced.zh;
   const vaultFilterZh = RELIC_VAULT_FILTERS[data.vaultFilter]?.zh || RELIC_VAULT_FILTERS.all.zh;
   const fissureScopeZh = FISSURE_SCOPES[data.fissureScope]?.zh || FISSURE_SCOPES.all.zh;
+  const tierFilterZh = FISSURE_TIERS[data.tierFilter]?.zh || FISSURE_TIERS.all.zh;
   const modeZh = ducatMode ? (data.ducatGoal ? `奸商对标：${data.ducatGoal.name}` : '赚杜卡德') : '赚白金';
-  const lines = [`🎯 开遗物 · ${modeZh} · ${fissureScopeZh} · ${preferenceZh} · ${vaultFilterZh} · ${squadZh}口径（库存 × 双币期望）`];
+  const lines = [`🎯 开遗物 · ${modeZh} · ${fissureScopeZh} · ${tierFilterZh} · ${preferenceZh} · ${vaultFilterZh} · ${squadZh}口径（库存 × 双币期望）`];
   if (data.ducatGoal) lines.push(`目标 ${data.ducatGoal.ducats} 杜 / 市场 ${data.ducatGoal.marketPlat}p｜盈亏线 1p≈${data.ducatGoal.ducatsPerPlat} 杜｜${data.ducatGoal.marketBasis === 'today' ? '今日中位' : '90天中位'}｜日均 ${data.ducatGoal.dailyVolume ?? '—'} 件`);
   lines.push(data.ducatGoal
     ? `立即可开 ${data.matchedRelicCount ?? 0} 种估算过线候选；每种最多列两条当前路线。`
