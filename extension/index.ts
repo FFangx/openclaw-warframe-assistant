@@ -376,17 +376,22 @@ function toolIsGroup(ctx: any): boolean {
 
 function decorateToolResult(result: any, mediaDelivered = false): any {
   const mediaUrl = String(result?.mediaUrl || '').trim();
-  if (!mediaUrl) return result;
+  const bountyPolicy = result?.kind === 'bounty'
+    ? '赏金事实只能依据本次 facts：地点卡中的 rewards 是当前轮奖池；历史掉落表、B轮归属或先前对话都不能证明当前在架。只有 facts.type=bounty-reward-current-check 且 currentlyAvailable=true 时，才可说某奖励本轮可刷；否则不得追加“趁这轮刷”之类建议。'
+    : '';
+  if (!mediaUrl) return bountyPolicy ? { ...result, answerPolicy: bountyPolicy } : result;
   if (mediaDelivered) {
     return {
       ...result,
       mediaDelivered: true,
-      presentation: '卡片已经由工具直接发送到当前 QQ 会话。最终回复只需简短解释，不要再输出 <qqimg>、MEDIA: 或重复发送图片。',
+      ...(bountyPolicy ? { answerPolicy: bountyPolicy } : {}),
+      presentation: `卡片已经由工具直接发送到当前 QQ 会话。最终回复只需简短解释，不要再输出 <qqimg>、MEDIA: 或重复发送图片。${bountyPolicy}`,
     };
   }
   return {
     ...result,
-    presentation: `卡片已生成。最终回复必须原样包含 <qqimg>${mediaUrl}</qqimg>，再按用户问题简短解释；不要声称没有数据。`,
+    ...(bountyPolicy ? { answerPolicy: bountyPolicy } : {}),
+    presentation: `卡片已生成。最终回复必须原样包含 <qqimg>${mediaUrl}</qqimg>，再按用户问题简短解释；不要声称没有数据。${bountyPolicy}`,
   };
 }
 

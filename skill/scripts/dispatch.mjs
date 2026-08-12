@@ -138,7 +138,12 @@ export async function dispatchCommand(message, options = {}) {
   if (personalAllowed) process.env.WARFRAME_PERSONAL_OK = '1';
   const { runShortcut } = await import('./shortcuts.mjs');
   const result = await runShortcut(text, { cardDir });
-  if (result.handled) return { handled: true, ok: result.ok !== false, kind: result.command, mediaUrl: result.mediaUrl || null, text: result.text || '', followupText: result.followupText || null };
+  if (result.handled) return {
+    handled: true, ok: result.ok !== false, kind: result.command,
+    query: result.query || '', mediaUrl: result.mediaUrl || null,
+    text: result.text || '', followupText: result.followupText || null,
+    ...(result.facts ? { facts: result.facts } : {}),
+  };
 
   return { handled: false, reason: 'no-template' };
 }

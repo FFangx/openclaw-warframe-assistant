@@ -1633,7 +1633,7 @@ export async function runShortcut(message, options = {}) {
     const { renderWarframeCard } = await import('./warframe-cards.mjs');
     let data;
     try {
-      data = await fetchBounties();
+      data = await fetchBounties(options.bountyFetchOptions || {});
     } catch (error) {
       return { handled: true, ok: false, command: 'bounty', query: parsed.query, text: `赏金数据暂时拉取失败（${String(error?.message || error)}），请稍后重试。` };
     }
@@ -1646,12 +1646,17 @@ export async function runShortcut(message, options = {}) {
     }
     let card = null;
     let text = '';
+    let facts = null;
     if (!parsed.query) {
       card = buildBountyIndexCard(data);
       text = [
         ...data.places.map((place) => `${place.zh}：${place.jobs.length} 个赏金（发「赏金 ${place.zh}」看全奖池）`),
         ...data.boards.map((board) => `${board.zh}：${board.nodes.length} 个挑战（发「赏金 ${board.zh === '解剖圣所' ? '实验室' : board.zh}」看难度）`),
       ].join('\n');
+      facts = {
+        type: 'bounty-index', fetchedAt: data.fetchedAt, expiry: data.expiry,
+        places: data.places.map((place) => ({ place: place.zh, jobCount: place.jobs.length })),
+      };
     } else {
       const place = resolveBountyPlace(parsed.query);
       const boardAlias = place ? null : resolveBountyBoard(parsed.query);
@@ -1664,12 +1669,21 @@ export async function runShortcut(message, options = {}) {
         } catch { /* 无图降级 */ }
         card = buildBountyPlaceCard(detail, data.expiry);
         text = `${detail.zh}当前 ${detail.jobs.length} 个赏金：${detail.jobs.map((job) => job.zhTitle).join('、')}`;
+        facts = {
+          type: 'bounty-place', place: detail.zh, fetchedAt: data.fetchedAt,
+          expiry: detail.expiry || data.expiry,
+          currentJobs: detail.jobs.map((job) => ({
+            title: job.zhTitle, levels: job.levels,
+            rewards: [...new Set((job.rewards || []).map((reward) => reward.zh).filter(Boolean))],
+          })),
+        };
       } else if (boardAlias) {
         // 挑战板区（扎里曼/实验室/1999）：每节点挑战+难度+描述，奖池固定不随轮换
         const board = data.boards.find((entry) => entry.key === boardAlias.key);
         if (!board) return { handled: true, ok: false, command: 'bounty', query: parsed.query, text: `${boardAlias.zh}挑战板数据暂不可用（oracle 轮换源可能挂了），请稍后重试。` };
         card = buildBountyBoardCard(board);
         text = `${board.zh}当前 ${board.nodes.length} 个挑战：${board.nodes.map((node) => `${node.challengeZh}${node.levels ? `（Lv ${node.levels[0]}-${node.levels[1]}）` : ''}`).join('、')}`;
+        facts = { type: 'bounty-board', board: board.zh, fetchedAt: data.fetchedAt, expiry: board.expiry, nodes: board.nodes };
       } else {
         const result = whereBountyReward(parsed.query, data);
         try { await attachRewardIcons(result.hits); } catch { /* 无图降级 */ }
@@ -1677,12 +1691,18 @@ export async function runShortcut(message, options = {}) {
         text = result.hits.length
           ? `「${parsed.query}」本轮在出：\n${result.hits.slice(0, 5).map((hit) => `${hit.placeZh} ${hit.jobZh}（${hit.chance}%）`).join('\n')}`
           : `本轮赏金没有「${parsed.query}」；奖池 2.5 小时轮换，可发「订阅 赏金 ${parsed.query}」蹲下轮。`;
+        facts = {
+          type: 'bounty-reward-current-check', reward: parsed.query, fetchedAt: data.fetchedAt,
+          expiry: data.expiry, currentlyAvailable: result.hits.length > 0, hits: result.hits,
+        };
       }
     }
     let mediaUrl = null;
-    try { mediaUrl = await renderWarframeCard(card, options.cardDir || process.env.WARFRAME_CARD_DIR); } catch { mediaUrl = null; }
+    if (!options.skipRender) {
+      try { mediaUrl = await renderWarframeCard(card, options.cardDir || process.env.WARFRAME_CARD_DIR); } catch { mediaUrl = null; }
+    }
     return {
-      handled: true, ok: true, command: 'bounty', query: parsed.query, data, mediaUrl,
+      handled: true, ok: true, command: 'bounty', query: parsed.query, data, facts, mediaUrl,
       followupText: mediaUrl && !parsed.query ? '发「赏金 希图斯/金星/火卫二」看奖励池；「赏金 物品名」反查哪个赏金出。' : null,
       text,
     };
