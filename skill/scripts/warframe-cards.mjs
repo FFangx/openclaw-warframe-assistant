@@ -285,7 +285,15 @@ function intelPresentation(item) {
   if (item.type === 'arbitration') return { mark: '仲', icon: WORLDSTATE_ICON_DATA.arbitration, color: '#f0a766', title: '仲裁轮换', place: `${item.planet || ''} · ${item.node || ''}`, desc: [item.mission, item.enemy, item.arbyTier ? `场地 ${item.arbyTier} 级` : '', subscription].filter(Boolean).join(' · '), right: countdown(item.expiry), sub: '剩余时间' };
   if (item.type === 'sortie') return { mark: '突', icon: WORLDSTATE_ICON_DATA.sortie, color: '#c98add', title: '今日突击', place: `${item.boss || '未知首领'}（${item.faction || '未知阵营'}）`, desc: [(item.variants || []).map((variant) => variant.mission).join(' → '), subscription].filter(Boolean).join(' · '), right: countdown(item.expiry), sub: '距每日刷新' };
   if (item.type === 'incursion') return { mark: '袭', icon: WORLDSTATE_ICON_DATA.incursion, color: '#9bb6d3', title: '钢铁侵袭', place: `今日 ${(item.nodes || []).length} 个侵袭节点`, desc: [(item.nodes || []).map((node) => node.mission).join(' · '), subscription].filter(Boolean).join(' · '), right: countdown(item.expiry), sub: '距每日刷新' };
-  if (item.type === 'bounty') return { mark: '赏', icon: WORLDSTATE_ICON_DATA.syndicate, color: '#d8c9a3', title: '赏金命中', place: `${item.placeZh || ''} · ${item.jobZh || ''}`, desc: [`Lv ${(item.levels || []).join('-')}`, item.topReward, subscription].filter(Boolean).join(' · '), right: countdown(item.expiry), sub: '距奖池轮换' };
+  if (item.type === 'bounty') {
+    const matched = String(item.matchedTarget || '').trim();
+    return {
+      mark: '赏', icon: WORLDSTATE_ICON_DATA.syndicate, color: '#d8c9a3', title: '赏金命中',
+      place: [matched, item.placeZh].filter(Boolean).join(' · ') || item.jobZh || '赏金奖励',
+      desc: [item.jobZh, `Lv ${(item.levels || []).join('-')}`, item.topReward ? `奖池代表奖励：${item.topReward}` : '', subscription].filter(Boolean).join(' · '),
+      right: countdown(item.expiry), sub: '距奖池轮换',
+    };
+  }
   if (item.type === 'rotation') return { mark: '轮', color: '#c9b8dd', title: '轮换到点', place: item.label || '轮换提醒', desc: ['一次性提醒已自动取消', subscription].filter(Boolean).join(' · '), right: '已开始', sub: '本周/当期' };
   if (item.type === 'invasion') return { mark: '侵', icon: WORLDSTATE_ICON_DATA.invasion, color: '#edaa55', title: item.rare ? '稀有入侵' : '普通入侵', place: localizedNode, desc: [item.description || item.text, subscription].filter(Boolean).join(' · '), right: `${Math.max(0, Math.min(100, Math.round(Number(item.completion) || 0)))}%`, sub: '争夺进度', bar: Math.max(0, Math.min(100, Number(item.completion) || 0)) };
   if (item.type === 'alert') return { mark: '警', icon: WORLDSTATE_ICON_DATA.alert, color: '#f0c765', title: '新警报', place: localizedNode, desc: [item.mission, item.reward, subscription].filter(Boolean).join(' · '), right: deadlineText(item.expiry), sub: '截止时间' };

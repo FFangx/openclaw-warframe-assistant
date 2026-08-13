@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { appendFreshMatches, currentNotificationMatches, diagnoseSubscriptions, manageCommand } from './subscriptions.mjs';
+import { appendFreshMatches, currentNotificationMatches, diagnoseSubscriptions, manageCommand, matchedBountyTarget } from './subscriptions.mjs';
+import { buildIntelCard } from './warframe-cards.mjs';
 
 async function fixture(ledger, run) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'wf-sub-audit-'));
@@ -74,4 +75,17 @@ test('首次命中立即提醒且已见事件不会重复提醒', () => {
   assert.equal(freshById.get('bounty:current').matches[0].condition, '赏金 · 尖刃弹头');
   assert.deepEqual(currentNotificationMatches({ initialized: false, notifyInitial: false }, current), []);
   assert.deepEqual(currentNotificationMatches({ initialized: true }, current, new Set(['bounty:current'])), []);
+});
+
+test('赏金订阅卡把实际命中目标放在主标题区域而非只显示代表奖励', () => {
+  const item = {
+    id: 'bounty:test', type: 'bounty', placeZh: '殁世幽都', jobZh: '异物取回', levels: [15, 25],
+    topReward: '破片射击 5.68%', expiry: '2099-01-01T00:00:00.000Z',
+    matches: [{ condition: '赏金 · 尖刃弹头' }], subscriptionDetail: '赏金 · 尖刃弹头',
+  };
+  item.matchedTarget = matchedBountyTarget(item);
+  const card = buildIntelCard({ title: '订阅命中 · 1 条更新', items: [item], fetchedAt: '2026-08-13T00:00:00.000Z' });
+  assert.equal(item.matchedTarget, '尖刃弹头');
+  assert.ok(card.html.indexOf('尖刃弹头') < card.html.indexOf('异物取回'));
+  assert.match(card.html, /奖池代表奖励：破片射击 5\.68%/u);
 });

@@ -961,6 +961,12 @@ function appendFreshMatches(freshById, subscription, freshCurrent) {
   return freshById;
 }
 
+function matchedBountyTarget(item) {
+  if (item?.type !== 'bounty') return '';
+  return [...new Set((item.matches || []).map((match) => normalize(match.condition)
+    .replace(/^赏金\s*·?\s*/u, '')).filter(Boolean))].join('、');
+}
+
 function filterWords(value) {
   return normalizeFilter(value).split(' ').filter(Boolean);
 }
@@ -1611,6 +1617,9 @@ async function monitorTarget(target, statePath, cardDir, dryRun = false) {
     }))].join('；');
     for (const item of fresh) item.subscriptionDetail = detailFor(item, '');
     for (const item of closing) item.subscriptionDetail = detailFor(item, `⏰ ${item.closing}`);
+    for (const item of fresh) {
+      if (item.type === 'bounty') item.matchedTarget = matchedBountyTarget(item);
+    }
 
     const all = [...fresh, ...closing];
     // 订阅推送统一情报雷达模板（2026-08-06 用户拍板）：单条专属 alert 卡全部废弃，
@@ -1635,7 +1644,7 @@ async function monitorTarget(target, statePath, cardDir, dryRun = false) {
       if (item.type === 'arbitration') return `• 仲裁 ${item.mission} · ${item.planet} ${item.node} · ${item.subscriptionDetail}`;
       if (item.type === 'sortie') return `• 突击 ${item.boss} · ${item.variants.map((variant) => variant.mission).join('→')} · ${item.subscriptionDetail}`;
       if (item.type === 'incursion') return `• 钢铁侵袭 ${(item.nodes || []).map((node) => node.mission).join('/')} · ${item.subscriptionDetail}`;
-      if (item.type === 'bounty') return `• 赏金 ${item.placeZh} ${item.jobZh}（${item.topReward || ''}）· ${item.subscriptionDetail}`;
+      if (item.type === 'bounty') return `• 赏金命中 ${item.matchedTarget || item.subscriptionDetail} · ${item.placeZh} ${item.jobZh}${item.topReward ? `（奖池代表奖励：${item.topReward}）` : ''}`;
       if (item.type === 'rotation') return `• 轮换到点 ${item.label}（一次性提醒已自动取消）· ${item.subscriptionDetail}`;
       return `• ${TYPE_LABEL[item.type]} · ${item.description || item.reward || item.location || item.node || ''} · ${item.subscriptionDetail}`;
     }), `来源：${activeTypes.has('arbitration') ? '世界状态＋仲裁排期' : '世界状态'}`];
@@ -1698,7 +1707,7 @@ async function main() {
   process.exitCode = 1;
 }
 
-export { manageCommand, monitorTarget, diagnoseSubscriptions, parseSubscriptionSpec, queryArbitration, queryIntel, seedDefaults, closingLabel, translateEventName, primeOracleEventMap, refreshArbitrationCache, refreshIncursionsCache, scheduledIncursions, arbitrationMatches, allCandidates, currentNotificationMatches, appendFreshMatches, monitorIsDue, traderEffectivelyActive, traderWindow, updateSchedule, worldStateIsStale };
+export { manageCommand, monitorTarget, diagnoseSubscriptions, parseSubscriptionSpec, queryArbitration, queryIntel, seedDefaults, closingLabel, translateEventName, primeOracleEventMap, refreshArbitrationCache, refreshIncursionsCache, scheduledIncursions, arbitrationMatches, allCandidates, currentNotificationMatches, appendFreshMatches, matchedBountyTarget, monitorIsDue, traderEffectivelyActive, traderWindow, updateSchedule, worldStateIsStale };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
