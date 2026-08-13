@@ -25,11 +25,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
 脚本会完成三件事：
 
-1. 将 `skill/` 同步到 `skills/warframe-assistant/`
-2. 将 `extension/` 同步到 `.openclaw/extensions/warframe-fast-commands/`
+1. 先运行当前源码的脚本测试与插件合同测试；失败时不改运行时
+2. 将 `skill/` 与 `extension/` 通过 staging 同步到运行时，并逐文件校验 SHA-256
 3. 将 `config/AGENTS.warframe.md` 的受控安全片段追加到工作区 `AGENTS.md` 末尾；再次运行会原地更新，不会重复追加
 
 修改 `AGENTS.md` 前会保留 `AGENTS.md.warframe-assistant.bak`。只更新安全片段可加 `-AgentsOnly`；完全不改 `AGENTS.md` 可加 `-SkipAgents`；删除该受控片段可运行 `-RemoveAgents`。脚本不会覆盖片段以外的个人规则。
+
+每个运行目录会写入 `.warframe-assistant-managed.json` 与 `.warframe-assistant-build.json`。以后升级时，只有上个版本明确登记为受管、但新源码已经删除的文件才会移出运行目录；它们保存在 `.openclaw/warframe-assistant-deploy-backups/`，不会误删 `node_modules`、状态、缓存或个人配置。首次切换到受管部署时，历史 `.bak`、旧脚本测试和旧内置文档也会移入同一可恢复备份。
 
 需要预览动作时使用 PowerShell 通用参数 `-WhatIf`。
 
@@ -84,6 +86,14 @@ node skills/warframe-assistant/scripts/doctor.mjs
 ```
 
 逐项检查 Node/目录可写/浏览器/7 个数据源连通/AlecaFrame/OpenClaw CLI，末尾输出**功能矩阵**。❌ 项按提示补齐；⚠️ 项代表降级可用。
+
+需要验证“当前源码就是正在运行的版本”时，在仓库根目录执行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\verify.ps1
+```
+
+它会统一检查源码测试、安装器升级生命周期、源码/运行时哈希、当前源码声明的运行时测试、确定性入口出卡、环境 doctor、插件 doctor 和 Gateway 状态。运行时测试按源码清单选择，不会被旧备份中的历史测试污染。
 
 ## 5. 重启 Gateway 并验证
 

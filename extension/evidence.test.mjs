@@ -10,15 +10,17 @@ test('静态掉落资料不会被标记成当前状态证据', () => {
 });
 
 test('当前轮明确未命中只证明该范围内不存在', () => {
+  const fetchedAt = new Date().toISOString();
+  const expiry = new Date(Date.now() + 60 * 60 * 1000).toISOString();
   const evidence = buildEvidenceEnvelope({
     ok: true, kind: 'bounty', facts: {
       type: 'bounty-reward-current-check', currentlyAvailable: false,
-      fetchedAt: '2026-08-13T00:00:00.000Z', expiry: '2026-08-13T01:00:00.000Z',
+      fetchedAt, expiry,
     },
   }, 'command', '赏金 尖刃弹头');
   assert.equal(evidence.scope, 'current_rotation');
   assert.equal(evidence.finding, 'confirmed_absent_in_scope');
-  assert.equal(evidence.asOf, '2026-08-13T00:00:00.000Z');
+  assert.equal(evidence.asOf, fetchedAt);
 });
 
 test('通用策略覆盖当前、旧快照和未知范围，而非绑定赏金事件', () => {

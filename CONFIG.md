@@ -36,3 +36,9 @@
 - `state/warframe-weekly.json`——周常打卡与电波采样
 - `state/warframe-drops.json`——掉落监测基线
 - `state/warframe-arbitration-cache.json` / `warframe-incursions-cache.json`——排期缓存（删了会自动重建）
+
+## 部署标识与备份
+
+- `skills/warframe-assistant/.warframe-assistant-build.json` 与插件目录同名文件——当前 commit、脏工作树标志、内容哈希和部署时间
+- 两个运行目录的 `.warframe-assistant-managed.json`——安装器受管文件及 SHA-256 清单
+- `.openclaw/warframe-assistant-deploy-backups/`——升级时被替换或移出的旧受管文件，可用于人工恢复；不属于运行路径

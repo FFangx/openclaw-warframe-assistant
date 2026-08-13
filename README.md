@@ -74,7 +74,7 @@ flowchart LR
     CRON[OpenClaw cron] -->|订阅蹲守| S
 ```
 
-- `skill/`：23 个运行脚本＋1 个自动测试（零 npm 强依赖，`sharp` 可选）+ SKILL.md（AI 行为契约）+ 素材
+- `skill/`：确定性运行脚本＋9 组脚本测试（零 npm 强依赖，`sharp` 可选）+ SKILL.md（AI 行为契约）+ 素材
 - `extension/`：OpenClaw 插件（严格裸命令硬拦截 + 自然语言结构化工具；工具生成的卡片由插件直接投递 QQ）
 - `config/AGENTS.warframe.md`：安装器追加到用户 `AGENTS.md` 的只读与隐私安全边界
 
@@ -91,7 +91,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
 # 装好后自检环境，输出功能矩阵
 node "$env:USERPROFILE\.openclaw\workspace\skills\warframe-assistant\scripts\doctor.mjs"
+
+# 一次验证源码测试、部署一致性、运行时入口、插件和 Gateway
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\verify.ps1
 ```
+
+安装器会先跑源码测试，再用受管文件清单同步 Skill/插件并逐文件校验 SHA-256；源码已删除的旧受管文件会移入工作区内的可恢复部署备份。运行时的 `.warframe-assistant-build.json` 记录 Git commit、脏工作树标志和内容哈希，`doctor.mjs` 会直接显示当前运行构建。
 
 ## 三条实话（装之前必读）
 

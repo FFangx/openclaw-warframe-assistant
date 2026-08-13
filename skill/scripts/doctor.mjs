@@ -28,6 +28,15 @@ function record(section, name, status, note = '') {
   console.log(`${mark} [${section}] ${name}${note ? ` — ${note}` : ''}`);
 }
 
+try {
+  const build = JSON.parse(await readFile(path.resolve(here, '..', '.warframe-assistant-build.json'), 'utf8'));
+  const commit = String(build.commit || 'unknown').slice(0, 12);
+  const content = String(build.contentHash || '').slice(0, 12);
+  record('版本', `${commit}${build.dirty ? '+dirty' : ''}`, 'ok', content ? `内容 ${content}；部署于 ${build.installedAt}` : `部署于 ${build.installedAt}`);
+} catch {
+  record('版本', '源码工作树（未部署）', 'warn', '运行 install.ps1 后会写入可核验构建标识');
+}
+
 async function probeUrl(url) {
   try {
     const response = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0', Range: 'bytes=0-64' }, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
