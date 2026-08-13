@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
-import { directIntelType, isPersonalAccountCommand, isShortcut, isSubscriptionCommand } from './routing.mjs';
+import { directIntelType, isArbitrationShortcut, isPersonalAccountCommand, isShortcut, isSubscriptionCommand, isWeeklyCommand } from './routing.mjs';
 import { buildEvidenceEnvelope, STATE_ASSERTION_POLICY } from './evidence.mjs';
 import { classifyNaturalWarframeQuery, DYNAMIC_QUERY_POLICY } from './intent-policy.mjs';
 

@@ -1,6 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { isShortcut, isSubscriptionCommand } from './routing.mjs';
+
+test('plugin entry imports every routing helper it calls', async () => {
+  const [entry, routing] = await Promise.all([
+    readFile(new URL('./index.ts', import.meta.url), 'utf8'),
+    readFile(new URL('./routing.mjs', import.meta.url), 'utf8'),
+  ]);
+  const importClause = entry.match(/import\s*\{([^}]+)\}\s*from\s*['"]\.\/routing\.mjs['"]/u)?.[1] || '';
+  const imported = new Set(importClause.split(',').map((name) => name.trim()).filter(Boolean));
+  const exportedHelpers = [...routing.matchAll(/export\s+function\s+(\w+)\s*\(/gu)].map((match) => match[1]);
+  const missing = exportedHelpers.filter((name) => new RegExp(`\\b${name}\\s*\\(`, 'u').test(entry) && !imported.has(name));
+  assert.deepEqual(missing, []);
+});
 
 test('strict documented commands stay on the deterministic fast path', () => {
   for (const input of [
