@@ -461,7 +461,7 @@ function resetTargetSchedule(ledger, target) {
   delete ledger.schedules[target];
 }
 
-function addOne(ledger, context, spec) {
+function addOne(ledger, context, spec, { notifyInitial = true } = {}) {
   const existing = ledger.subscriptions.find((item) => item.target === context.target
     && item.ownerId === context.ownerId
     && item.type === spec.type
@@ -470,6 +470,7 @@ function addOne(ledger, context, spec) {
     existing.enabled = true;
     existing.ownerName = context.ownerName || existing.ownerName;
     if (spec.meta) existing.meta = spec.meta;
+    if (!existing.initialized && notifyInitial) existing.notifyInitial = true;
     resetTargetSchedule(ledger, context.target);
     return { item: existing, created: false };
   }
@@ -482,6 +483,7 @@ function addOne(ledger, context, spec) {
     filter: normalize(spec.filter),
     enabled: true,
     initialized: false,
+    notifyInitial,
     seen: [],
     createdAt: new Date().toISOString(),
     ...(spec.meta ? { meta: spec.meta } : {}),
@@ -601,7 +603,7 @@ async function manageCommand(message, context, statePath) {
           reply = [
             created.length ? `订阅成功：${created.join('、')}` : '',
             restored.length ? `已存在并保持启用：${restored.join('、')}` : '',
-            '首次监测只建立基线，不会把当前已有情报当成新提醒；后续命中仅推送一次。',
+            '首次监测若当前已经命中会立即提醒；同一事件后续仅推送一次。',
           ].filter(Boolean).join('\n');
           changed = true;
         }
@@ -939,6 +941,24 @@ function allCandidates(state) {
     };
   });
   return result;
+}
+
+function currentNotificationMatches(subscription, current, seen = new Set()) {
+  if (!subscription.initialized && subscription.notifyInitial !== true) return [];
+  return current.filter((item) => !seen.has(item.id));
+}
+
+function appendFreshMatches(freshById, subscription, freshCurrent) {
+  for (const item of freshCurrent) {
+    const existing = freshById.get(item.id) || { ...item, matches: [] };
+    existing.matches.push({
+      subscriptionId: subscription.id,
+      condition: displayCondition(subscription),
+      ownerName: subscription.ownerName || subscription.ownerId,
+    });
+    freshById.set(item.id, existing);
+  }
+  return freshById;
 }
 
 function filterWords(value) {
@@ -1498,19 +1518,12 @@ async function monitorTarget(target, statePath, cardDir, dryRun = false) {
       const pool = candidates[subscription.type] || [];
       const current = pool.filter((item) => matches(subscription, item));
       const seen = new Set(Array.isArray(subscription.seen) ? subscription.seen : []);
-      const freshCurrent = subscription.initialized ? current.filter((item) => !seen.has(item.id)) : [];
+      const freshCurrent = currentNotificationMatches(subscription, current, seen);
       const closingMarks = [];
+      appendFreshMatches(freshById, subscription, freshCurrent);
       if (subscription.initialized) {
         for (const item of current) {
-          if (!seen.has(item.id)) {
-            const existing = freshById.get(item.id) || { ...item, matches: [] };
-            existing.matches.push({
-              subscriptionId: subscription.id,
-              condition: displayCondition(subscription),
-              ownerName: subscription.ownerName || subscription.ownerId,
-            });
-            freshById.set(item.id, existing);
-          } else if (!seen.has(`${item.id}#closing`)) {
+          if (seen.has(item.id) && !seen.has(`${item.id}#closing`)) {
             // 已报过出现、未报过最后窗口：进入窗口则补报一次
             const label = closingLabel(item);
             if (label) {
@@ -1633,7 +1646,8 @@ async function monitorTarget(target, statePath, cardDir, dryRun = false) {
 async function seedDefaults(context, statePath) {
   return withLedgerLock(statePath, async () => {
     const ledger = await readLedger(statePath);
-    const results = ['alert', 'invasion', 'event', 'trader'].map((type) => addOne(ledger, context, { type, filter: '' }));
+    const results = ['alert', 'invasion', 'event', 'trader']
+      .map((type) => addOne(ledger, context, { type, filter: '' }, { notifyInitial: false }));
     await writeLedger(statePath, ledger);
     return { ok: true, added: results.filter((item) => item.created).map((item) => subscriptionLabel(item.item)), targetActiveCount: ledger.subscriptions.filter((item) => item.target === context.target && item.enabled).length };
   });
@@ -1684,7 +1698,7 @@ async function main() {
   process.exitCode = 1;
 }
 
-export { manageCommand, monitorTarget, diagnoseSubscriptions, parseSubscriptionSpec, queryArbitration, queryIntel, seedDefaults, closingLabel, translateEventName, primeOracleEventMap, refreshArbitrationCache, refreshIncursionsCache, scheduledIncursions, arbitrationMatches, allCandidates, monitorIsDue, traderEffectivelyActive, traderWindow, updateSchedule, worldStateIsStale };
+export { manageCommand, monitorTarget, diagnoseSubscriptions, parseSubscriptionSpec, queryArbitration, queryIntel, seedDefaults, closingLabel, translateEventName, primeOracleEventMap, refreshArbitrationCache, refreshIncursionsCache, scheduledIncursions, arbitrationMatches, allCandidates, currentNotificationMatches, appendFreshMatches, monitorIsDue, traderEffectivelyActive, traderWindow, updateSchedule, worldStateIsStale };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {

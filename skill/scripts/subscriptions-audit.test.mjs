@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { diagnoseSubscriptions } from './subscriptions.mjs';
+import { appendFreshMatches, currentNotificationMatches, diagnoseSubscriptions, manageCommand } from './subscriptions.mjs';
 
 async function fixture(ledger, run) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'wf-sub-audit-'));
@@ -42,3 +42,36 @@ test('旧订阅没有审计时明确说明不可追溯，不拿 seen 猜历史',
   assert.equal(result.reports[0].checks, 0);
   assert.match(result.text, /旧版尚未留下逐轮审计/);
 }));
+
+test('用户新建赏金订阅会标记首次当前命中需要提醒', async () => fixture({
+  version: 2, subscriptions: [], schedules: {}, audit: [],
+}, async (state) => {
+  const result = await manageCommand('订阅 赏金 尖刃弹头', context, state);
+  const ledger = JSON.parse(await readFile(state, 'utf8'));
+  assert.equal(result.ok, true);
+  assert.match(result.text, /首次监测若当前已经命中会立即提醒/);
+  assert.equal(ledger.subscriptions[0].initialized, false);
+  assert.equal(ledger.subscriptions[0].notifyInitial, true);
+}));
+
+test('自动种下的默认订阅仍保持首次静默基线', async () => fixture({
+  version: 2, subscriptions: [], schedules: {}, audit: [],
+}, async (state) => {
+  const { seedDefaults } = await import('./subscriptions.mjs');
+  await seedDefaults(context, state);
+  const ledger = JSON.parse(await readFile(state, 'utf8'));
+  assert.equal(ledger.subscriptions.length, 4);
+  assert.ok(ledger.subscriptions.every((item) => item.notifyInitial === false));
+}));
+
+test('首次命中立即提醒且已见事件不会重复提醒', () => {
+  const current = [{ id: 'bounty:current' }];
+  const subscription = { id: 'new', type: 'bounty', filter: '尖刃弹头', ownerId: 'user', initialized: false, notifyInitial: true };
+  const initial = currentNotificationMatches(subscription, current);
+  const freshById = appendFreshMatches(new Map(), subscription, initial);
+  assert.deepEqual(initial, current);
+  assert.equal(freshById.size, 1);
+  assert.equal(freshById.get('bounty:current').matches[0].condition, '赏金 · 尖刃弹头');
+  assert.deepEqual(currentNotificationMatches({ initialized: false, notifyInitial: false }, current), []);
+  assert.deepEqual(currentNotificationMatches({ initialized: true }, current, new Set(['bounty:current'])), []);
+});
