@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { normalizeOfficialWorldState } from './worldstate-source.mjs';
+import { assertOfficialWorldStateContract, normalizeOfficialWorldState } from './worldstate-source.mjs';
 import { attachStaticBountyRewards } from './bounties.mjs';
 
 const date = (ms) => ({ $date: { $numberLong: String(ms) } });
@@ -44,6 +44,19 @@ test('official world state normalizes the public query sections', async () => {
   assert.equal(state.nightwave.tag, 'RadioTestSyndicate');
   assert.equal(state.nightwave.activeChallenges[0].isElite, true);
   assert.match(state.nightwave.activeChallenges[0].id, /elitetest$/u);
+  assert.equal(assertOfficialWorldStateContract(state), state);
+  assert.deepEqual(
+    ['fissures', 'alerts', 'invasions', 'events', 'voidTraders', 'syndicateMissions', 'archimedeas'].filter((field) => !Array.isArray(state[field])),
+    [],
+  );
+});
+
+test('official world state completeness contract rejects missing seasonal sections', () => {
+  assert.throws(() => assertOfficialWorldStateContract({
+    timestamp: new Date().toISOString(), fissures: [], alerts: [], invasions: [], events: [],
+    voidTraders: [], syndicateMissions: [], archimedeas: [], sortie: null, archonHunt: null,
+    nightwave: null, duviriCycle: null,
+  }), /calendar missing/u);
 });
 
 test('official bounty jobs attach the matching WFCD level and rotation reward table', () => {

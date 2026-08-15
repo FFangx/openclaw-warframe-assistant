@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { buildFissureQueryCard, compressCardPng, currency, pruneOldCards, renderWarframeCard, RELIC_ICON_DATA } from './warframe-cards.mjs';
 import { appraiseRefinements, classifyFissure } from './recommend.mjs';
+import { resilientJsonRequest } from './http-resilience.mjs';
 import { readAlecaJson, stripDataUriReplacer } from './wfdata.mjs';
 import { loadWorldState } from './worldstate-source.mjs';
 
@@ -154,7 +155,7 @@ function expandItemQuery(value) {
 }
 
 // 仅供别名全量验证脚本使用
-export { ITEM_ALIASES, expandItemQuery, fetchMarketItems, resolveMarketItem };
+export { ITEM_ALIASES, expandItemQuery, fetchMarketItems, queryMarket, resolveMarketItem };
 
 function parseMarketRankQuery(value) {
   let itemQuery = normalizeUnicode(value);
@@ -197,29 +198,32 @@ function tradingTaxForRank(detail, rank) {
   return Math.round(baseTax * triangularRankCopies(rank));
 }
 
-const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+function marketEndpoint(url) {
+  const parsed = new URL(url);
+  if (parsed.hostname !== 'api.warframe.market') return null;
+  const pathname = parsed.pathname;
+  if (pathname === '/v2/items') return 'market:v2:catalog';
+  if (pathname.includes('/orders/item/')) return 'market:v2:orders';
+  if (pathname.startsWith('/v2/item/')) return 'market:v2:detail';
+  if (pathname.endsWith('/statistics')) return 'market:v1:statistics';
+  return 'market:other';
+}
 
-async function getJson(url, headers = {}, attempt = 0) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  try {
+async function getJson(url, headers = {}) {
+  const endpoint = marketEndpoint(url);
+  if (!endpoint) {
     const response = await fetch(url, {
       headers: { Accept: 'application/json', ...headers },
-      signal: controller.signal,
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    const body = await response.json().catch(() => null);
-    if (!response.ok) {
-      if (attempt < 2 && (response.status === 429 || response.status >= 500)) {
-        const retryAfter = Number(response.headers.get('retry-after'));
-        await wait(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 350 * (attempt + 1));
-        return getJson(url, headers, attempt + 1);
-      }
-      throw new Error(`HTTP ${response.status}: ${url}`);
-    }
-    return body;
-  } finally {
-    clearTimeout(timer);
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${url}`);
+    return response.json();
   }
+  return resilientJsonRequest(url, {
+    endpoint, headers,
+    // Two bounded attempts stay below the former single 20-second wait and the QQ tool budget.
+    timeoutMs: 8_000, maxAttempts: 2, failureThreshold: 2,
+  });
 }
 
 async function mapLimit(values, limit, mapper) {
@@ -442,7 +446,7 @@ async function queryMarket(rawQuery, platform = DEFAULT_PLATFORM, crossplay = DE
   const headers = marketHeaders(platform, crossplay);
   // 详情/卖单/统计都在 wm 上：整段包兜底——挂掉时降级为「价格记忆 + 加权均价快照」的诚实离线回答
   // ⚠ wm 半死状态会 200 + 坏 body，getJson 返回 null 而不抛错——null 必须与异常同样进离线路径
-  const offlineResult = async () => {
+  const offlineResult = async (upstreamError = null) => {
     const { recallPrice, readCachedData } = await import('./wfdata.mjs');
     const wanted = rankQuery.rankMode === 'max' ? 'max' : rankQuery.rankMode === 'exact' ? rankQuery.requestedRank : null;
     // 离线不知道 maxRank：满级查询无法换算具体等级，只回放 0 级/无等级记忆
@@ -458,14 +462,16 @@ async function queryMarket(rawQuery, platform = DEFAULT_PLATFORM, crossplay = DE
       item: { slug: resolved.match.slug, zhName: resolved.match.zhName || resolved.match.name },
       lastKnown: memory ? { platinum: memory.platinum, at: memory.at } : null,
       snapshot: wa ? { waPrice: wa.p, ducats: wa.d, at: table.cachedAt } : null,
+      upstream: upstreamError?.diagnostic || null,
       fetchedAt: new Date().toISOString(),
     };
   };
   let detail = null;
+  let detailError = null;
   try {
     detail = (await getJson(`${MARKET_BASE}/v2/item/${resolved.match.slug}`, headers))?.data || null;
-  } catch { detail = null; }
-  if (!detail) return offlineResult();
+  } catch (error) { detail = null; detailError = error; }
+  if (!detail) return offlineResult(detailError);
   const maxRank = Number.isInteger(Number(detail.maxRank)) && Number(detail.maxRank) > 0
     ? Number(detail.maxRank) : null;
   let selectedRank = null;
@@ -497,10 +503,11 @@ async function queryMarket(rawQuery, platform = DEFAULT_PLATFORM, crossplay = DE
   }
   const rankParam = selectedRank == null ? '' : `?rank=${encodeURIComponent(selectedRank)}`;
   let ordersResponse = null;
+  let ordersError = null;
   try {
     ordersResponse = await getJson(`${MARKET_BASE}/v2/orders/item/${resolved.match.slug}/top${rankParam}`, headers);
-  } catch { ordersResponse = null; }
-  if (!ordersResponse?.data) return offlineResult();
+  } catch (error) { ordersResponse = null; ordersError = error; }
+  if (!ordersResponse?.data) return offlineResult(ordersError);
   const sell = pickOrders(ordersResponse.data?.sell);
   const buy = pickOrders(ordersResponse.data?.buy, 'buy');
   // 价格记忆：成功查价顺手记最低卖单，wm 挂掉时可回放（失败静默）

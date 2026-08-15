@@ -3,6 +3,7 @@
 // The official source is mapped to the subset consumed by public queries and subscriptions.
 
 import { getBountyZhMaps, getLangTable, staleCachedJson } from './wfdata.mjs';
+import { resilientJsonRequest } from './http-resilience.mjs';
 
 const PRIMARY_BASE = 'https://api.warframestat.us';
 const OFFICIAL_URL = 'https://api.warframe.com/cdn/worldState.php';
@@ -48,7 +49,17 @@ const HUB = {
 };
 const CALENDAR_SEASON = { CST_SPRING: 'Spring', CST_SUMMER: 'Summer', CST_AUTUMN: 'Autumn', CST_WINTER: 'Winter' };
 
-async function fetchJson(url) {
+async function fetchJson(url, resilience = null) {
+  if (resilience) {
+    return resilientJsonRequest(url, {
+      endpoint: resilience.endpoint,
+      timeoutMs: resilience.timeoutMs ?? 6_000,
+      maxAttempts: resilience.maxAttempts ?? 1,
+      failureThreshold: resilience.failureThreshold ?? 2,
+      forbiddenOpenMs: resilience.forbiddenOpenMs ?? 15 * 60_000,
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    });
+  }
   const response = await fetch(url, {
     headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' },
     signal: AbortSignal.timeout(TIMEOUT_MS),
@@ -232,6 +243,20 @@ export async function normalizeOfficialWorldState(raw, { nodes = {}, lang = {}, 
   };
 }
 
+export function assertOfficialWorldStateContract(state) {
+  const arrayFields = ['fissures', 'alerts', 'invasions', 'events', 'voidTraders', 'syndicateMissions', 'archimedeas'];
+  for (const field of arrayFields) {
+    if (!Array.isArray(state?.[field])) throw new Error(`official world state contract: ${field} must be an array`);
+  }
+  if (!state?.timestamp || !Number.isFinite(Date.parse(state.timestamp))) {
+    throw new Error('official world state contract: timestamp missing or invalid');
+  }
+  for (const field of ['sortie', 'archonHunt', 'nightwave', 'duviriCycle', 'calendar']) {
+    if (!(field in state)) throw new Error(`official world state contract: ${field} missing`);
+  }
+  return state;
+}
+
 export async function loadWorldState(platform = 'pc', options = {}) {
   const normalizedPlatform = platform === 'xbox' ? 'xb1' : platform === 'switch' ? 'swi' : platform;
   const forceOfficial = options.forceOfficial === true || process.env.WARFRAME_WORLDSTATE_FORCE_OFFICIAL === '1';
@@ -239,7 +264,9 @@ export async function loadWorldState(platform = 'pc', options = {}) {
   const result = await staleCachedJson(cacheName, { ttlMs: CACHE_TTL_MS, version: 1 }, async () => {
     try {
       if (forceOfficial) throw new Error('diagnostic: primary source bypassed');
-      const primary = await fetchJson(`${PRIMARY_BASE}/${normalizedPlatform}`);
+      const primary = await fetchJson(`${PRIMARY_BASE}/${normalizedPlatform}`, {
+        endpoint: `worldstate:warframestat:${normalizedPlatform}`,
+      });
       return { ...primary, _dataSource: 'api.warframestat.us', _officialFallback: false };
     } catch (primaryError) {
       if (normalizedPlatform !== 'pc') throw primaryError;
@@ -248,8 +275,9 @@ export async function loadWorldState(platform = 'pc', options = {}) {
         getBountyZhMaps(),
         getLangTable().catch(() => ({})),
       ]);
-      const state = await normalizeOfficialWorldState(official, { nodes: maps?.nodes || {}, lang });
+      const state = assertOfficialWorldStateContract(await normalizeOfficialWorldState(official, { nodes: maps?.nodes || {}, lang }));
       state._primaryError = String(primaryError?.message || primaryError);
+      state._primaryHealth = primaryError?.diagnostic || null;
       return state;
     }
   });

@@ -68,6 +68,26 @@ const cardDir = process.env.WARFRAME_CARD_DIR || path.resolve(here, '..', '..', 
 const cacheOk = await checkWritable('数据缓存目录', cacheDir);
 const cardOk = await checkWritable('卡片输出目录', cardDir);
 
+// ---------- [端点健康] ----------
+try {
+  const { FileEndpointHealthStore, readEndpointHealth } = await import(pathToFileURL(path.join(here, 'http-resilience.mjs')).href);
+  const health = await readEndpointHealth(new FileEndpointHealthStore(path.join(cacheDir, 'endpoint-health.v1.json')));
+  const entries = Object.entries(health).toSorted(([left], [right]) => left.localeCompare(right));
+  if (!entries.length) {
+    record('端点健康', '暂无持久诊断', 'ok', '首次 Market/worldstate 查询后记录');
+  }
+  for (const [endpoint, state] of entries) {
+    const openUntil = Number(state?.openUntil);
+    const open = Number.isFinite(openUntil) && openUntil > Date.now();
+    const last = state?.lastCategory ? `${state.lastCategory}${state.lastStatus ? ` / HTTP ${state.lastStatus}` : ''}` : '最近成功';
+    record('端点健康', endpoint, open ? 'warn' : 'ok', open
+      ? `${last}；退避至 ${new Date(openUntil).toISOString()}`
+      : `${last}；连续失败 ${Number(state?.consecutiveFailures) || 0}`);
+  }
+} catch (error) {
+  record('端点健康', '诊断文件读取失败', 'warn', String(error?.message || error).slice(0, 80));
+}
+
 // ---------- [渲染] ----------
 let browserOk = false;
 try {
