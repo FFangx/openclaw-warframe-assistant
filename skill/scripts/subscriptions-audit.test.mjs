@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { appendFreshMatches, currentNotificationMatches, diagnoseSubscriptions, manageCommand, matchedBountyTarget } from './subscriptions.mjs';
+import { appendFreshMatches, currentNotificationMatches, diagnoseSubscriptions, manageCommand, matchedBountyTarget, notificationSource, translateRewardName } from './subscriptions.mjs';
 import { buildIntelCard } from './warframe-cards.mjs';
 
 async function fixture(ledger, run) {
@@ -88,4 +88,24 @@ test('赏金订阅卡把实际命中目标放在主标题区域而非只显示�
   assert.equal(item.matchedTarget, '尖刃弹头');
   assert.ok(card.html.indexOf('尖刃弹头') < card.html.indexOf('异物取回'));
   assert.match(card.html, /奖池代表奖励：破片射击 5\.68%/u);
+});
+
+test('备用世界状态的连写入侵部件名可命中简中目录', () => {
+  const translations = new Map([
+    ['strun wraith stock', '斯特朗·亡魂 枪托'],
+    ['dera vandal barrel', '德拉·破坏者 枪管'],
+  ]);
+  assert.equal(translateRewardName('StrunWraithStock', translations), '斯特朗·亡魂 枪托');
+  assert.equal(translateRewardName('DeraVandalBarrel', translations), '德拉·破坏者 枪管');
+});
+
+test('订阅卡来源只依据本次实际展示的情报', () => {
+  const invasion = { type: 'invasion' };
+  const scheduledArbitration = { type: 'arbitration', source: 'browse.wf' };
+  assert.equal(notificationSource([invasion]), 'warframestat.us');
+  assert.equal(notificationSource([scheduledArbitration]), 'browse.wf');
+  assert.equal(notificationSource([invasion, scheduledArbitration]), 'warframestat.us + browse.wf');
+  const card = buildIntelCard({ title: '订阅命中', items: [invasion], source: notificationSource([invasion]), fetchedAt: '2026-08-16T00:00:00.000Z' });
+  assert.match(card.html, /来源：世界状态/u);
+  assert.doesNotMatch(card.html, /仲裁排期/u);
 });

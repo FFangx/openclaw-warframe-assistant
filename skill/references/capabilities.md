@@ -104,6 +104,8 @@ Prime Mod 按 0 级成交统计；交易税从 warframe.market 单品详情接�
 
 所有世界状态入口统一采用 `warframestat → DE 官方 worldState.php → 最近规范化缓存`。官方备用源规范化覆盖裂缝/虚空风暴、警报、入侵、活动、突击、执刑官、虚空商人、赏金任务、午夜电波、科研、回廊与 1999 日历；周报也必须走统一入口。掉落搜索另走 `warframestat drops → WFCD GitHub`，赏金奖励池走 `drops.warframestat → WFCD GitHub`，物品/中文目录走本机 AlecaFrame → AlecaFrame CDN → warframestat 旧兜底，奸商货单以 DE 官方 Manifest 为权威、warframestat 仅补英文名。
 
+DE 官方备用世界状态返回的入侵奖励内部名会先按 CamelCase 拆成显示名，再进入 Market/官方简中词典，避免 `StrunWraithStock` 一类可识别部件落成“未收录奖励”。订阅卡来源只按本次实际展示的情报计算：仅世界状态、仅仲裁排期或两者混合，不因会话里另有仲裁订阅而误标当前卡片。
+
 PC 的 warframestat 主源按端点持久记录健康状态：403 首次即退避 15 分钟，连续网络/超时故障进入指数短退避；退避期不再撞主源而直接读取 DE 官方源。官方规范化结果通过字段完整性合同后才写入缓存，主源错误分类和熔断截止时间保留在内部诊断字段中。
 
 裂缝、仲裁（`仲裁推荐`=只推 S/A 场地，评级缺失宁漏不推）、警报、稀有入侵、特殊活动、突击、钢铁侵袭、

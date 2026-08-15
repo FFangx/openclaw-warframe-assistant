@@ -768,13 +768,29 @@ async function primeRewardTranslations() {
   return rewardTranslationsPromise;
 }
 
-function translateRewardName(value) {
+function translateRewardName(value, translations = rewardNameTranslations) {
   const raw = normalize(value);
   if (!raw) return '';
-  const exact = rewardNameTranslations.get(raw.toLowerCase());
+  // DE official worldState.php exposes some invasion parts as compact path
+  // tails (for example StrunWraithStock), while both Market and the official
+  // text dictionary index their display names with word boundaries.
+  const lookupName = raw
+    .replace(/([a-z\d])([A-Z])/gu, '$1 $2')
+    .replace(/([A-Z])([A-Z][a-z])/gu, '$1 $2');
+  const exact = translations.get(raw.toLowerCase())
+    || translations.get(lookupName.toLowerCase());
   if (exact) return exact;
-  const translated = raw.replace(rewardTokenPattern, (match) => REWARD_TOKEN_ZH[Object.keys(REWARD_TOKEN_ZH).find((key) => key.toLowerCase() === match.toLowerCase())] || match);
+  const translated = lookupName.replace(rewardTokenPattern, (match) => REWARD_TOKEN_ZH[Object.keys(REWARD_TOKEN_ZH).find((key) => key.toLowerCase() === match.toLowerCase())] || match);
   return /[A-Za-z]{2,}/u.test(translated) ? '未收录奖励' : translated;
+}
+
+function notificationSource(items) {
+  const visible = Array.isArray(items) ? items : [];
+  const hasSchedule = visible.some((item) => item?.type === 'arbitration' && String(item?.source || '').toLowerCase().includes('browse.wf'));
+  const hasWorldState = visible.some((item) => item?.type !== 'arbitration' || !String(item?.source || '').toLowerCase().includes('browse.wf'));
+  if (hasSchedule && hasWorldState) return 'warframestat.us + browse.wf';
+  if (hasSchedule) return 'browse.wf';
+  return 'warframestat.us';
 }
 
 function translateEventName(value) {
@@ -1632,7 +1648,8 @@ async function monitorTarget(target, statePath, cardDir, dryRun = false) {
     const title = !fresh.length
       ? `订阅提醒 · 最后窗口 ${closing.length} 条`
       : `订阅命中 · ${all.length} 条更新`;
-    const card = buildIntelCard({ title, items: all, fetchedAt: state.timestamp || new Date().toISOString(), source: activeTypes.has('arbitration') ? 'warframestat.us + browse.wf' : 'warframestat.us' });
+    const cardSource = notificationSource(all);
+    const card = buildIntelCard({ title, items: all, fetchedAt: state.timestamp || new Date().toISOString(), source: cardSource });
     if (cardDir) {
       try {
         const mediaUrl = await renderWarframeCard(card, cardDir);
@@ -1647,7 +1664,7 @@ async function monitorTarget(target, statePath, cardDir, dryRun = false) {
       if (item.type === 'bounty') return `• 赏金命中 ${item.matchedTarget || item.subscriptionDetail} · ${item.placeZh} ${item.jobZh}${item.topReward ? `（奖池代表奖励：${item.topReward}）` : ''}`;
       if (item.type === 'rotation') return `• 轮换到点 ${item.label}（一次性提醒已自动取消）· ${item.subscriptionDetail}`;
       return `• ${TYPE_LABEL[item.type]} · ${item.description || item.reward || item.location || item.node || ''} · ${item.subscriptionDetail}`;
-    }), `来源：${activeTypes.has('arbitration') ? '世界状态＋仲裁排期' : '世界状态'}`];
+    }), `来源：${cardSource.includes('browse.wf') ? (cardSource.includes('warframestat') ? '世界状态＋仲裁排期' : '仲裁排期') : '世界状态'}`];
     return { output: `${lines.join('\n')}\n`, data: { ok: true, fresh, closing } };
   });
 }
@@ -1707,7 +1724,7 @@ async function main() {
   process.exitCode = 1;
 }
 
-export { manageCommand, monitorTarget, diagnoseSubscriptions, parseSubscriptionSpec, queryArbitration, queryIntel, seedDefaults, closingLabel, translateEventName, primeOracleEventMap, refreshArbitrationCache, refreshIncursionsCache, scheduledIncursions, arbitrationMatches, allCandidates, currentNotificationMatches, appendFreshMatches, matchedBountyTarget, monitorIsDue, traderEffectivelyActive, traderWindow, updateSchedule, worldStateIsStale };
+export { manageCommand, monitorTarget, diagnoseSubscriptions, parseSubscriptionSpec, queryArbitration, queryIntel, seedDefaults, closingLabel, translateEventName, translateRewardName, primeRewardTranslations, primeOracleEventMap, refreshArbitrationCache, refreshIncursionsCache, scheduledIncursions, arbitrationMatches, allCandidates, currentNotificationMatches, appendFreshMatches, matchedBountyTarget, notificationSource, monitorIsDue, traderEffectivelyActive, traderWindow, updateSchedule, worldStateIsStale };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
