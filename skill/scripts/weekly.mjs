@@ -138,6 +138,21 @@ function challengeTitleZh(title) {
   return onlineChallengeZh.get(String(title ?? '').normalize('NFKC').trim().toLowerCase()) || null;
 }
 
+function nightwaveChallengeKey(challenge) {
+  const explicit = String(challenge?.key || challenge?.path || '').split('/').pop();
+  if (explicit) return explicit.toLowerCase();
+  return String(challenge?.id || '').replace(/^\d+/u, '').toLowerCase();
+}
+
+function nightwaveChallengeZh(challenge, names = null) {
+  const key = nightwaveChallengeKey(challenge);
+  return staticData.nightwaveZh?.[challenge?.title]
+    || challengeTitleZh(challenge?.title)
+    || names?.nightwaveZhOf?.(key, Boolean(challenge?.isElite))
+    || translateDesc(challenge?.desc)
+    || '本周挑战 ×1（译名待补）';
+}
+
 // 1999 日历事件翻译：题名精确表优先 → 在线官方词典 → 描述模板兜底；增益效果句式自由只走精确表
 function calendarChallengeZh(challenge) {
   return challengeTitleZh(challenge?.title) || staticData.calendarChallengeZh?.[challenge?.title] || translateDesc(challenge?.description) || '日历挑战（要求以游戏内为准）';
@@ -544,12 +559,29 @@ function loadNameTables() {
     const frames = Array.isArray(framesRaw) ? framesRaw : [];
     const frameByTail = new Map();   // 内部名尾段（Berserker）→ 显示名（Valkyr）
     const uniqByName = new Map();    // 显示名 → uniqueName（已有判定用，普通≠Prime 精确比对）
+    const nightwaveByTail = new Map(); // Weekly/WeeklyHard 路径尾段 → 官方简中挑战名
     for (const frame of frames) {
       if (!frame?.uniqueName || !frame?.name) continue;
       frameByTail.set(frame.uniqueName.split('/').pop(), frame.name);
       uniqByName.set(frame.name, frame.uniqueName);
     }
-    return { zhOf: (uniq) => lang[uniq]?.zh?.name || null, frameByTail, uniqByName };
+    for (const [uniqueName, localized] of Object.entries(lang)) {
+      const match = uniqueName.match(/\/Seasons\/(Weekly|WeeklyHard)\/([^/]+)$/u);
+      const zh = localized?.zh?.name;
+      if (!match || !zh) continue;
+      nightwaveByTail.set(`${match[1].toLowerCase()}:${match[2].toLowerCase()}`, zh);
+    }
+    return {
+      zhOf: (uniq) => lang[uniq]?.zh?.name || null,
+      nightwaveZhOf: (key, elite = false) => {
+        const tail = String(key || '').toLowerCase();
+        const group = elite ? 'weeklyhard' : 'weekly';
+        const alternate = elite ? 'weekly' : 'weeklyhard';
+        return nightwaveByTail.get(`${group}:${tail}`) || nightwaveByTail.get(`${alternate}:${tail}`) || null;
+      },
+      frameByTail,
+      uniqByName,
+    };
   })();
   return nameTablesPromise;
 }
@@ -762,7 +794,7 @@ function buildMegaData(record, worldState, skipped = new Set(), autoResult = nul
     const required = Number(seasonRequired?.[key]) || 0;
     const cur = Math.min(nwProgressByKey.get(key) ?? 0, required);
     return {
-      zh: staticData.nightwaveZh[challenge.title] || challengeTitleZh(challenge.title) || translateDesc(challenge.desc) || '本周挑战 ×1（译名待补）',
+      zh: nightwaveChallengeZh(challenge, names),
       standing: elite ? standing.elite : standing.weekly,
       elite,
       done: nwTrackable && required > 0 ? cur >= required : null,
@@ -1151,7 +1183,7 @@ async function main() {
   }, path.resolve(String(args.state || DEFAULT_STATE)), args['card-dir'] ? path.resolve(String(args['card-dir'])) : null));
 }
 
-export { TASKS, calendarSeasonProgress, challengeTitleZh, chosenFlags, evaluateAutoCheck, loadNameTables, manageWeekly, mergeAutoRecord, nextReset, predictNightwaveText, primeChallengeZh, recordNightwaveSample, remindWeekly, renderWeeklyDetailCardFor, resolveSelectors, storeItemZh, translateDesc, weekStart };
+export { TASKS, calendarSeasonProgress, challengeTitleZh, chosenFlags, evaluateAutoCheck, loadNameTables, manageWeekly, mergeAutoRecord, nextReset, nightwaveChallengeZh, predictNightwaveText, primeChallengeZh, recordNightwaveSample, remindWeekly, renderWeeklyDetailCardFor, resolveSelectors, storeItemZh, translateDesc, weekStart };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {

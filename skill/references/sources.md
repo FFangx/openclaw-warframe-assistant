@@ -16,6 +16,7 @@
 - 科研词缀中文：`oracle.browse.wf/dicts/en.json` × `zh.json`，按英文显示名与相邻 `_Desc` 语言键自动配对；缓存 24 小时
 - 灵化武器等短文本：`browse.wf/warframe-public-export-plus/dict.en.json` × `dict.zh.json` 完整反向索引；缓存 7 天
 - 1999 挑战：`ExportChallenges.json` 提供语言键与 `requiredCount`，中文标题/说明从 Public Export 词典读取并替换 `|COUNT|`
+- 午夜电波挑战：主源有标题时使用 `ExportChallenges.json × dict.en/dict.zh`；DE 官方备用世界状态只有 `/Seasons/Weekly|WeeklyHard/<key>` 路径尾段时，直接按同路径从 AlecaFrame `lang.json` 读取官方简中名称。该路径级兜底覆盖刚换季、Public Export 挑战清单尚未收录的新 key
 - 1999 奖励：优先使用官方 `KnownCalendarSeasons.Days[].events[].reward` StoreItem 路径反查中文，不依赖解析器英文显示名
 - 平台路径：`pc / ps4 / xb1 / swi`；mobile 世界状态不支持
 - PC 实测顶层字段包括 `timestamp`、`fissures`、`alerts`、`invasions`、`voidTraders`、开放世界周期、`nightwave`、`arbitration`、`steelPath`、`archonHunt` 与 `duviriCycle`

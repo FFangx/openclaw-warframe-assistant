@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { archimedeaResearchProgress, calendarChallengeLine, calendarRewardZh, calendarUpgradeZh, evaluateAutoCheck, hasCompleteArchimedeas, localizeArchimedeaModifier } from './weekly.mjs';
+import { archimedeaResearchProgress, calendarChallengeLine, calendarRewardZh, calendarUpgradeZh, evaluateAutoCheck, hasCompleteArchimedeas, localizeArchimedeaModifier, nightwaveChallengeZh } from './weekly.mjs';
 import { labsSection } from './weekly-mega-card.mjs';
 
 const calendarDays = [
@@ -171,6 +171,17 @@ test('1999 挑战同时显示官方标题和带数量的具体要求', () => {
     { cur: 37, required: 150 },
   );
   assert.equal(line, '力量展现：使用技能击杀 150 名敌人（37/150）');
+});
+
+test('午夜电波官方备用源只有路径尾段时仍按本地官方词典翻译', () => {
+  const names = {
+    nightwaveZhOf: (key, elite) => ({
+      'seasonweeklypickupmedallion:false': '狩猎开始',
+      'seasonweeklyhardeternalguardian:true': '永恒守卫',
+    })[`${key}:${elite}`] || null,
+  };
+  assert.equal(nightwaveChallengeZh({ id: '1786924800000seasonweeklypickupmedallion', isElite: false }, names), '狩猎开始');
+  assert.equal(nightwaveChallengeZh({ id: '1786924800000seasonweeklyhardeternalguardian', isElite: true }, names), '永恒守卫');
 });
 
 test('1999 奖励优先使用官方 StoreItem 路径而不是英文显示名', () => {
