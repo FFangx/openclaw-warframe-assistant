@@ -383,7 +383,7 @@ export function getArbyTiers() {
   return arbyTiersPromise;
 }
 
-// —— 悬赏译名三合一（一个缓存文件）；jobs/challenges/items 三个普通对象；失败返回空表 ——
+// —— 悬赏/物品译名（一个缓存文件）；失败返回空表 ——
 // jobs: 语言键尾段(小写，去 Title/Name 后缀) → 官方中文任务名（OstronJobs/SolarisJobs/Narmer/DeimosBounty 全族）
 // challenges: 挑战完整路径 → 官方中文名（Zariman/EntratiLab/Hex 赏金板用）
 // items: 英文显示名(小写) → 官方中文（dict.en 值反查 dict.zh，只收短名称条目）
@@ -391,13 +391,15 @@ let bountyZhPromise = null;
 export function getBountyZhMaps() {
   bountyZhPromise ??= (async () => {
     try {
-      return await cachedBuild(BOUNTY_CACHE, BOUNTY_TTL_MS, 3, async () => {
+      return await cachedBuild(BOUNTY_CACHE, BOUNTY_TTL_MS, 5, async () => {
         const [challengesRaw, en, zh, regions] = await Promise.all([
           fetchJson(CHALLENGE_URL), fetchJson(DICT_EN_URL), fetchJson(DICT_ZH_URL),
           fetchJson('https://browse.wf/warframe-public-export-plus/ExportRegions.json').catch(() => ({})),
         ]);
         const jobs = {};
         const items = {};
+        const languageTails = {};
+        const ambiguousLanguageTails = new Set();
         for (const [key, chinese] of Object.entries(zh)) {
           if (typeof chinese !== 'string' || !chinese) continue;
           // 任务名键族：…Jobs/…Title、InfestedMicroplanet/DeimosBounty…Name、Narmer 悬赏 Title
@@ -411,6 +413,19 @@ export function getBountyZhMaps() {
           if (english && english !== chinese && english.length <= 48 && !/Desc$/u.test(key) && !english.includes('|')) {
             const enKey = String(english).normalize('NFKC').trim().toLowerCase();
             if (!items[enKey]) items[enKey] = chinese;
+          }
+          // StoreItem 包与特殊商品常没有可直接查询的物品路径，但语言键会沿用
+          // 内部尾名并追加 Name/Title。只保留唯一映射，重名时宁可不猜。
+          const languageTail = !/Desc$/u.test(key)
+            ? key.match(/\/([A-Za-z0-9]+?)(?:Name|Title)?$/u)?.[1]?.toLowerCase()
+            : null;
+          if (languageTail && !ambiguousLanguageTails.has(languageTail)) {
+            if (languageTails[languageTail] && languageTails[languageTail] !== chinese) {
+              delete languageTails[languageTail];
+              ambiguousLanguageTails.add(languageTail);
+            } else {
+              languageTails[languageTail] = chinese;
+            }
           }
         }
         const challenges = {};
@@ -437,10 +452,10 @@ export function getBountyZhMaps() {
           };
         }
         if (!Object.keys(jobs).length) throw new Error('悬赏任务译名为空');
-        return { jobs, challenges, challengeDetails, nodes, items };
+        return { jobs, challenges, challengeDetails, nodes, items, languageTails };
       });
     } catch {
-      return { jobs: {}, challenges: {}, challengeDetails: {}, nodes: {}, items: {} };
+      return { jobs: {}, challenges: {}, challengeDetails: {}, nodes: {}, items: {}, languageTails: {} };
     }
   })();
   return bountyZhPromise;

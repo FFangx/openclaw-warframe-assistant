@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { renderWarframeCard } from './warframe-cards.mjs';
 import { buildWeeklyMegaCard } from './weekly-mega-card.mjs';
 import { readSnapshot } from './alecaframe.mjs';
-import { getChallengeZhMap, getCalendarChallengeMap, getLangTable, getOfficialTextMap, getOracleConquestMap, getSeasonChallengeRequired, readAlecaJson, staleCachedJson, stripDataUriReplacer } from './wfdata.mjs';
+import { getBountyZhMaps, getChallengeZhMap, getCalendarChallengeMap, getLangTable, getOfficialTextMap, getOracleConquestMap, getSeasonChallengeRequired, readAlecaJson, staleCachedJson, stripDataUriReplacer } from './wfdata.mjs';
 import { loadWorldState } from './worldstate-source.mjs';
 
 // 静态参考表：奖励池/电波译名，以及 Oracle 词典暂不可用时的科研词缀兜底。
@@ -550,20 +550,69 @@ function localizeNode(value) {
 // —— 官方目录名称表（lang.json + Warframes.json）：回廊奖励/瓦奇娅货单的 StoreItem 路径 → 中文名 ——
 // 懒加载单例：只在渲染入口 await 一次；本地缺失时走 wfdata 在线兑底，全挂才降级空表
 let nameTablesPromise = null;
-function loadNameTables() {
-  nameTablesPromise ??= (async () => {
-    const [lang, framesRaw] = await Promise.all([
+let shopNameTablesPromise = null;
+function loadNameTables({ includeShopCatalogs = false } = {}) {
+  const existing = includeShopCatalogs ? shopNameTablesPromise : nameTablesPromise;
+  if (existing) return existing;
+  const promise = (async () => {
+    const catalogFiles = includeShopCatalogs
+      ? ['Warframes.json', 'Primary.json', 'Secondary.json', 'Melee.json', 'Arch-Gun.json', 'Skins.json', 'Gear.json', 'Glyphs.json']
+      : ['Warframes.json'];
+    const [lang, maps, ...catalogResults] = await Promise.all([
       getLangTable().catch(() => ({})),
-      readAlecaJson('json/Warframes.json').catch(() => null),
+      includeShopCatalogs ? getBountyZhMaps().catch(() => ({ items: {}, languageTails: {} })) : Promise.resolve({ items: {}, languageTails: {} }),
+      ...catalogFiles.map((file) => readAlecaJson(`json/${file}`).catch(() => null)),
     ]);
-    const frames = Array.isArray(framesRaw) ? framesRaw : [];
+    const catalogs = catalogResults.map((value) => Array.isArray(value) ? value : []);
+    const frames = catalogs[0];
     const frameByTail = new Map();   // 内部名尾段（Berserker）→ 显示名（Valkyr）
     const uniqByName = new Map();    // 显示名 → uniqueName（已有判定用，普通≠Prime 精确比对）
     const nightwaveByTail = new Map(); // Weekly/WeeklyHard 路径尾段 → 官方简中挑战名
+    const catalogZhByPath = new Map(); // 商品/配方实际路径 → 由目录父子关系恢复的官方中文名
+    const catalogZhByTail = new Map(); // StoreItem 与目录路径有额外分段时，以唯一尾名桥接
+    const ambiguousCatalogTails = new Set();
+    const officialZh = (english) => maps?.items?.[String(english || '').normalize('NFKC').trim().toLowerCase()] || String(english || '').trim();
+    const componentZh = Object.freeze({
+      Blueprint: '蓝图', Chassis: '机体蓝图', Neuroptics: '头部神经光元蓝图', Systems: '系统蓝图',
+      Barrel: '枪管', Receiver: '枪机', Stock: '枪托', Blade: '刀刃', Handle: '握柄', Grip: '握柄',
+      'Upper Limb': '弓身上部', 'Lower Limb': '弓身下部', String: '弓弦', Hilt: '剑柄', Guard: '护手',
+    });
+    const putCatalogName = (uniqueName, zh) => {
+      if (!uniqueName || !zh || catalogZhByPath.has(uniqueName)) return;
+      catalogZhByPath.set(uniqueName, zh);
+      const aliases = uniqueName.endsWith('Blueprint') ? [] : [
+        `${uniqueName}Blueprint`,
+        uniqueName.replace(/(?:Component|Item)$/u, 'Blueprint'),
+      ];
+      for (const alias of aliases) catalogZhByPath.set(alias, zh);
+      for (const candidate of [uniqueName, ...aliases]) {
+        const tail = candidate.split('/').pop().toLowerCase();
+        if (ambiguousCatalogTails.has(tail)) continue;
+        if (catalogZhByTail.has(tail) && catalogZhByTail.get(tail) !== zh) {
+          catalogZhByTail.delete(tail);
+          ambiguousCatalogTails.add(tail);
+        } else {
+          catalogZhByTail.set(tail, zh);
+        }
+      }
+    };
     for (const frame of frames) {
       if (!frame?.uniqueName || !frame?.name) continue;
       frameByTail.set(frame.uniqueName.split('/').pop(), frame.name);
+      frameByTail.set(frame.name, frame.name);
       uniqByName.set(frame.name, frame.uniqueName);
+    }
+    for (const catalog of catalogs) {
+      for (const item of catalog) {
+        if (!item?.uniqueName || !item?.name) continue;
+        const parentZh = lang[item.uniqueName]?.zh?.name || officialZh(item.name);
+        putCatalogName(item.uniqueName, parentZh);
+        for (const component of item.components || []) {
+          if (!component?.uniqueName || !component.uniqueName.includes('/Recipes/')) continue;
+          const part = componentZh[component.name] || officialZh(component.name);
+          putCatalogName(component.uniqueName, [parentZh, part].filter(Boolean).join(' '));
+        }
+      }
     }
     for (const [uniqueName, localized] of Object.entries(lang)) {
       const match = uniqueName.match(/\/Seasons\/(Weekly|WeeklyHard)\/([^/]+)$/u);
@@ -573,6 +622,9 @@ function loadNameTables() {
     }
     return {
       zhOf: (uniq) => lang[uniq]?.zh?.name || null,
+      catalogZhOf: (uniq) => catalogZhByPath.get(uniq) || null,
+      catalogTailZhOf: (tail) => catalogZhByTail.get(String(tail || '').toLowerCase()) || null,
+      languageTailZhOf: (tail) => maps?.languageTails?.[String(tail || '').toLowerCase()] || null,
       nightwaveZhOf: (key, elite = false) => {
         const tail = String(key || '').toLowerCase();
         const group = elite ? 'weeklyhard' : 'weekly';
@@ -583,7 +635,9 @@ function loadNameTables() {
       uniqByName,
     };
   })();
-  return nameTablesPromise;
+  if (includeShopCatalogs) shopNameTablesPromise = promise;
+  else nameTablesPromise = promise;
+  return promise;
 }
 
 // StoreItem 路径 → 中文名：静态表 → lang.json → 战甲部件蓝图拆解 → 基名+蓝图 → 安全占位
@@ -594,6 +648,12 @@ function storeItemZh(storeItem, names) {
   if (staticHit) return staticHit;
   const direct = names?.zhOf?.(base);
   if (direct) return direct;
+  const catalog = names?.catalogZhOf?.(base);
+  if (catalog) return catalog;
+  const catalogTail = names?.catalogTailZhOf?.(tail);
+  if (catalogTail) return catalogTail;
+  const languageKey = names?.languageTailZhOf?.(tail);
+  if (languageKey) return languageKey;
   // 战甲部件蓝图：BerserkerHelmetBlueprint → Valkyr 头部神经光元蓝图（战甲名按硬规则保留英文）
   const recipe = tail.match(/^(\w+?)(Helmet|Chassis|Systems)?Blueprint$/u);
   if (recipe && base.includes('/WarframeRecipes/')) {

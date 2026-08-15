@@ -246,6 +246,21 @@ const BUNDLE_ZH = Object.freeze({
   UmbraFormaBlueprint: 'Umbra Forma 蓝图',
   RawShotgunRandomMod: '霓弹枪裂罅 Mod', RawRifleRandomMod: '步枪裂罅 Mod',
   RawModularPistolRandomMod: '组合枪裂罅 Mod', RawModularMeleeRandomMod: 'Zaw 裂罅 Mod',
+  // StoreItem 路径与物品目录/语言键不共尾名的官方商店条目。
+  PrimeLisetFiligreeScene: '精工掐丝 Prime 装饰',
+  MPVAviaPrimeArmorSet: '飞空 Prime 护甲套装',
+  MPVVetalaPrimeArmorSet: '维塔拉 Prime 护甲套装',
+  MPVVervSentrexSentAccessories: '热忱圣塔斯守护配件',
+  GrendelKeyA: 'Grendel 机体定位装置',
+  GrendelKeyB: 'Grendel 头部神经光元定位装置',
+  GrendelKeyC: 'Grendel 系统定位装置',
+  AmberStarBlueprint: '阿耶檀识琥珀星蓝图',
+  AshCrewedCaptainGenerator: '忍力（船员）',
+  GarudaCrewedCaptainGenerator: '维纳（船员）',
+  LatroxUneCrewedMemberGenerator: '拉托罗·恩（船员）',
+  JarkaLarCrewedMemberGenerator: 'Jarka Lar（船员）',
+  // 官方导出没有可对齐的名称语言键；按物品类型给中文释义，不伪造正式译名。
+  DuviriVendorBoonItem: '双衍王境增益（具体内容随机）',
 });
 export function itemZh(storeItem, names) {
   const direct = storeItemZh(storeItem, names);
@@ -257,7 +272,8 @@ export function itemZh(storeItem, names) {
   // MPV 套包（瓦奇娅）不在 lang.json：内部名转可读（与 lookup.mjs 同款正则）
   const pack = tail.match(/^MPV([A-Z][a-z]+)([A-Z][a-z]+)?Prime(Single|Dual)Pack$/u);
   if (pack) return `${pack[1]}${pack[2] ? `+${pack[2]}` : ''} Prime ${pack[3] === 'Dual' ? '双人包' : '单人包'}`;
-  return tail;
+  // 内部类名不能直接上用户卡片；词典/目录短暂缺失时给诚实中文占位。
+  return '游戏内商品（名称待词典同步）';
 }
 
 // ==== 泰辛周精选特判 ====
@@ -597,7 +613,7 @@ export async function loadShopContext({ inventory = null } = {}) {
   const [{ vendors, stale }, meta, names, worldState] = await Promise.all([
     loadExportVendors(),
     loadVendorMeta(),
-    loadNameTables(),
+    loadNameTables({ includeShopCatalogs: true }),
     loadOfficialWorldState(),
   ]);
   return { vendors, meta, names, worldState, inventory, stale };
