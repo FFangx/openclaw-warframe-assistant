@@ -828,14 +828,10 @@ export async function runAlecaMessage(message, options = {}) {
     try { snapshot = await readSnapshot(options.alecaDir); } catch (error) {
       return { handled: true, ok: false, command: 'rivens', text: `读取本机快照失败（${String(error?.message || error)}）。请先启动 AlecaFrame 并过一次加载点。` };
     }
-    const { loadRivenTable, getRivenAttrZh, getRivenWeaponDir, getRivenAttrSlug, getVeiledPrices, getWeeklyRivenStats, assembleRivens, assembleRivenDetail, buildRivenListCard, buildRivenDetailCard } = await import('./rivens.mjs');
+    const { loadRivenTable, getRivenAttrZh, getRivenWeaponDir, getRivenAttrSlug, getVeiledPrices, assembleRivens, assembleRivenDetail, attachRivenEstimates, buildRivenListCard, buildRivenDetailCard } = await import('./rivens.mjs');
     const { getLangTable } = await import('./wfdata.mjs');
     const lang = await getLangTable({ alecaDir: snapshot.alecaDir }).catch(() => null);
-    const [table, attrZh, weekly] = await Promise.all([
-      loadRivenTable(snapshot.alecaDir),
-      getRivenAttrZh(),
-      getWeeklyRivenStats().catch(() => ({})),
-    ]);
+    const [table, attrZh] = await Promise.all([loadRivenTable(snapshot.alecaDir), getRivenAttrZh()]);
     if (parsed.query) {
       // 详情卡：我的该武器紫卡 × wm 拍卖行情
       const [weaponDir, attrSlug] = await Promise.all([getRivenWeaponDir(), getRivenAttrSlug()]);
@@ -859,15 +855,21 @@ export async function runAlecaMessage(message, options = {}) {
         text: `${detail.weaponZh} 紫卡 ×${detail.rivens.length}；${est}`,
       };
     }
-    const data = await assembleRivens({ inventory: snapshot.inventory, table, attrZh, lang, weekly });
+    const data = await assembleRivens({ inventory: snapshot.inventory, table, attrZh, lang });
     // 武器图：wm riven 目录 thumb 逐张解析（已预热本地缓存），拉挂静默无图
+    let weaponDir = {};
     try {
-      const [weaponDir, { imageDataUri }] = await Promise.all([getRivenWeaponDir(), import('./wfdata.mjs')]);
+      const [{ imageDataUri }] = await Promise.all([import('./wfdata.mjs'), getRivenWeaponDir().then((dir) => { weaponDir = dir; })]);
       for (const riven of data.opened) {
         const thumb = weaponDir[riven.compat]?.thumb;
         riven.iconDataUri = thumb ? await imageDataUri(`https://warframe.market/static/assets/${thumb}`) : null;
       }
     } catch { /* 无图降级 */ }
+    // 逐张估价：同武器只查一次拍卖（与详情页同口径），失败/样本不足如实标注
+    try {
+      const attrSlug = await getRivenAttrSlug();
+      await attachRivenEstimates(data.opened, { weaponDir, attrSlug });
+    } catch { /* 估价降级 */ }
     // 未开封价格：wm 普通市场最低在线卖单，拉挂静默无价
     try {
       const prices = await getVeiledPrices(data.veiled.map((v) => v.en));

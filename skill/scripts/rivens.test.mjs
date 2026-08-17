@@ -158,32 +158,56 @@ test('未开封紫卡统计行没有 mod_rank 也能给出成交中位估价', a
   assert.equal(prices['Rifle Riven Mod'].dailyVolume, 0.2); // 20 笔 / 90 天
 });
 
-test('DE 周报参考价按武器×洗练状态挂到每张已开封紫卡并上卡', async () => {
-  const { assembleRivens, buildRivenListCard } = await import('./rivens.mjs');
+test('列表卡逐张估价：同武器只查一次拍卖，按词条相似度出区间', async () => {
+  const { assembleRivens, attachRivenEstimates, buildRivenListCard } = await import('./rivens.mjs');
   const compatX = '/Lotus/Weapons/Rifle/LongGun/SyntheticRifle';
+  const compatY = '/Lotus/Weapons/Pistol/DualPistol/SyntheticPistol';
   const stats = { dmg: { baseValue: 1.5, shortString: 'D', prefixTag: 'vex', suffixTag: 'ido' } };
   const table = {
     dataByRivenInternalID: { '/Lotus/Riven/X': { fusionLimit: 8, rivenStats: stats } },
-    weaponStats: { [compatX]: { name: 'Synthetic Rifle', omegaAtt: 1 } },
+    weaponStats: { [compatX]: { name: 'Synthetic Rifle', omegaAtt: 1 }, [compatY]: { name: 'Synthetic Pistol', omegaAtt: 1 } },
   };
-  const fp = (rerolls) => ({ compat: compatX, rerolls, pol: 'madurai', lvlReq: 8, buffs: [{ Tag: 'dmg', Value: 0 }] });
+  const fp = (compat, rerolls) => ({ compat, rerolls, pol: 'madurai', lvlReq: 8, buffs: [{ Tag: 'dmg', Value: 0 }] });
   const inventory = { Upgrades: [
-    { ItemType: '/Lotus/Types/Riven/Weapons/Randomized/X', UpgradeFingerprint: JSON.stringify(fp(0)) },
-    { ItemType: '/Lotus/Types/Riven/Weapons/Randomized/X', UpgradeFingerprint: JSON.stringify(fp(3)) },
+    { ItemType: '/Lotus/Types/Riven/Weapons/Randomized/X', UpgradeFingerprint: JSON.stringify(fp(compatX, 0)) },
+    { ItemType: '/Lotus/Types/Riven/Weapons/Randomized/X', UpgradeFingerprint: JSON.stringify(fp(compatX, 2)) },
+    { ItemType: '/Lotus/Types/Riven/Weapons/Randomized/X', UpgradeFingerprint: JSON.stringify(fp(compatY, 0)) },
   ] };
-  const weekly = { 'synthetic rifle#0': { median: 12, pop: 100 }, 'synthetic rifle#1': { median: 45, pop: 300 } };
-  const data = await assembleRivens({ inventory, table, weekly });
-  assert.equal(data.opened.length, 2);
-  assert.deepEqual(data.opened.find((r) => r.rerolls === 0).refPrice, { median: 12, pop: 100 });
-  assert.deepEqual(data.opened.find((r) => r.rerolls === 3).refPrice, { median: 45, pop: 300 });
+  const data = await assembleRivens({ inventory, table });
+  const weaponDir = { [compatX]: { slug: 'synthetic_rifle', thumb: null }, [compatY]: { slug: 'synthetic_pistol', thumb: null } };
+  const attrSlug = { dmg: 'damage' };
+  const attr = (positive, url) => ({ positive, url_name: url });
+  const auctionsBySlug = {
+    synthetic_rifle: [
+      { closed: false, buyout_price: 100, item: { attributes: [attr(true, 'damage'), attr(true, 'cc')], re_rolls: 0 }, owner: { status: 'ingame' } },
+      { closed: false, buyout_price: 120, item: { attributes: [attr(true, 'damage')], re_rolls: 0 }, owner: { status: 'ingame' } },
+      { closed: false, buyout_price: 140, item: { attributes: [attr(true, 'damage')], re_rolls: 0 }, owner: { status: 'ingame' } },
+    ],
+    synthetic_pistol: [
+      { closed: false, buyout_price: 50, item: { attributes: [attr(true, 'damage')], re_rolls: 0 }, owner: { status: 'ingame' } },
+    ],
+  };
+  let calls = 0;
+  const auctionFetcher = async (url) => {
+    calls += 1;
+    const slug = url.includes('synthetic_rifle') ? 'synthetic_rifle' : 'synthetic_pistol';
+    return { payload: { auctions: auctionsBySlug[slug] } };
+  };
+  await attachRivenEstimates(data.opened, { weaponDir, attrSlug, auctionFetcher });
+  assert.equal(calls, 2); // 同武器两张紫卡只查一次
+  const rifle = data.opened.filter((r) => r.compat === compatX);
+  assert.equal(rifle.length, 2);
+  for (const r of rifle) assert.deepEqual(r.estimate, { low: 100, high: 120, basis: '共享词条' });
+  assert.equal(data.opened.find((r) => r.compat === compatY).estimate, null); // 样本 1 <3 不给结论
   const card = buildRivenListCard({ ...data, veiled: [] });
-  assert.match(card.html, /周参考 中位 12p · 成交 100/u);
-  assert.match(card.html, /周参考 中位 45p · 成交 300/u);
-  assert.match(card.html, /周参考=DE 官方周报/u);
+  assert.match(card.html, /参考 100~120p/u);
+  assert.match(card.html, /（共享词条）/u);
+  assert.match(card.html, /相似样本不足/u);
+  assert.match(card.html, /参考价=相似词条挂价区间/u);
 });
 
-test('无 DE 周报数据时列表卡不显示周参考也不写页脚来源', async () => {
-  const { assembleRivens, buildRivenListCard } = await import('./rivens.mjs');
+test('拍卖拉取失败时列表卡标注行情不可用', async () => {
+  const { assembleRivens, attachRivenEstimates, buildRivenListCard } = await import('./rivens.mjs');
   const compatX = '/Lotus/Weapons/Rifle/LongGun/SyntheticRifle';
   const stats = { dmg: { baseValue: 1.5, shortString: 'D', prefixTag: 'vex', suffixTag: 'ido' } };
   const table = {
@@ -194,7 +218,12 @@ test('无 DE 周报数据时列表卡不显示周参考也不写页脚来源', a
     { ItemType: '/Lotus/Types/Riven/Weapons/Randomized/X', UpgradeFingerprint: JSON.stringify({ compat: compatX, rerolls: 0, pol: 'madurai', lvlReq: 8, buffs: [{ Tag: 'dmg', Value: 0 }] }) },
   ] };
   const data = await assembleRivens({ inventory, table });
-  assert.equal(data.opened[0].refPrice, null);
+  await attachRivenEstimates(data.opened, {
+    weaponDir: { [compatX]: { slug: 'synthetic_rifle' } },
+    attrSlug: { dmg: 'damage' },
+    auctionFetcher: async () => ({ payload: { auctions: null } }),
+  });
+  assert.equal(data.opened[0].estimateFailed, true);
   const card = buildRivenListCard({ ...data, veiled: [] });
-  assert.doesNotMatch(card.html, /周参考/u);
+  assert.match(card.html, /行情不可用/u);
 });
