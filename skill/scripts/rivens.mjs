@@ -110,6 +110,8 @@ export function getWeeklyRivenStats() {
 }
 
 // 未开封紫卡估值：wm 普通市场今日/90 日可靠成交中位（veiledName → slug 固定映射）；失败逐项降级 null
+// 注意：wm v1 统计对未开封紫卡的所有行 mod_rank 均为空（实锤 177/177、60/60 无值），
+// 不能按 {rank:0} 过滤——未开封紫卡天然就是 0 级，直接不过滤即可。
 const VEILED_SLUG = Object.freeze({
   'Rifle Riven Mod': 'rifle_riven_mod_(veiled)', 'Shotgun Riven Mod': 'shotgun_riven_mod_(veiled)', 'Pistol Riven Mod': 'pistol_riven_mod_(veiled)',
   'Melee Riven Mod': 'melee_riven_mod_(veiled)', 'Zaw Riven Mod': 'zaw_riven_mod_(veiled)', 'Kitgun Riven Mod': 'kitgun_riven_mod_(veiled)',
@@ -122,7 +124,7 @@ export async function getVeiledPrices(names, statisticsFetcher = null) {
     const slug = VEILED_SLUG[name];
     if (!slug) return;
     try {
-      const quote = await fetchTradeStatistics(slug, { rank: 0 }, statisticsFetcher);
+      const quote = await fetchTradeStatistics(slug, false, statisticsFetcher);
       if (quote?.platinum != null) out[name] = quote;
     } catch { /* 单项失败不影响其余 */ }
   }));

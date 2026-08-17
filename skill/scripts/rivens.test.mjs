@@ -140,3 +140,20 @@ test('appraiseAgainstMarket 样本不足与负词条差集', () => {
   assert.equal(out.posSame.n, 1);
   assert.equal(out.estimate, null); // 样本 <3 不给结论（单张 300p 挂价孤立）
 });
+
+test('未开封紫卡统计行没有 mod_rank 也能给出成交中位估价', async () => {
+  const { getVeiledPrices } = await import('./rivens.mjs');
+  const prices = await getVeiledPrices(['Rifle Riven Mod'], async () => ({
+    payload: { statistics_closed: {
+      '48hours': [],
+      '90days': [
+        { datetime: '2026-08-10T00:00:00.000Z', median: 10, volume: 10 },
+        { datetime: '2026-08-11T00:00:00.000Z', median: 12, volume: 10 },
+      ],
+    } },
+  }));
+  // wm v1 统计对未开封紫卡的所有行 mod_rank 均为空（实锤 177/177）；修复后不过滤 rank 仍能出价
+  assert.equal(prices['Rifle Riven Mod'].platinum, 10);
+  assert.equal(prices['Rifle Riven Mod'].basis, '90days');
+  assert.equal(prices['Rifle Riven Mod'].dailyVolume, 0.2); // 20 笔 / 90 天
+});
