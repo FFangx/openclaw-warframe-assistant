@@ -34,6 +34,9 @@ const CALENDAR_CHALLENGE_CACHE = path.join(DATA_CACHE_DIR, 'calendar-challenge.j
 const SEASON_REQUIRED_CACHE = path.join(DATA_CACHE_DIR, 'season-challenge-required.json');
 // 词典是静态文件、挑战池版本更新才变：7 天足够新鲜且把 10MB 级下载摊薄
 const CHALLENGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const SEASON_REQUIRED_TTL_MS = 24 * 60 * 60 * 1000;
+// 电波挑战 requiredCount 是换季窗口最敏感的数据：新 key 由 Public Export 收录后
+// 若仍按 7 天 TTL 会长期显示「未知」。24h 只多拉一次几十 KB 的 ExportChallenges.json。
 const EVENT_TTL_MS = 24 * 60 * 60 * 1000;
 const ARBY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const BOUNTY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -495,7 +498,7 @@ let seasonRequiredPromise = null;
 export function getSeasonChallengeRequired() {
   seasonRequiredPromise ??= (async () => {
     try {
-      return await cachedBuild(SEASON_REQUIRED_CACHE, CHALLENGE_TTL_MS, 1, async () => {
+      return await cachedBuild(SEASON_REQUIRED_CACHE, SEASON_REQUIRED_TTL_MS, 1, async () => {
         const challenges = await fetchJson(CHALLENGE_URL);
         const map = {};
         for (const [challengePath, meta] of Object.entries(challenges)) {

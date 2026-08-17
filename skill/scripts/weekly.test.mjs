@@ -196,3 +196,39 @@ test('1999 增益使用官方日历路径映射，开发占位项不再显示未
     '/Lotus/Upgrades/Calendar/RadialJavelinOnHeavy',
   ), /上游数据仍为占位说明/u);
 });
+
+// —— 电波 requiredCount 契约：官方世界状态不含计数，计数只来自 Public Export ——
+
+function nightwaveFixture({ progress = 15, known = true, twoChallenges = false } = {}) {
+  const challenge = { id: '1786924800000seasonweeklypermanentcompletemissions2', isDaily: false, isElite: false };
+  return {
+    inventory: {
+      ChallengeProgress: [{ Name: 'SeasonWeeklyPermanentCompleteMissions2', Progress: progress }],
+    },
+    worldState: {
+      nightwave: { activeChallenges: twoChallenges ? [challenge, { id: '1786924800000seasonweeklyplainsbounties', isDaily: false, isElite: false }] : [challenge] },
+    },
+    challengeRequired: known ? { seasonweeklypermanentcompletemissions2: 15, ...(twoChallenges ? {} : {}) } : {},
+  };
+}
+
+test('电波 requiredCount 映射缺失时宁不核销也不编造进度', () => {
+  const { inventory, worldState, challengeRequired } = nightwaveFixture({ known: false });
+  const result = evaluateAutoCheck(inventory, worldState, Date.now(), challengeRequired);
+  assert.equal(result.progress.nightwave, undefined);
+  assert.equal(result.auto.nightwave, undefined);
+});
+
+test('电波挑战进度达到 requiredCount 时计入并可在全中时核销', () => {
+  const { inventory, worldState, challengeRequired } = nightwaveFixture();
+  const result = evaluateAutoCheck(inventory, worldState, Date.now(), challengeRequired);
+  assert.equal(result.progress.nightwave, '周挑战 1/1');
+  assert.equal(result.auto.nightwave, true);
+});
+
+test('电波部分挑战无 requiredCount 时只按已知项计数、不整体核销', () => {
+  const { inventory, worldState, challengeRequired } = nightwaveFixture({ twoChallenges: true });
+  const result = evaluateAutoCheck(inventory, worldState, Date.now(), challengeRequired);
+  assert.equal(result.progress.nightwave, '周挑战 1/2'); // 已知 1 条命中
+  assert.equal(result.auto.nightwave, undefined); // 另一条未知，不猜
+});

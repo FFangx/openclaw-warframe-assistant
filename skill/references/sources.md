@@ -17,6 +17,7 @@
 - 灵化武器等短文本：`browse.wf/warframe-public-export-plus/dict.en.json` × `dict.zh.json` 完整反向索引；缓存 7 天
 - 1999 挑战：`ExportChallenges.json` 提供语言键与 `requiredCount`，中文标题/说明从 Public Export 词典读取并替换 `|COUNT|`
 - 午夜电波挑战：主源有标题时使用 `ExportChallenges.json × dict.en/dict.zh`；DE 官方备用世界状态只有 `/Seasons/Weekly|WeeklyHard/<key>` 路径尾段时，直接按同路径从 AlecaFrame `lang.json` 读取官方简中名称。该路径级兜底覆盖刚换季、Public Export 挑战清单尚未收录的新 key
+- 午夜电波挑战的 `requiredCount` 没有 DE 官方来源：官方 worldState 的 `SeasonInfo.ActiveChallenges` 只含路径、Daily/Elite 标志与激活/过期时间。唯一可审计的计数来源是 `ExportChallenges.json`（browse.wf 的 warframe-public-export-plus 导出），周报自动核销依赖它，刷新 TTL 24 小时；key 尚未收录或刷新失败时显示未知、不猜数量、不自动核销（2026-08-17 实测：RadioLegionIntermission16 当前 10 条活跃挑战 10/10 已收录）
 - 1999 奖励：优先使用官方 `KnownCalendarSeasons.Days[].events[].reward` StoreItem 路径反查中文，不依赖解析器英文显示名
 - 平台路径：`pc / ps4 / xb1 / swi`；mobile 世界状态不支持
 - PC 实测顶层字段包括 `timestamp`、`fissures`、`alerts`、`invasions`、`voidTraders`、开放世界周期、`nightwave`、`arbitration`、`steelPath`、`archonHunt` 与 `duviriCycle`
