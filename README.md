@@ -5,12 +5,13 @@
 **Warframe 国际服 QQ 机器人：短命令秒出精美卡片，AI 只做路由和点评，数据不经模型编造**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/FFangx/openclaw-warframe-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/FFangx/openclaw-warframe-assistant/actions/workflows/ci.yml)
 [![Node](https://img.shields.io/badge/Node.js-20%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows&logoColor=white)](FAQ.md)
 [![OpenClaw](https://img.shields.io/badge/Runs%20on-OpenClaw-orange)](https://openclaw.ai)
 [![Game](https://img.shields.io/badge/Warframe-国际服-8b5cf6)](https://www.warframe.com)
 
-[安装](INSTALL.md) · [配置](CONFIG.md) · [FAQ](FAQ.md) · [能力详单](skill/references/capabilities.md)
+[安装](INSTALL.md) · [配置](CONFIG.md) · [FAQ](FAQ.md) · [能力详单](skill/references/capabilities.md) · [更新日志](CHANGELOG.md)
 
 </div>
 
@@ -96,7 +97,15 @@ node "$env:USERPROFILE\.openclaw\workspace\skills\warframe-assistant\scripts\doc
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\verify.ps1
 ```
 
-安装器会先跑源码测试，再用受管文件清单同步 Skill/插件并逐文件校验 SHA-256；源码已删除的旧受管文件会移入工作区内的可恢复部署备份。运行时的 `.warframe-assistant-build.json` 记录 Git commit、脏工作树标志和内容哈希，`doctor.mjs` 会直接显示当前运行构建。
+安装器会先跑源码测试，再用受管文件清单同步 Skill/插件并逐文件校验 SHA-256；源码已删除的旧受管文件会移入工作区内的可恢复部署备份。运行时的 `.warframe-assistant-build.json` 记录版本、Git commit、脏工作树标志和内容哈希，`doctor.mjs` 会直接显示当前运行构建。
+
+## 发布
+
+版本唯一来源是仓库根目录的 `VERSION`（当前 `1.0.0`）。GitHub Actions 在每次 push/PR/tag 时运行 `verify.ps1 -SourceOnly`（源码测试 + 安装器生命周期）。正式发布走 `release.ps1`：它校验干净工作树、`main` 与远端一致、源码验证通过、tag 不存在，然后把 `CHANGELOG.md` 的 `[Unreleased]` 章节落成版本章节并打 `vX.Y.Z` 标签：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\release.ps1 -Version 1.1.0   # 预览用 -DryRun，推送加 -Push
+```
 
 ## 三条实话（装之前必读）
 

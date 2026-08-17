@@ -106,6 +106,14 @@ if (-not $SourceOnly) {
       $skillBuild = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $skillTarget $buildInfoName) | ConvertFrom-Json
       $extensionBuild = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $extensionTarget $buildInfoName) | ConvertFrom-Json
       if ($skillBuild.commit -ne $extensionBuild.commit -or $skillBuild.dirty -ne $extensionBuild.dirty -or $skillBuild.contentHash -ne $extensionBuild.contentHash) { throw 'skill and extension build IDs differ' }
+      if ([string]$skillBuild.version -ne [string]$extensionBuild.version) { throw "skill and extension build versions differ: $($skillBuild.version) vs $($extensionBuild.version)" }
+      $sourceVersionPath = Join-Path $repoRoot 'VERSION'
+      if (Test-Path -LiteralPath $sourceVersionPath -PathType Leaf) {
+        $sourceVersion = (Get-Content -Raw -Encoding UTF8 -LiteralPath $sourceVersionPath).Trim()
+        if ([string]$skillBuild.version -ne $sourceVersion) { throw "runtime build version $($skillBuild.version) does not match source VERSION $sourceVersion; redeploy before verifying" }
+      } else {
+        throw 'source VERSION file is missing; create it before verifying a managed runtime'
+      }
     }
     Invoke-Checked 'runtime tests from current source manifest' {
       $skillTests = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'skill\scripts') -File -Filter '*.test.mjs' | ForEach-Object { Join-Path $skillTarget ('scripts\' + $_.Name) })

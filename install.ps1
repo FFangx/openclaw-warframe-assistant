@@ -64,6 +64,9 @@ function Get-BuildInfo {
     $commit = (& git -C $repoRoot rev-parse HEAD 2>$null).Trim()
     $dirty = [bool](& git -C $repoRoot status --porcelain 2>$null)
   } catch { }
+  $version = 'unknown'
+  $versionPath = Join-Path $repoRoot 'VERSION'
+  if (Test-Path -LiteralPath $versionPath -PathType Leaf) { $version = (Read-Utf8 $versionPath).Trim() }
   $contentLines = New-Object System.Collections.Generic.List[string]
   foreach ($tree in @('skill', 'extension')) {
     foreach ($file in (Get-ManagedFileList (Join-Path $repoRoot $tree))) { $contentLines.Add("$tree/$($file.path):$($file.sha256)") }
@@ -75,6 +78,7 @@ function Get-BuildInfo {
   } finally { $sha.Dispose() }
   return [ordered]@{
     schemaVersion = 1
+    version = $version
     commit = $commit
     dirty = $dirty
     contentHash = $contentHash

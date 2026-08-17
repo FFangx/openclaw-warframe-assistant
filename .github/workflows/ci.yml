@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  source-verify:
+    name: Source verification (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Show toolchain
+        shell: pwsh
+        run: |
+          node --version
+          $PSVersionTable.PSVersion.ToString()
+
+      - name: Source tests + installer lifecycle (verify.ps1 -SourceOnly)
+        shell: pwsh
+        run: ./verify.ps1 -SourceOnly

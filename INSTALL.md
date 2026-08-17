@@ -112,6 +112,12 @@ Gateway 日志确认插件数量包含本插件（搜 `plugins:`）。然后 QQ 
 
 订阅推送依赖 cron：发 `订阅 裂缝 钢铁 生存` 后，用 `openclaw cron list` 确认生成了对应任务。
 
+## 6. CI 与发布
+
+- **CI**：`.github/workflows/ci.yml` 在每次 push 到 `main`、PR 与 `v*` tag 时于 windows-latest 上运行 `verify.ps1 -SourceOnly`——源码 Skill 测试、扩展契约测试、安装器生命周期与陈旧文件隔离验证。CI 不接触真实 QQ、个人快照或凭据。
+- **版本**：根目录 `VERSION` 是版本唯一来源（当前 `1.0.0`）。受管部署的 `.warframe-assistant-build.json` 会记录 `version`，`verify.ps1` 运行时层强制 Skill 与插件版本一致且等于源码 `VERSION`。
+- **发布**：在仓库根目录运行 `.\release.ps1`（`-DryRun` 预览、`-Version X.Y.Z` 改版本、`-Push` 推送）。脚本门禁：干净工作树、`main` 与 `origin/main` 一致、`verify.ps1 -SourceOnly` 通过、`vX.Y.Z` tag 不存在、CHANGELOG 有非空的 `[Unreleased]` 章节；通过后生成版本化 CHANGELOG 章节、提交 `release vX.Y.Z` 并打附注标签。
+
 ## 常见翻车点
 
 - 发命令没反应 → Gateway 日志搜 `Warframe`；插件没加载多半是 `plugins.allow` 漏写或 configSchema 校验失败（配置字段拼错会导致**整个配置拒载**）
