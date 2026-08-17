@@ -5,7 +5,6 @@
 
 ## [1.0.0] - 2026-08-17
 
-## [Unreleased]
 
 
 ### 工程
@@ -58,3 +57,9 @@
 - 可重复构建：`.gitattributes` 固定 LF（`003697c`）。
 - `verify.ps1` 全链路验证：源码/运行时测试、安装器生命周期、哈希一致性、入口冒烟、doctor、插件 doctor、Gateway 状态。
 - 证据协议：所有状态性结论携带 `scope/evidenceType/asOf/expiresAt/freshness/finding/source`（`d970a31`）。
+
+## [Unreleased]
+
+### 修复
+
+- 修复 `release.ps1` 在 git 推送进度输出触发 `NativeCommandError` 时中断的问题（2026-08-17 首次发布实锤）；并修复版本折叠后内容错挂到新 `[Unreleased]` 章节的结构问题。

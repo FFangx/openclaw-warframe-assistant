@@ -43,7 +43,18 @@ function Write-Utf8([string]$Path, [string]$Content) {
 }
 
 function Invoke-Git([string[]]$Arguments) {
-  return (& git -C $repoRoot @Arguments 2>&1) -join "`n"
+  # git 把进度与提示写到 stderr；在 ErrorActionPreference=Stop 下 2>&1 会变成
+  # NativeCommandError 并在推送中途杀死脚本（2026-08-17 首发布实锤）。本地降级 EAP，
+  # 把输出统一转成字符串返回。
+  $previous = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $output = & git -C $repoRoot @Arguments 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "git $($Arguments[0]) failed with exit code $LASTEXITCODE`n$($output -join "`n")" }
+    return ($output | ForEach-Object { $_.ToString() }) -join "`n"
+  } finally {
+    $ErrorActionPreference = $previous
+  }
 }
 
 function Get-Version {
@@ -70,16 +81,18 @@ function Get-ChangelogRelease([string]$ReleaseVersion) {
   }
   if ($unreleasedIndex -lt 0) { throw 'CHANGELOG.md has no [Unreleased] section.' }
   $entries = New-Object System.Collections.Generic.List[string]
+  $nextHeaderIndex = -1
   for ($i = $unreleasedIndex + 1; $i -lt $lines.Count; $i++) {
-    if ($lines[$i] -match '^## ') { break }
+    if ($lines[$i] -match '^## ') { $nextHeaderIndex = $i; break }
     if ($lines[$i].Trim()) { $entries.Add($lines[$i]) }
   }
   if ($entries.Count -eq 0) { throw 'The [Unreleased] section is empty; add changelog entries before releasing.' }
   $date = (Get-Date).ToString('yyyy-MM-dd')
   $lines[$unreleasedIndex] = "## [$ReleaseVersion] - $date"
-  $lines.Insert($unreleasedIndex + 1, '')
-  $lines.Insert($unreleasedIndex + 2, '## [Unreleased]')
-  $lines.Insert($unreleasedIndex + 3, '')
+  # 新 [Unreleased] 占位插在内容之后（下一个版本章节之前），内容必须留在已发布章节名下
+  $insertAt = if ($nextHeaderIndex -ge 0) { $nextHeaderIndex } else { $lines.Count }
+  $lines.Insert($insertAt, '')
+  $lines.Insert($insertAt, '## [Unreleased]')
   return ($lines -join "`n")
 }
 
