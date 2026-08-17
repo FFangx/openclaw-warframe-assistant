@@ -3,7 +3,10 @@
 本文件记录面向用户和运维者的可见变化，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 发布由 `release.ps1` 执行：读取根目录 `VERSION`，把 `[Unreleased]` 章节落成带日期的版本章节，然后提交并打 `vX.Y.Z` 标签。
 
+## [1.0.0] - 2026-08-17
+
 ## [Unreleased]
+
 
 ### 工程
 
