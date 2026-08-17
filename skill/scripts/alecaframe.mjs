@@ -154,7 +154,9 @@ async function loadCatalog(alecaDir, localize) {
     if (!Array.isArray(items)) continue;
     for (const item of items) {
       if (!item?.uniqueName) continue;
-      const isWarframe = filename === 'Warframes.json' || String(item.uniqueName).includes('/Powersuits/');
+      // 战甲强化 Mod（…/Powersuits/<战甲>/<Augment>Card）不得按战甲保留英文名
+      const isWarframe = filename === 'Warframes.json'
+        || (String(item.uniqueName).includes('/Powersuits/') && !String(item.uniqueName).endsWith('Card'));
       const zhName = localize(item.uniqueName);
       byUniqueName.set(item.uniqueName, {
         uniqueName: item.uniqueName,

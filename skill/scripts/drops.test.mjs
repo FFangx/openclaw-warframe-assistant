@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -102,4 +102,36 @@ test('掉落查价覆盖全部卡片行、限制并发并只用真实成交索�
   assert.equal(drops[6].marketBasis, 'daily-closed');
   assert.equal(drops[7].platinum, 8.5);
   assert.equal(drops[8].platinum, null);
+});
+
+test('战甲强化 Mod 不被 /Powersuits/ 路径误判为战甲，显示官方中文名', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'warframe-drops-catalog-'));
+  await mkdir(path.join(dir, 'cachedData', 'json'), { recursive: true });
+  const augment = '/Lotus/Powersuits/Berserker/GrappleAugmentCard';
+  const frame = '/Lotus/Powersuits/Wukong/WukongPrime';
+  await writeFile(path.join(dir, 'cachedData', 'json', 'Mods.json'), JSON.stringify([
+    { uniqueName: augment, name: 'Swing Line', rarity: 'Rare', tradable: true },
+  ]), 'utf8');
+  await writeFile(path.join(dir, 'cachedData', 'json', 'Warframes.json'), JSON.stringify([
+    { uniqueName: frame, name: 'Wukong Prime', rarity: null, tradable: false },
+  ]), 'utf8');
+  await writeFile(path.join(dir, 'cachedData', 'json', 'lang.json'), JSON.stringify({
+    [augment]: { zh: { name: '摆荡钩索' } },
+    [frame]: { zh: { name: '悟空 Prime' } },
+  }), 'utf8');
+  const previous = process.env.WARFRAME_OFFLINE;
+  process.env.WARFRAME_OFFLINE = '1';
+  try {
+    const { loadCatalog } = await import('./drops.mjs');
+    const catalog = await loadCatalog(dir);
+    assert.equal(catalog.get(augment).displayName, '摆荡钩索');
+    // 真战甲仍按硬规则保留英文名，不受本修复影响
+    assert.equal(catalog.get(frame).displayName, 'Wukong Prime');
+    const drop = describeDrop(augment, 1, catalog);
+    assert.equal(drop.displayName, '摆荡钩索');
+    assert.equal(drop.isMod, true);
+  } finally {
+    if (previous == null) delete process.env.WARFRAME_OFFLINE;
+    else process.env.WARFRAME_OFFLINE = previous;
+  }
 });

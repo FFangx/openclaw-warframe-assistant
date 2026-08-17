@@ -139,7 +139,10 @@ async function loadCatalog(alecaDir) {
     const category = filename.replace(/\.json$/iu, '');
     for (const item of items) {
       if (!item?.uniqueName) continue;
-      const isWarframe = category === 'Warframes' || String(item.uniqueName).includes('/Powersuits/');
+      // 战甲强化 Mod（如 /Lotus/Powersuits/Berserker/GrappleAugmentCard）也落在
+      // /Powersuits/ 路径下，不能按战甲保留英文名；只认不以 Card 结尾的真战甲路径。
+      const isWarframe = category === 'Warframes'
+        || (String(item.uniqueName).includes('/Powersuits/') && !String(item.uniqueName).endsWith('Card'));
       const isPrime = Boolean(item.isPrime) || /\bPrime\b/u.test(item.name || '');
       const isRelic = category === 'Relics';
       if (!byUniqueName.has(item.uniqueName)) {
