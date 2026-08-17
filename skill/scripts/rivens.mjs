@@ -221,7 +221,7 @@ export function rivenName(fp, itemType, table) {
 
 // ==== 装配 ====
 
-export async function assembleRivens({ inventory, table, attrZh = {}, lang = null, veiledPrices = {} }) {
+export async function assembleRivens({ inventory, table, attrZh = {}, lang = null, veiledPrices = {}, weekly = null }) {
   const zhOf = (tag, fallback) => attrZh[tag] || fallback || tag;
   const weaponZh = (compat) => lang?.[compat]?.zh?.name || null;
   const veiledValue = (name) => {
@@ -254,6 +254,11 @@ export async function assembleRivens({ inventory, table, attrZh = {}, lang = nul
       omegaAtt: appraised.omegaAtt,
       rank: appraised.rank,
       god: isGodRoll(fp, ws),
+      // DE 官方周报参考价：按「武器英文名#是否洗练过」取本周成交中位（同武器口径，非按词条估值）
+      refPrice: (() => {
+        const row = weekly?.[`${(appraised.weaponEn || '').toLowerCase()}#${(fp.rerolls || 0) > 0 ? 1 : 0}`];
+        return row && Number.isFinite(Number(row.median)) ? { median: Number(row.median), pop: Number(row.pop) || null } : null;
+      })(),
       attrs: [...appraised.buffs, ...appraised.curses].map((attr) => ({
         ...attr,
         zh: zhOf(attr.tag, attr.short),
@@ -338,7 +343,8 @@ export function buildRivenListCard(data, fetchedAt = new Date().toISOString()) {
         <span style="width:26px;height:20px;line-height:20px;border-radius:6px;font-size:12px;font-weight:900;color:#131722;background:${C.gold};text-align:center;flex:0 0 auto">${index + 1}</span>
         ${riven.iconDataUri ? `<img src="${riven.iconDataUri}" style="width:38px;height:38px;object-fit:contain;flex:0 0 auto">` : ''}
         <span style="font-size:15px;font-weight:900;color:${C.text}">${escapeHtml(riven.weaponZh)}</span>
-        ${riven.god ? `<span style="padding:1px 7px;border-radius:6px;font-size:11px;font-weight:900;color:#131722;background:${C.gold}">★ 神卡词条</span>` : ''}</div>
+        ${riven.god ? `<span style="padding:1px 7px;border-radius:6px;font-size:11px;font-weight:900;color:#131722;background:${C.gold}">★ 神卡词条</span>` : ''}
+        ${riven.refPrice ? `<span style="margin-left:auto;font-size:11px;color:${C.cyan};font-weight:800;white-space:nowrap">周参考 中位 ${riven.refPrice.median}p${riven.refPrice.pop != null ? ` · 成交 ${riven.refPrice.pop}` : ''}</span>` : ''}</div>
       <div style="margin-top:2px;font-size:11px;color:${C.sub}">${chips}</div>
       <div style="margin-top:6px">${attrRows}</div></div>`;
   }).join('');
@@ -354,15 +360,16 @@ export function buildRivenListCard(data, fetchedAt = new Date().toISOString()) {
   const blocksH = data.opened.reduce((sum, riven) => sum + (riven.iconDataUri ? 40 : 30) + 18 + riven.attrs.length * 26 + 22, 0);
   const veiledH = data.veiled.length ? 30 + data.veiled.length * 34 : 0;
   const height = 84 + 30 + blocksH + veiledH + 40 + (data.tableLoaded ? 0 : 24);
+  const weeklyNote = data.opened.some((r) => r.refPrice) ? ' · 周参考=DE 官方周报' : '';
   const content = `<div class="card"><div class="header">${rivenIcon()}<div><div class="kicker">我的紫卡 · ${data.opened.length + data.veiled.reduce((n, v) => n + v.count, 0)} 张</div><div class="title">已开封 ${data.opened.length} · 未开封 ${data.veiled.reduce((n, v) => n + v.count, 0)}</div></div>
     <div class="header-meta"><strong>数值=满级口径</strong><span>条=洗练区间位置</span></div></div>
     <div class="section"><span class="section-badge" style="background:${C.purple}">紫卡</span>★=社区神卡词条表命中 · 等级=洗练位置分档（负词条越轻越高）<small>本工具口径，与 AlecaFrame 分档略有差异</small></div>
     ${data.tableLoaded ? '' : `<div style="padding:4px 16px;font-size:12px;color:${C.red}">⚠ 本机计算表缺失（AlecaFrame 未安装/未同步），仅显示词条不算数值</div>`}
     ${blocks}
     ${data.veiled.length ? `<div style="padding:8px 16px 2px;font-size:12px;font-weight:800;color:${C.dim}">未开封</div>${veiledRows}` : ''}
-    <div class="footer"><span>计算表:AlecaFrame 本机 · 词条名:warframe.market · 数值=满级口径</span><span>${escapeHtml(new Date(fetchedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))}</span></div></div>`;
+    <div class="footer"><span>计算表:AlecaFrame 本机 · 词条名:warframe.market · 数值=满级口径${weeklyNote}</span><span>${escapeHtml(new Date(fetchedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))}</span></div></div>`;
   // key=模板版本+内容哈希：洗卡/开封后立刻出新图，改模板后 v 号打散缓存
-  const keySeed = 'rivens-v11|' + data.opened.map((r) => `${r.compat}:${r.attrs.map((a) => a.rollPct).join(',')}:${r.rerolls}:${r.iconDataUri ? 'i' : 'x'}`).join('|')
+  const keySeed = 'rivens-v12|' + data.opened.map((r) => `${r.compat}:${r.attrs.map((a) => a.rollPct).join(',')}:${r.rerolls}:${r.iconDataUri ? 'i' : 'x'}:${r.refPrice?.median ?? '-'}`).join('|')
     + `|veiled:${data.veiled.map((v) => `${v.zh}x${v.count}:${v.challenge?.progress ?? '-'}:${v.price ?? '-'}`).join(',')}`;
   return { html: documentShell(content, height, 800), width: 800, height, key: `rivens-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }

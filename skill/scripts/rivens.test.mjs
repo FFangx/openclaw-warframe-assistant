@@ -157,3 +157,44 @@ test('未开封紫卡统计行没有 mod_rank 也能给出成交中位估价', a
   assert.equal(prices['Rifle Riven Mod'].basis, '90days');
   assert.equal(prices['Rifle Riven Mod'].dailyVolume, 0.2); // 20 笔 / 90 天
 });
+
+test('DE 周报参考价按武器×洗练状态挂到每张已开封紫卡并上卡', async () => {
+  const { assembleRivens, buildRivenListCard } = await import('./rivens.mjs');
+  const compatX = '/Lotus/Weapons/Rifle/LongGun/SyntheticRifle';
+  const stats = { dmg: { baseValue: 1.5, shortString: 'D', prefixTag: 'vex', suffixTag: 'ido' } };
+  const table = {
+    dataByRivenInternalID: { '/Lotus/Riven/X': { fusionLimit: 8, rivenStats: stats } },
+    weaponStats: { [compatX]: { name: 'Synthetic Rifle', omegaAtt: 1 } },
+  };
+  const fp = (rerolls) => ({ compat: compatX, rerolls, pol: 'madurai', lvlReq: 8, buffs: [{ Tag: 'dmg', Value: 0 }] });
+  const inventory = { Upgrades: [
+    { ItemType: '/Lotus/Types/Riven/Weapons/Randomized/X', UpgradeFingerprint: JSON.stringify(fp(0)) },
+    { ItemType: '/Lotus/Types/Riven/Weapons/Randomized/X', UpgradeFingerprint: JSON.stringify(fp(3)) },
+  ] };
+  const weekly = { 'synthetic rifle#0': { median: 12, pop: 100 }, 'synthetic rifle#1': { median: 45, pop: 300 } };
+  const data = await assembleRivens({ inventory, table, weekly });
+  assert.equal(data.opened.length, 2);
+  assert.deepEqual(data.opened.find((r) => r.rerolls === 0).refPrice, { median: 12, pop: 100 });
+  assert.deepEqual(data.opened.find((r) => r.rerolls === 3).refPrice, { median: 45, pop: 300 });
+  const card = buildRivenListCard({ ...data, veiled: [] });
+  assert.match(card.html, /周参考 中位 12p · 成交 100/u);
+  assert.match(card.html, /周参考 中位 45p · 成交 300/u);
+  assert.match(card.html, /周参考=DE 官方周报/u);
+});
+
+test('无 DE 周报数据时列表卡不显示周参考也不写页脚来源', async () => {
+  const { assembleRivens, buildRivenListCard } = await import('./rivens.mjs');
+  const compatX = '/Lotus/Weapons/Rifle/LongGun/SyntheticRifle';
+  const stats = { dmg: { baseValue: 1.5, shortString: 'D', prefixTag: 'vex', suffixTag: 'ido' } };
+  const table = {
+    dataByRivenInternalID: { '/Lotus/Riven/X': { fusionLimit: 8, rivenStats: stats } },
+    weaponStats: { [compatX]: { name: 'Synthetic Rifle', omegaAtt: 1 } },
+  };
+  const inventory = { Upgrades: [
+    { ItemType: '/Lotus/Types/Riven/Weapons/Randomized/X', UpgradeFingerprint: JSON.stringify({ compat: compatX, rerolls: 0, pol: 'madurai', lvlReq: 8, buffs: [{ Tag: 'dmg', Value: 0 }] }) },
+  ] };
+  const data = await assembleRivens({ inventory, table });
+  assert.equal(data.opened[0].refPrice, null);
+  const card = buildRivenListCard({ ...data, veiled: [] });
+  assert.doesNotMatch(card.html, /周参考/u);
+});
