@@ -77,6 +77,9 @@
   "rewardItemZh": {
     "WeaponUtilityUnlockerBlueprint": "武器特殊功能槽连接器蓝图",
     "AffinityBooster3DayStoreItem": "经验值加成（3 天）",
+    "ResourceDropChance3DayStoreItem": "3 天资源掉落几率加成",
+    "ResourceDropChance7DayStoreItem": "7 天资源掉落几率加成",
+    "ResourceDropChance30DayStoreItem": "30 天资源掉落几率加成",
     "MPVTitaniaPrimeSinglePack": "Titania Prime 单件包",
     "MPVGaraPrimeSinglePack": "Gara Prime 单件包",
     "MPVTitaniaGaraPrimeDualPack": "Titania + Gara Prime 双件包",

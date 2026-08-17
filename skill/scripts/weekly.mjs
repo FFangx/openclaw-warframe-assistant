@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { renderWarframeCard } from './warframe-cards.mjs';
 import { buildWeeklyMegaCard } from './weekly-mega-card.mjs';
 import { readSnapshot } from './alecaframe.mjs';
-import { getBountyZhMaps, getChallengeZhMap, getCalendarChallengeMap, getLangTable, getOfficialTextMap, getOracleConquestMap, getSeasonChallengeRequired, readAlecaJson, staleCachedJson, stripDataUriReplacer } from './wfdata.mjs';
+import { getBountyZhMaps, getChallengeZhMap, getCalendarChallengeMap, getCalendarStateZhMap, getLangTable, getOfficialTextMap, getOracleConquestMap, getOracleConquestTailMap, getSeasonChallengeRequired, readAlecaJson, staleCachedJson, stripDataUriReplacer } from './wfdata.mjs';
 import { loadWorldState } from './worldstate-source.mjs';
 
 // 静态参考表：奖励池/电波译名，以及 Oracle 词典暂不可用时的科研词缀兜底。
@@ -97,12 +97,16 @@ function officialTextZh(value, officialTextMap) {
   return translated ? cleanGameText(translated) : null;
 }
 
-export function calendarRewardZh(value, storePath = null, names = null, officialTextMap = null) {
+export function calendarRewardZh(value, storePath = null, names = null, officialTextMap = null, calendarStateZh = null) {
   const raw = String(value || '').trim();
   const byPath = storePath ? storeItemZh(storePath, names) : null;
   if (byPath) return cleanGameText(byPath);
   const byText = officialTextZh(raw, officialTextMap);
   if (byText) return byText;
+  // 社区维护的日历状态中文表（KingPrimes/DataSource + 补充表）：按完整路径或尾段索引
+  const stateTail = String(storePath || '').split('/').pop().toLowerCase();
+  const stateHit = calendarStateZh?.byPath?.get?.(storePath) || calendarStateZh?.byTail?.get?.(stateTail);
+  if (stateHit?.name) return cleanGameText(stateHit.name);
   if (CALENDAR_REWARD_ZH[raw]) return cleanGameText(CALENDAR_REWARD_ZH[raw]);
   const counted = raw.match(/^([\d,]+)\s*x?\s*(.+)$/iu);
   if (counted) {
@@ -157,9 +161,14 @@ function nightwaveChallengeZh(challenge, names = null) {
 function calendarChallengeZh(challenge) {
   return challengeTitleZh(challenge?.title) || staticData.calendarChallengeZh?.[challenge?.title] || translateDesc(challenge?.description) || '日历挑战（要求以游戏内为准）';
 }
-export function calendarUpgradeZh(upgrade, upgradePath = null) {
-  return staticData.calendarUpgradeZhByPath?.[upgradePath]
-    || staticData.calendarUpgradeZh?.[upgrade?.title]
+export function calendarUpgradeZh(upgrade, upgradePath = null, calendarStateZh = null) {
+  const pathHit = staticData.calendarUpgradeZhByPath?.[upgradePath];
+  if (pathHit) return pathHit;
+  // 社区维护的日历增益中文表：DE 官方语言键没有增益名，这里按路径/尾段自动吸收
+  const stateTail = String(upgradePath || '').split('/').pop().toLowerCase();
+  const stateHit = calendarStateZh?.byPath?.get?.(upgradePath) || calendarStateZh?.byTail?.get?.(stateTail);
+  if (stateHit?.name) return stateHit.name;
+  return staticData.calendarUpgradeZh?.[upgrade?.title]
     || '新增日历增益（上游尚未提供中文说明）';
 }
 
@@ -213,7 +222,7 @@ function nextReset(date = new Date()) {
 }
 
 function emptyState() {
-  return { version: 1, updatedAt: null, records: [], prefs: [], nightwaveSamples: [] };
+  return { version: 1, updatedAt: null, records: [], prefs: [], nightwaveSamples: [], conquestSamples: [] };
 }
 
 async function readState(statePath) {
@@ -225,6 +234,8 @@ async function readState(statePath) {
       records: Array.isArray(parsed.records) ? parsed.records : [],
       prefs: Array.isArray(parsed.prefs) ? parsed.prefs : [],
       nightwaveSamples: Array.isArray(parsed.nightwaveSamples) ? parsed.nightwaveSamples : [],
+      // 科研分数周对齐历史：{ kind, weekStart, score, tokens, syncedAt, at }[]
+      conquestSamples: Array.isArray(parsed.conquestSamples) ? parsed.conquestSamples : [],
     };
   } catch (error) {
     if (error?.code === 'ENOENT') return emptyState();
@@ -385,8 +396,49 @@ async function fetchWorldState(seed = null) {
 // —— 自动打卡：AlecaFrame 快照 → 本周已完成项（快照过加载点才更新，最终一致而非实时）——
 const msOf = (value) => Number(value?.$date?.$numberLong ?? NaN);
 
+// —— 科研分数周对齐（2026-08-18 实锤，修复跨周误核销）——
+// 快照的 ConquestCacheScoreMission 是「客户端缓存的周总分」：周一重置后若玩家本周尚未
+// 进入科研/打完任务，字段原样携带上周分数，仅凭 syncedAt ≥ 本周一无法区分「本周打过」与
+// 「上周遗留」（实机：周一晚快照仍显示上周 21 分）。因此每次渲染把 (kind, weekStart,
+// score[, tokens]) 记入状态 conquestSamples（同周去重取最新），本周自动核销要求「本周得分
+// 证据」：分数与上一周记录不同 / 本周电波征服挑战完成 / HEX 奖励令牌与上周不同。
+// 无证据只显示诚实进度，绝不把上周分数核销成本周完成。
+function lastPreWeekConquestSample(samples, kind, now = Date.now()) {
+  const currentWeek = weekStart(new Date(now));
+  return (samples || [])
+    .filter((sample) => sample.kind === kind && sample.weekStart && sample.weekStart < currentWeek)
+    .sort((a, b) => Date.parse(String(a.at || a.syncedAt || '')) - Date.parse(String(b.at || b.syncedAt || '')))
+    .at(-1) || null;
+}
+
+function conquestWeekEvidence(inventory, kind, history, nightwaveConquestDone) {
+  if (nightwaveConquestDone) return 'nightwave';
+  if (!history) return null;
+  const score = Math.max(0, Number(inventory?.[`${kind}ConquestCacheScoreMission`]) || 0);
+  if (score !== Number(history.score)) return 'score-change';
+  if (kind === 'EchoesHex') {
+    const tokens = JSON.stringify((inventory?.EchoesHexConquestBonusTokensGiven || []).map(Number));
+    if (tokens !== JSON.stringify((history.tokens || []).map(Number))) return 'tokens';
+  }
+  return null;
+}
+
+// 本周电波征服挑战完成 = 本周活跃挑战里存在 CompleteConquest 类挑战且快照进度达标。
+// 与本周活跃列表 join，周界天然正确；该挑战不在轮换时返回 false，不参与判定。
+function nightwaveConquestDone(inventory, worldState, challengeRequired) {
+  const challenges = (worldState?.nightwave?.activeChallenges || [])
+    .filter((item) => !item.isDaily && /completeconquest/iu.test(String(item.id || '')));
+  if (!challenges.length || !challengeRequired || !Object.keys(challengeRequired).length) return false;
+  const progressByKey = new Map((inventory?.ChallengeProgress || []).map((item) => [String(item.Name || '').toLowerCase(), Number(item.Progress) || 0]));
+  return challenges.some((item) => {
+    const key = String(item.id).replace(/^\d+/u, '');
+    const required = Number(challengeRequired[key]) || 0;
+    return required > 0 && (progressByKey.get(key) ?? 0) >= required;
+  });
+}
+
 // 纯函数便于打桩测试；worldState 缺失时跳过需要对账的项（执刑官/电波），其余判据只看快照自身周界
-function evaluateAutoCheck(inventory, worldState, now = Date.now(), challengeRequired = null, syncedAt = null) {
+function evaluateAutoCheck(inventory, worldState, now = Date.now(), challengeRequired = null, syncedAt = null, options = {}) {
   const auto = {};      // taskId → true：判据确定的本周完成
   const progress = {};  // taskId → 进度文本（有进度不等于完成）
   if (!inventory) return { auto, progress };
@@ -449,8 +501,11 @@ function evaluateAutoCheck(inventory, worldState, now = Date.now(), challengeReq
   // 科研最佳分：基础 1 点 + 8 个个人/装备参数，每关最多 9 点；只完成
   // 两关最多 18 点。因此 >=19 能严格证明三关完整通关，低分只展示而不猜。
   // 分数字段按周重置，但仍要求快照本周同步，防止跨周沿用旧记录。
+  const nwConquestDone = nightwaveConquestDone(inventory, worldState, challengeRequired);
   for (const [kind, taskId] of [['EntratiLab', 'deep-archimedea'], ['EchoesHex', 'temporal-archimedea']]) {
-    const research = archimedeaResearchProgress(inventory, kind, now, syncedAt);
+    const history = lastPreWeekConquestSample(options?.conquestSamples, kind, now);
+    const evidence = conquestWeekEvidence(inventory, kind, history, nwConquestDone);
+    const research = archimedeaResearchProgress(inventory, kind, now, syncedAt, { evidence, priorScore: history?.score ?? null });
     if (!research) continue;
     progress[taskId] = research.text;
     if (research.completed) auto[taskId] = true;
@@ -458,19 +513,25 @@ function evaluateAutoCheck(inventory, worldState, now = Date.now(), challengeReq
   return { auto, progress };
 }
 
-export function archimedeaResearchProgress(inventory, kind, now = Date.now(), syncedAt = null) {
+export function archimedeaResearchProgress(inventory, kind, now = Date.now(), syncedAt = null, options = {}) {
   const syncedMs = Date.parse(String(syncedAt || ''));
   if (!Number.isFinite(syncedMs) || syncedMs < Date.parse(weekStart(new Date(now)))) return null;
   const score = Math.max(0, Number(inventory?.[`${kind}ConquestCacheScoreMission`]) || 0);
   const unlocked = Number(inventory?.[`${kind}ConquestUnlocked`]) > 0;
   if (!unlocked && score <= 0) return null;
-  const completed = score >= 19;
-  let text = `本周最佳 ${score} 研究点`;
-  if (completed) text += ' · 三关已完成';
-  else text += ' · 尚不能确认三关全通';
+  const evidence = options.evidence || null;
+  const completed = Boolean(evidence) && score >= 19;
+  let text;
+  if (score >= 19) {
+    text = completed
+      ? `本周最佳 ${score} 研究点 · 三关已完成`
+      : `快照显示 ${score} 研究点 · 尚未确认本周完成`;
+  } else {
+    text = `本周最佳 ${score} 研究点 · 尚不能确认三关全通`;
+  }
   if (score >= 25) text += ' · 已达精英解锁线';
   else text += ` · 距精英解锁 ${25 - score} 点`;
-  return { score, completed, eliteThresholdReached: score >= 25, text };
+  return { score, completed, evidence, eliteThresholdReached: score >= 25, text };
 }
 
 // —— 1999 日历赛季进度（语义 2026-08-05 用户三步实测定死） ——
@@ -521,16 +582,44 @@ function chosenFlags(officialEvents, count, pickPath) {
 }
 
 // 读真实快照的包装；任何异常静默降级为「无自动数据」，手动打卡不受影响
-async function autoCheckFromSnapshot(worldState) {
+async function autoCheckFromSnapshot(worldState, conquestSamples = []) {
   try {
     const { inventory, syncedAt } = await readSnapshot();
     // 电波完成量映射：网络失败返空对象，电波项自然跳过（宁不核销）
     const challengeRequired = worldState ? await getSeasonChallengeRequired() : null;
-    // inventory 透传给装配层：回廊进度轨道/商店已购计数都要读它
-    return { ...evaluateAutoCheck(inventory, worldState, Date.now(), challengeRequired, syncedAt), syncedAt, inventory };
+    const now = Date.now();
+    const result = evaluateAutoCheck(inventory, worldState, now, challengeRequired, syncedAt, { conquestSamples });
+    // 本轮科研分数样本：供以后各周判断「分数是否真的变过」
+    const observations = collectConquestObservations(inventory, syncedAt, now);
+    return { ...result, syncedAt, inventory, observations };
   } catch {
     return null;
   }
+}
+
+function collectConquestObservations(inventory, syncedAt, now) {
+  if (!inventory) return [];
+  const sampleWeek = weekStart(new Date(Date.parse(String(syncedAt)) || now));
+  const at = new Date(now).toISOString();
+  return [
+    { kind: 'EntratiLab', weekStart: sampleWeek, score: Math.max(0, Number(inventory.EntratiLabConquestCacheScoreMission) || 0), syncedAt, at },
+    { kind: 'EchoesHex', weekStart: sampleWeek, score: Math.max(0, Number(inventory.EchoesHexConquestCacheScoreMission) || 0), tokens: (inventory.EchoesHexConquestBonusTokensGiven || []).map(Number), syncedAt, at },
+  ];
+}
+
+// 把本轮科研分数样本并进状态文件：同 (kind, weekStart) 只留最新一条，cap 80；失败静默
+async function recordConquestObservations(statePath, observations) {
+  if (!statePath || !Array.isArray(observations) || !observations.length) return;
+  await withStateLock(statePath, async () => {
+    const state = await readState(statePath);
+    const byKey = new Map();
+    for (const sample of [...(state.conquestSamples || []), ...observations]) {
+      if (!sample?.kind || !sample?.weekStart) continue;
+      byKey.set(`${sample.kind}:${sample.weekStart}`, sample);
+    }
+    state.conquestSamples = [...byKey.values()].sort((a, b) => Date.parse(String(a.at || '')) - Date.parse(String(b.at || ''))).slice(-80);
+    await writeState(statePath, state);
+  }).catch(() => {});
 }
 
 // 合并手动与自动：用户「撤销」过的项（dismissed）尊重用户判断，不再自动打上
@@ -555,12 +644,14 @@ function loadNameTables({ includeShopCatalogs = false } = {}) {
   const existing = includeShopCatalogs ? shopNameTablesPromise : nameTablesPromise;
   if (existing) return existing;
   const promise = (async () => {
+    // 悬赏/语言键映射始终加载：语言键尾段→官方中文是日历奖励等路径式名称的兜底链；
+    // Warframes.json 始终加载（回廊战甲「已有」标记要用 uniqueName 精确比对）
     const catalogFiles = includeShopCatalogs
       ? ['Warframes.json', 'Primary.json', 'Secondary.json', 'Melee.json', 'Arch-Gun.json', 'Skins.json', 'Gear.json', 'Glyphs.json']
       : ['Warframes.json'];
     const [lang, maps, ...catalogResults] = await Promise.all([
       getLangTable().catch(() => ({})),
-      includeShopCatalogs ? getBountyZhMaps().catch(() => ({ items: {}, languageTails: {} })) : Promise.resolve({ items: {}, languageTails: {} }),
+      getBountyZhMaps().catch(() => ({ items: {}, languageTails: {} })),
       ...catalogFiles.map((file) => readAlecaJson(`json/${file}`).catch(() => null)),
     ]);
     const catalogs = catalogResults.map((value) => Array.isArray(value) ? value : []);
@@ -676,7 +767,7 @@ function archimedeaLines(entry) {
 
 function taskRows(record, worldState, skipped = new Set(), progressMap = {}, resources = {}) {
   const completed = new Set(record.completed);
-  const { names = null, officialDays = null, officialTextMap = null } = resources;
+  const { names = null, officialDays = null, officialTextMap = null, calendarStateZh = null } = resources;
   // 深层=LAB（墓志之地），时光=HEX（霍瓦尼亚）；typeKey 带空格故用压缩匹配
   const archimedeas = Array.isArray(worldState?.archimedeas) ? worldState.archimedeas : [];
   const deepEntry = archimedeas.find((entry) => /LAB/u.test(String(entry.typeKey || entry.type || '').replace(/\s+/gu, '')));
@@ -724,7 +815,7 @@ function taskRows(record, worldState, skipped = new Set(), progressMap = {}, res
         days.forEach((day, dayIndex) => (day.events || []).forEach((event, eventIndex) => {
           if (event.type !== 'Big Prize!') return;
           const storePath = officialDays?.[dayIndex]?.events?.[eventIndex]?.reward;
-          named.push(calendarRewardZh(event.reward, storePath, names, officialTextMap));
+          named.push(calendarRewardZh(event.reward, storePath, names, officialTextMap, calendarStateZh));
         }));
         const uniqueNamed = [...new Set(named)].slice(0, 4);
         if (uniqueNamed.length) detailLines.push(`大奖举例：${uniqueNamed.join('、')}`);
@@ -788,8 +879,22 @@ function normalizeOracleText(value) {
   return String(value || '').trim().toLowerCase().replace(/\s+/gu, ' ');
 }
 
-export function localizeArchimedeaModifier(mod, oracleMap = new Map(), fallbackMap = staticData.archimedeaZh) {
-  const fallback = fallbackMap?.[mod?.key];
+export function localizeArchimedeaModifier(mod, oracleMap = new Map(), fallbackMap = staticData.archimedeaZh, options = {}) {
+  const { tailMap = null, kind = '' } = options;
+  const fallback = fallbackMap?.[mod?.key]
+    || fallbackMap?.[String(mod?.key || '').split(/[,\s]+/u).filter(Boolean)[0]];
+  // 官方备用源只有路径尾段（key 即尾段）：Oracle 语言键尾段直查，LAB/HEX 前缀消歧重名
+  const keyTail = String(mod?.key || '').split(/[,\s]+/u).map((part) => part.trim().toLowerCase()).filter(Boolean)[0] || '';
+  if (tailMap && keyTail) {
+    const tailCandidates = tailMap.get(keyTail) || [];
+    const prefix = kind === 'HEX' ? /HexConquest/iu : kind === 'LAB' ? /LabConquest/iu : null;
+    const preferKind = prefix ? tailCandidates.filter((candidate) => prefix.test(String(candidate.key || ''))) : [];
+    const chosen = (preferKind.length ? preferKind : tailCandidates)[0] || null;
+    if (chosen) {
+      return { name: chosen.name, desc: chosen.desc || fallback?.desc || '效果说明待补录，请在游戏内查看' };
+    }
+  }
+  // warframestat 路径：英文显示名 + 说明原文/数字判别重名候选
   const candidates = oracleMap?.get?.(String(mod?.name || '').trim()) || [];
   const targetDesc = normalizeOracleText(mod?.description);
   const targetNumbers = String(mod?.description || '').match(/\d+(?:\.\d+)?/gu) || [];
@@ -810,7 +915,7 @@ export function localizeArchimedeaModifier(mod, oracleMap = new Map(), fallbackM
   };
 }
 
-function buildMegaData(record, worldState, skipped = new Set(), autoResult = null, autoIds = [], names = null, calMap = null, officialDays = null, seasonRequired = null, nwPredict = null, oracleConquestMap = null, officialTextMap = null, worldStateMeta = {}) {
+function buildMegaData(record, worldState, skipped = new Set(), autoResult = null, autoIds = [], names = null, calMap = null, officialDays = null, seasonRequired = null, nwPredict = null, oracleConquestMap = null, officialTextMap = null, worldStateMeta = {}, oracleConquestTails = null, calendarStateZh = null) {
   const done = new Set(record.completed);
   const autoProgress = autoResult?.progress || {};
   const inventory = autoResult?.inventory || null;
@@ -831,15 +936,23 @@ function buildMegaData(record, worldState, skipped = new Set(), autoResult = nul
   const archimedeas = Array.isArray(worldState?.archimedeas) ? worldState.archimedeas : [];
   const deepEntry = archimedeas.find((entry) => /LAB/u.test(compact(entry.typeKey || entry.type)));
   const hexEntry = archimedeas.find((entry) => /HEX/u.test(compact(entry.typeKey || entry.type)));
-  // Oracle 世界状态词典自动吸收新科研词缀；静态表只在离线或上游缺项时兜底。
-  const modZh = (mod) => localizeArchimedeaModifier(mod, oracleConquestMap);
-  const labMissions = (entry) => (entry?.missions || []).map((mission) => ({
-    typeZh: MISSION_ZH[mission.missionType] || '未知任务',
-    factionZh: staticData.factionZh[mission.faction] || '未知阵营',
-    deviation: modZh(mission.deviation),
-    risks: (mission.risks || []).map((risk) => ({ ...modZh(risk), hard: Boolean(risk.isHard) })),
-  }));
-  const labPersonal = (entry) => (entry?.personalModifiers || []).map(modZh);
+  // Oracle 世界状态词典自动吸收新科研词缀；官方备用源只有路径尾段时走尾段索引（LAB/HEX 消歧）。
+  // 静态表只在离线或上游缺项时兜底。
+  const labMissions = (entry) => {
+    const kind = compact(entry?.typeKey || entry?.type);
+    const modZh = (mod) => localizeArchimedeaModifier(mod, oracleConquestMap, staticData.archimedeaZh, { tailMap: oracleConquestTails, kind });
+    return (entry?.missions || []).map((mission) => ({
+      typeZh: MISSION_ZH[mission.missionType] || '未知任务',
+      factionZh: staticData.factionZh[mission.faction] || '未知阵营',
+      deviation: modZh(mission.deviation),
+      risks: (mission.risks || []).map((risk) => ({ ...modZh(risk), hard: Boolean(risk.isHard) })),
+    }));
+  };
+  const labPersonal = (entry) => {
+    const kind = compact(entry?.typeKey || entry?.type);
+    const modZh = (mod) => localizeArchimedeaModifier(mod, oracleConquestMap, staticData.archimedeaZh, { tailMap: oracleConquestTails, kind });
+    return (entry?.personalModifiers || []).map(modZh);
+  };
 
   const challenges = Array.isArray(worldState?.nightwave?.activeChallenges) ? worldState.nightwave.activeChallenges : [];
   const weeklyChallenges = challenges.filter((challenge) => !challenge.isDaily && !challenge.isElite);
@@ -878,7 +991,7 @@ function buildMegaData(record, worldState, skipped = new Set(), autoResult = nul
     .filter((day) => day.rewards.length)
     .map((day) => ({
       dateZh: `${day.date.getUTCMonth() + 1}月${day.date.getUTCDate()}日`,
-      rewardsZh: day.rewards.map(({ event, official }) => calendarRewardZh(event.reward, official?.reward, names, officialTextMap)).join(' + '),
+      rewardsZh: day.rewards.map(({ event, official }) => calendarRewardZh(event.reward, official?.reward, names, officialTextMap, calendarStateZh)).join(' + '),
     }));
   // v4：日历整宽混排——大奖/挑战/增益按日期顺序各占一行（大奖不再单列在前）
   // v5：接快照进度——行态 done/current/future（按原始数组下标对齐 LastCompletedDayIdx），挑战行附计数
@@ -919,7 +1032,7 @@ function buildMegaData(record, worldState, skipped = new Set(), autoResult = nul
     const todos = dayEvents.filter(({ event }) => event.type === 'To Do');
     const overrides = dayEvents.filter(({ event }) => event.type === 'Override');
     const state = calInfo ? (dayIdx <= calInfo.lastIdx ? 'done' : 'pending') : '';
-    if (prizeRewards.length) return { dateZh, state, type: 'prize', lines: [prizeRewards.map(({ event, official }) => calendarRewardZh(event.reward, official?.reward, names, officialTextMap)).join(' + ')] };
+    if (prizeRewards.length) return { dateZh, state, type: 'prize', lines: [prizeRewards.map(({ event, official }) => calendarRewardZh(event.reward, official?.reward, names, officialTextMap, calendarStateZh)).join(' + ')] };
     if (todos.length) {
       return {
         dateZh, state, type: 'todo',
@@ -933,7 +1046,7 @@ function buildMegaData(record, worldState, skipped = new Set(), autoResult = nul
       // 三选一已选标记：只标已完成日；第 k 个完成的三选一日 ↔ seasonPicks[k]（选择顺序=日期顺序）
       const pickPath = state === 'done' ? seasonPicks[overrideSeen++] : null;
       const flags = chosenFlags(officialSafe?.[dayIdx]?.events, overrides.length, pickPath);
-      return { dateZh, state, type: 'override', lines: overrides.map(({ event, official }, j) => ({ text: calendarUpgradeZh(event.upgrade, official?.upgrade), chosen: Boolean(flags[j]) })) };
+      return { dateZh, state, type: 'override', lines: overrides.map(({ event, official }, j) => ({ text: calendarUpgradeZh(event.upgrade, official?.upgrade, calendarStateZh), chosen: Boolean(flags[j]) })) };
     }
     return null;
   }).filter(Boolean);
@@ -1086,12 +1199,15 @@ async function sampleAndPredict(statePath, worldState, autoResult) {
 async function renderResult(record, cardDir, actionText = '', skipped = new Set(), statePath = null) {
   const { value: worldState, error: worldStateError, stale: worldStateStale } = await fetchWorldState();
   // 先合并快照自动核销再渲染：手动记录与自动判定取并集，撤销过的项不再自动打上
-  const autoResult = await autoCheckFromSnapshot(worldState);
+  const state = statePath ? await readState(statePath).catch(() => emptyState()) : emptyState();
+  const autoResult = await autoCheckFromSnapshot(worldState, state.conquestSamples);
   const { record: effective, autoIds } = mergeAutoRecord(record, autoResult);
-  const [names, calMap, officialDays, seasonRequired, oracleConquestMap, officialTextMap] = await Promise.all([loadNameTables(), getCalendarChallengeMap(), loadOfficialCalendarDays(), getSeasonChallengeRequired(), getOracleConquestMap(), getOfficialTextMap(), primeChallengeZh()]);
-  const rows = taskRows(effective, worldState, skipped, autoResult?.progress || {}, { names, officialDays, officialTextMap });
+  const [names, calMap, officialDays, seasonRequired, oracleConquestMap, officialTextMap, oracleConquestTails, calendarStateZh] = await Promise.all([loadNameTables(), getCalendarChallengeMap(), loadOfficialCalendarDays(), getSeasonChallengeRequired(), getOracleConquestMap(), getOfficialTextMap(), getOracleConquestTailMap(), getCalendarStateZhMap(), primeChallengeZh()]);
+  const rows = taskRows(effective, worldState, skipped, autoResult?.progress || {}, { names, officialDays, officialTextMap, calendarStateZh });
   const nwPredict = await sampleAndPredict(statePath, worldState, autoResult);
-  const card = buildWeeklyMegaCard(buildMegaData(effective, worldState, skipped, autoResult, autoIds, names, calMap, officialDays, seasonRequired, nwPredict, oracleConquestMap, officialTextMap, { stale: worldStateStale }));
+  // 科研分数样本落盘：本次渲染后，同周同类只留最新一条（供下一周判断分数是否真的变过）
+  await recordConquestObservations(statePath, autoResult?.observations);
+  const card = buildWeeklyMegaCard(buildMegaData(effective, worldState, skipped, autoResult, autoIds, names, calMap, officialDays, seasonRequired, nwPredict, oracleConquestMap, officialTextMap, { stale: worldStateStale }, oracleConquestTails, calendarStateZh));
   let mediaUrl = null;
   if (cardDir) mediaUrl = await renderWarframeCard(card, cardDir).catch(() => null);
   const active = rows.filter((item) => !item.skipped);
@@ -1173,12 +1289,13 @@ async function renderWeeklyDetailCardFor(weeklyStatePath, context, worldState, c
   const state = await readState(weeklyStatePath);
   const record = currentRecord(state, context);
   const skipped = currentSkipped(state, context);
-  const autoResult = await autoCheckFromSnapshot(effectiveWorldState);
+  const autoResult = await autoCheckFromSnapshot(effectiveWorldState, state.conquestSamples);
   const { record: effective, autoIds } = mergeAutoRecord(record, autoResult);
-  const [names, calMap, officialDays, seasonRequired, oracleConquestMap, officialTextMap] = await Promise.all([loadNameTables(), getCalendarChallengeMap(), loadOfficialCalendarDays(), getSeasonChallengeRequired(), getOracleConquestMap(), getOfficialTextMap(), primeChallengeZh()]);
-  const rows = taskRows(effective, effectiveWorldState, skipped, autoResult?.progress || {}, { names, officialDays, officialTextMap });
+  const [names, calMap, officialDays, seasonRequired, oracleConquestMap, officialTextMap, oracleConquestTails, calendarStateZh] = await Promise.all([loadNameTables(), getCalendarChallengeMap(), loadOfficialCalendarDays(), getSeasonChallengeRequired(), getOracleConquestMap(), getOfficialTextMap(), getOracleConquestTailMap(), getCalendarStateZhMap(), primeChallengeZh()]);
+  const rows = taskRows(effective, effectiveWorldState, skipped, autoResult?.progress || {}, { names, officialDays, officialTextMap, calendarStateZh });
   const nwPredict = await sampleAndPredict(weeklyStatePath, effectiveWorldState, autoResult);
-  const card = buildWeeklyMegaCard(buildMegaData(effective, effectiveWorldState, skipped, autoResult, autoIds, names, calMap, officialDays, seasonRequired, nwPredict, oracleConquestMap, officialTextMap, { stale: repaired.stale }));
+  await recordConquestObservations(weeklyStatePath, autoResult?.observations);
+  const card = buildWeeklyMegaCard(buildMegaData(effective, effectiveWorldState, skipped, autoResult, autoIds, names, calMap, officialDays, seasonRequired, nwPredict, oracleConquestMap, officialTextMap, { stale: repaired.stale }, oracleConquestTails, calendarStateZh));
   if (!cardDir) return { mediaUrl: null, rows };
   const mediaUrl = await renderWarframeCard(card, cardDir).catch(() => null);
   return { mediaUrl, rows };
@@ -1196,7 +1313,8 @@ async function remindWeekly(weeklyStatePath, ledgerPath, target) {
 
   const state = await readState(weeklyStatePath);
   // 提醒前先合并快照自动核销（零网络：不传 worldState，执刑官/电波两项跳过自动判定，宁多提醒不漏提醒）
-  const autoResult = await autoCheckFromSnapshot(null);
+  const autoResult = await autoCheckFromSnapshot(null, state.conquestSamples);
+  await recordConquestObservations(weeklyStatePath, autoResult?.observations);
   const lines = [];
   for (const sub of subs) {
     const record = currentRecord(state, { target, ownerId: sub.ownerId, ownerName: sub.ownerName });

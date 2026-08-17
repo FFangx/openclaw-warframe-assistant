@@ -307,9 +307,11 @@ export function getOracleEventMap() {
 // —— 科研词缀：Map<英文显示名, [{ name, desc, descEn, key }]> ——
 // warframestat 的科研对象只给英文显示名/说明，不给 /Lotus/ 语言键；Oracle 词典保留同一显示名
 // 对应的正式简中名称与相邻 _Desc 键。按显示名建索引，并保留重名候选供调用方按英文说明判别。
-let oracleConquestPromise = null;
-export function getOracleConquestMap() {
-  oracleConquestPromise ??= (async () => {
+// 官方备用源（worldState.php Conquests）只给路径尾段（如 AlchemicalShields），因此同一份词典
+// 另建「语言键尾段(小写) → 候选」索引：尾段唯一直查，重名时由调用方按 LAB/HEX 前缀消歧。
+let oracleConquestDataPromise = null;
+function oracleConquestData() {
+  oracleConquestDataPromise ??= (async () => {
     try {
       const entries = await cachedBuild(ORACLE_CONQUEST_CACHE, EVENT_TTL_MS, 1, async () => {
         const [en, zh] = await Promise.all([fetchJson(ORACLE_DICT_EN_URL), fetchJson(ORACLE_DICT_ZH_URL)]);
@@ -331,12 +333,34 @@ export function getOracleConquestMap() {
         if (!grouped.size) throw new Error('Oracle 科研词缀映射为空');
         return [...grouped.entries()];
       });
-      return new Map(entries);
+      const byName = new Map(entries);
+      const byTail = new Map();
+      for (const [, candidates] of entries) {
+        for (const candidate of candidates) {
+          const tail = String(candidate.key || '').split('/').pop().toLowerCase();
+          if (!tail) continue;
+          // 语言键自带 Condition_/PersonalMod_/MissionVariant_ 前缀，而官方世界状态
+          // Conquests 给的是游戏路径尾段（如 Starvation）。剥前缀后同键索引，两种尾段都命中。
+          const gameTail = tail.replace(/^(?:condition|personalmod|missionvariant(?:_(?:lab|hex)conquest)?)_/u, '');
+          for (const indexTail of [...new Set([tail, gameTail])]) {
+            byTail.set(indexTail, [...(byTail.get(indexTail) || []), candidate]);
+          }
+        }
+      }
+      return { byName, byTail };
     } catch {
-      return new Map();
+      return { byName: new Map(), byTail: new Map() };
     }
   })();
-  return oracleConquestPromise;
+  return oracleConquestDataPromise;
+}
+
+export async function getOracleConquestMap() {
+  return (await oracleConquestData()).byName;
+}
+
+export async function getOracleConquestTailMap() {
+  return (await oracleConquestData()).byTail;
 }
 
 // —— Public Export 完整文本词典：Map<规范化英文原文, 官方简中> ——
@@ -516,6 +540,61 @@ export function getSeasonChallengeRequired() {
   return seasonRequiredPromise;
 }
 
+// —— 1999 日历增益/奖励中文名（DE 官方语言键没有这批名字，公开导出亦无）——
+// 上游 = KingPrimes/DataSource（MIT）warframe/state_translation.json：按 uniqueName 索引的
+// 社区维护中文名+说明（其数据源为官方中文客户端口径）；本地补充表来自 warframe-info-api
+// （MIT）api/dataSource/state_translation_local.json，只填上游缺失的条目。上游覆盖同键补充表。
+// 缓存 7 天；网络失败退陈旧缓存，再退仅补充表。周报把「新增日历增益/游戏内奖励（待同步）」
+// 这种每周手工补表，变成一次词典吸收——上游随版本新增条目后自动生效。
+const CALENDAR_STATE_URL = 'https://raw.githubusercontent.com/KingPrimes/DataSource/main/warframe/state_translation.json';
+const CALENDAR_STATE_CACHE = path.join(DATA_CACHE_DIR, 'calendar-state-zh.json');
+const CALENDAR_STATE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// warframe-info-api 本地补充表（MIT）：只取日历相关条目，键与上游同构
+const CALENDAR_STATE_SUPPLEMENT = [
+  { uniqueName: '/Lotus/Types/Challenges/Calendar1999/CalendarKillEximusEasy', name: '前卓越者', description: '击杀10名卓越者' },
+  { uniqueName: '/Lotus/Types/Challenges/Calendar1999/CalendarKillTechrotEnemiesEasy', name: '清除感染', description: '击杀250名科腐者敌人' },
+  { uniqueName: '/Lotus/Types/Challenges/Calendar1999/CalendarKillEnemiesWithMeleeHard', name: '以刃之名', description: '使用近战武器击杀500名敌人' },
+  { uniqueName: '/Lotus/Types/Challenges/Calendar1999/CalendarKillEnemiesHard', name: '扭转劣势', description: '击杀1,000名敌人' },
+  { uniqueName: '/Lotus/Upgrades/Calendar/CompanionsRadiationChance', name: '友军余波', description: '分身或同伴的攻击有25%几率造成辐射异常状态。' },
+  { uniqueName: '/Lotus/Upgrades/Calendar/MeleeAttackSpeed', name: '绝不留情', description: '近战攻击速度 +25%。' },
+  { uniqueName: '/Lotus/Upgrades/Calendar/ElectricDamagePerDistance', name: '远距电击', description: '' },
+  { uniqueName: '/Lotus/Types/Challenges/Calendar1999/CalendarKillEnemiesWithAbilitiesEasy', name: '力量展现', description: '使用技能击杀 |COUNT| 名敌人' },
+  { uniqueName: '/Lotus/Types/Challenges/Calendar1999/CalendarKillEnemiesWithAbilitiesHard', name: '力量展现', description: '使用技能击杀 |COUNT| 名敌人' },
+  { uniqueName: '/Lotus/Types/Challenges/Calendar1999/CalendarKillEnemiesEasy', name: '平分秋色', description: '击杀 |COUNT| 名敌人' },
+  { uniqueName: '/Lotus/Types/Challenges/Calendar1999/CalendarKillEnemiesWithMeleeEasy', name: '游刃有余', description: '使用近战武器击杀 |COUNT| 名敌人' },
+  { uniqueName: '/Lotus/Types/Challenges/Calendar1999/CalendarKillEximusHard', name: '逝去卓越者', description: '击杀 |COUNT| 名卓越者' },
+  { uniqueName: '/Lotus/Types/Challenges/Calendar1999/CalendarDestroyPropsEasy', name: '饿死野兽', description: '摧毁 |COUNT| 个储存容器' },
+  { uniqueName: '/Lotus/Types/Challenges/Calendar1999/CalendarKillTankHard', name: '坦克清除行动', description: '摧毁 |COUNT| 辆坦克' },
+  { uniqueName: '/Lotus/Types/Challenges/Calendar1999/CalendarKillEnemiesMedium', name: '平分秋色', description: '击杀 |COUNT| 名敌人' },
+];
+
+let calendarStateZhPromise = null;
+export function getCalendarStateZhMap() {
+  calendarStateZhPromise ??= (async () => {
+    const map = new Map();
+    for (const entry of CALENDAR_STATE_SUPPLEMENT) map.set(entry.uniqueName, { name: entry.name, description: entry.description || '' });
+    try {
+      const entries = await cachedBuild(CALENDAR_STATE_CACHE, CALENDAR_STATE_TTL_MS, 1, async () => {
+        let rows = null;
+        for (let attempt = 0; attempt < 3 && !rows; attempt += 1) {
+          try { rows = await fetchJson(CALENDAR_STATE_URL); } catch { await new Promise((resolve) => setTimeout(resolve, 600 * (attempt + 1))); }
+        }
+        if (!Array.isArray(rows) || rows.length < 100) throw new Error('日历状态译名表过小');
+        return rows.filter((row) => row?.uniqueName && row?.name).map((row) => [row.uniqueName, { name: row.name, description: row.description || '' }]);
+      });
+      for (const [key, value] of entries) map.set(key, value); // 上游覆盖补充表
+    } catch { /* 退仅补充表 */ }
+    // 同时按尾段建索引（调用方可能只有路径尾段）
+    const byTail = new Map();
+    for (const [key, value] of map) {
+      const tail = key.split('/').pop().toLowerCase();
+      if (tail && !byTail.has(tail)) byTail.set(tail, value);
+    }
+    return { byPath: map, byTail };
+  })();
+  return calendarStateZhPromise;
+}
+
 // —— 遗物掉落来源反查：遗物基名（"Lith G1"）→ top 掉点 [{place, chance}]（按概率降序，最多 5 条） ——
 // 数据=WFCD drop-data 5 张表（任务轮次/特殊目标/三开放世界悬赏）；一次重建缓存 7 天，全遗物零逐条请求。
 // 已入库遗物天然无掉点（查无返回空数组），调用方按「已入库」文案处理。
@@ -682,12 +761,14 @@ export function getMarketPriceIndex() {
 }
 
 // 测试打桩：注入预置结果并复位单例
-export function __resetWfdataForTest({ challengeMap, eventMap, oracleConquestMap, officialTextMap, arbyTiers, bountyZh, calendarChallenges, seasonRequired, relicSources, priceIndex, langTable } = {}) {
+export function __resetWfdataForTest({ challengeMap, eventMap, oracleConquestMap, officialTextMap, arbyTiers, bountyZh, calendarChallenges, seasonRequired, relicSources, priceIndex, langTable, calendarStateZh } = {}) {
   langTablePromises = new Map();
   langTableStub = langTable;
   challengeZhPromise = challengeMap !== undefined ? Promise.resolve(challengeMap) : null;
   eventZhPromise = eventMap !== undefined ? Promise.resolve(eventMap) : null;
-  oracleConquestPromise = oracleConquestMap !== undefined ? Promise.resolve(oracleConquestMap) : null;
+  oracleConquestDataPromise = oracleConquestMap !== undefined
+    ? Promise.resolve({ byName: oracleConquestMap, byTail: new Map() })
+    : null;
   officialTextPromise = officialTextMap !== undefined ? Promise.resolve(officialTextMap) : null;
   arbyTiersPromise = arbyTiers !== undefined ? Promise.resolve(arbyTiers) : null;
   bountyZhPromise = bountyZh !== undefined ? Promise.resolve(bountyZh) : null;
@@ -695,4 +776,5 @@ export function __resetWfdataForTest({ challengeMap, eventMap, oracleConquestMap
   seasonRequiredPromise = seasonRequired !== undefined ? Promise.resolve(seasonRequired) : null;
   relicSourcesPromise = relicSources !== undefined ? Promise.resolve(relicSources) : null;
   priceIndexPromise = priceIndex !== undefined ? Promise.resolve(priceIndex) : null;
+  calendarStateZhPromise = calendarStateZh !== undefined ? Promise.resolve(calendarStateZh) : null;
 }

@@ -13,12 +13,13 @@
 ## 世界状态与静态资料
 
 - 世界状态：`GET https://api.warframestat.us/{platform}`；科研轮换可用子端点 `GET /{platform}/archimedeas` 做字段级补取
-- 科研词缀中文：`oracle.browse.wf/dicts/en.json` × `zh.json`，按英文显示名与相邻 `_Desc` 语言键自动配对；缓存 24 小时
+- 科研词缀中文：`oracle.browse.wf/dicts/en.json` × `zh.json`（227 键，其中 `/Lotus/Language/Conquest/` 200 键）。两份索引：英文显示名 → 候选（warframestat 路径用，按说明原文/数字消歧）；语言键尾段（剥 `Condition_/PersonalMod_/MissionVariant_[Lab|Hex]Conquest_` 前缀后）→ 候选（官方备用源只有路径尾段时直查，按 LAB/HEX 前缀消歧重名，如 Reinforcements＝LAB 协调阵线/HEX 支援）。名称与 `_Desc` 官方简中说明同源返回；缓存 24 小时
+- 科研轮换风险词缀：官方 worldState 的 `difficulties[].risks` 是数组，普通/精英难度逐项拆分（精英独有风险标 `isHard`），不再把数组逗号合并成一个查无的词缀键
 - 灵化武器等短文本：`browse.wf/warframe-public-export-plus/dict.en.json` × `dict.zh.json` 完整反向索引；缓存 7 天
 - 1999 挑战：`ExportChallenges.json` 提供语言键与 `requiredCount`，中文标题/说明从 Public Export 词典读取并替换 `|COUNT|`
 - 午夜电波挑战：主源有标题时使用 `ExportChallenges.json × dict.en/dict.zh`；DE 官方备用世界状态只有 `/Seasons/Weekly|WeeklyHard/<key>` 路径尾段时，直接按同路径从 AlecaFrame `lang.json` 读取官方简中名称。该路径级兜底覆盖刚换季、Public Export 挑战清单尚未收录的新 key
 - 午夜电波挑战的 `requiredCount` 没有 DE 官方来源：官方 worldState 的 `SeasonInfo.ActiveChallenges` 只含路径、Daily/Elite 标志与激活/过期时间。唯一可审计的计数来源是 `ExportChallenges.json`（browse.wf 的 warframe-public-export-plus 导出），周报自动核销依赖它，刷新 TTL 24 小时；key 尚未收录或刷新失败时显示未知、不猜数量、不自动核销（2026-08-17 实测：RadioLegionIntermission16 当前 10 条活跃挑战 10/10 已收录）
-- 1999 奖励：优先使用官方 `KnownCalendarSeasons.Days[].events[].reward` StoreItem 路径反查中文，不依赖解析器英文显示名
+- 1999 奖励：优先使用官方 `KnownCalendarSeasons.Days[].events[].reward` StoreItem 路径反查中文（lang.json 路径 → 目录父子关系 → Public Export 语言键尾段 → 日历状态中文表），不依赖解析器英文显示名；静态表只兜底个别别名（如 `ResourceDropChance3DayStoreItem`＝3 天资源掉落几率加成）
 - 平台路径：`pc / ps4 / xb1 / swi`；mobile 世界状态不支持
 - PC 实测顶层字段包括 `timestamp`、`fissures`、`alerts`、`invasions`、`voidTraders`、开放世界周期、`nightwave`、`arbitration`、`steelPath`、`archonHunt` 与 `duviriCycle`
 - 静态资料：`GET /warframes|weapons|items/search/{query}`；实测 `gauss` 和 `ignis` 成功
@@ -26,8 +27,9 @@
 - 该服务为社区数据源，实时答案必须显示 `timestamp`，不能把缓存知识冒充实时状态
 - 周报只缓存同一周内通过完整性校验的世界状态（LAB/HEX 各至少三关且未过期）；顶层响应漏科研字段时补取子端点，Cloudflare/接口临时失败时仅回退本周可靠缓存，不跨周复用
 - PC worldstate 主源 403 首次即打开 15 分钟端点熔断；网络/超时连续失败使用 30 秒起的指数退避（最高 5 分钟）。退避状态写入本地 `endpoint-health.v1.json`，跨短命令进程生效；官方源规范化后须通过裂缝、警报、入侵、活动、商人、赏金、科研、突击/执刑官、电波、回廊和 1999 日历字段合同
-- 科研词缀优先使用 Oracle 世界状态专用中英词典；在线刷新失败时退陈旧词典缓存，再退 `weekly-static.json`，无需逐周手工补表
+- 科研词缀优先使用 Oracle 世界状态专用中英词典（显示名 + 路径尾段双索引）；在线刷新失败时退陈旧词典缓存，再退 `weekly-static.json`，无需逐周手工补表
 - 1999 日历按官方路径逐事件对齐奖励/增益，挑战行同时显示官方标题、具体要求量和可用的个人进度
+- 1999 日历增益：DE 官方语言键与公开导出均不含增益名（实测 2026-08-18：`/Lotus/Upgrades/Calendar/*` 在 dict.en/dict.zh、lang.json、ExportUpgrades 全部查无）。周报改用社区维护状态中文表自动吸收——`KingPrimes/DataSource`（MIT）`warframe/state_translation.json`（按 uniqueName 索引的中文名+说明）＋ 内置 warframe-info-api（MIT）补充表（`MeleeAttackSpeed`＝绝不留情等），上游覆盖同键补充表，缓存 7 天，失败退陈旧缓存；`weekly-static.json` 的 `calendarUpgradeZhByPath` 既有手订译名仍优先。个别上游未收录的新增益（如 EnergyWavesOnCombo）保持诚实占位，上游补录后随缓存刷新自动生效，不再要求每周手工改表
 
 ## Warframe.Market v2
 

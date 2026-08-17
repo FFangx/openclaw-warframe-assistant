@@ -134,15 +134,26 @@ function normalizeConquests(entries) {
     id: `conquest:${entry.Type}:${isoOf(entry.Activation)}`,
     activation: isoOf(entry.Activation), expiry: isoOf(entry.Expiry),
     type: entry.Type, typeKey: entry.Type,
-    missions: (entry.Missions || []).map((mission) => ({
-      faction: factionOf(mission.faction), factionKey: mission.faction,
-      missionType: missionOf(mission.missionType), missionTypeKey: missionOf(mission.missionType),
-      deviation: mission.difficulties?.[0]?.deviation
-        ? { key: mission.difficulties[0].deviation, name: mission.difficulties[0].deviation, description: '' }
-        : null,
-      risks: [...new Set((mission.difficulties || []).flatMap((difficulty) => String(difficulty.risks || '').split(/\s+/u).filter(Boolean)))]
-        .map((key, index) => ({ key, name: key, description: '', isHard: index > 0 })),
-    })),
+    missions: (entry.Missions || []).map((mission) => {
+      // 官方 risks 是数组（如 ["RegeneratingEnemies","AntiMaterialWeapons"]）。旧实现把数组
+      // String() 后用空白切分，逗号合并键变成单条「RegeneratingEnemies,AntiMaterialWeapons」，
+      // 词缀译名链查无 → 整行落占位。这里逐项展开：普通难度风险在前，精英独有的风险 isHard。
+      const toKeys = (difficulty) => (Array.isArray(difficulty?.risks)
+        ? difficulty.risks
+        : String(difficulty?.risks || '').split(/[\s,]+/u)).filter(Boolean);
+      const normalDifficulty = (mission.difficulties || []).find((item) => item.type !== 'CD_HARD');
+      const hardDifficulty = (mission.difficulties || []).find((item) => item.type === 'CD_HARD');
+      const normalKeys = new Set(toKeys(normalDifficulty));
+      const riskKeys = [...new Set([...toKeys(normalDifficulty), ...toKeys(hardDifficulty)])];
+      return {
+        faction: factionOf(mission.faction), factionKey: mission.faction,
+        missionType: missionOf(mission.missionType), missionTypeKey: missionOf(mission.missionType),
+        deviation: mission.difficulties?.[0]?.deviation
+          ? { key: mission.difficulties[0].deviation, name: mission.difficulties[0].deviation, description: '' }
+          : null,
+        risks: riskKeys.map((key) => ({ key, name: key, description: '', isHard: !normalKeys.has(key) })),
+      };
+    }),
     personalModifiers: (entry.Variables || []).map((key) => ({ key, name: key, description: '' })),
   }));
 }

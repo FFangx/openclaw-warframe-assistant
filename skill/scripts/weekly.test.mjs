@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { archimedeaResearchProgress, calendarChallengeLine, calendarRewardZh, calendarUpgradeZh, evaluateAutoCheck, hasCompleteArchimedeas, localizeArchimedeaModifier, nightwaveChallengeZh } from './weekly.mjs';
+import { archimedeaResearchProgress, calendarChallengeLine, calendarRewardZh, calendarUpgradeZh, evaluateAutoCheck, hasCompleteArchimedeas, localizeArchimedeaModifier, nightwaveChallengeZh, weekStart } from './weekly.mjs';
 import { labsSection } from './weekly-mega-card.mjs';
 
 const calendarDays = [
@@ -54,15 +54,50 @@ test('1999 日历轮次不一致时拒绝使用陈旧快照', () => {
   assert.equal(result.auto['calendar-1999'], undefined);
 });
 
-test('深层科研 21 点能证明三关全通并显示距精英解锁 4 点', () => {
-  const now = Date.UTC(2026, 7, 12, 4);
+function conquestFixture({ now = Date.UTC(2026, 7, 12, 4), score = 21, tokens = null } = {}) {
+  const inventory = { EntratiLabConquestUnlocked: 1, EntratiLabConquestCacheScoreMission: score };
+  if (tokens) inventory.EchoesHexConquestBonusTokensGiven = tokens;
+  const previousWeek = weekStart(new Date(now - 7 * 86400000));
   const syncedAt = new Date(now - 60_000).toISOString();
-  const inventory = { EntratiLabConquestUnlocked: 1, EntratiLabConquestCacheScoreMission: 21 };
-  const progress = archimedeaResearchProgress(inventory, 'EntratiLab', now, syncedAt);
-  assert.equal(progress.completed, true);
-  assert.equal(progress.eliteThresholdReached, false);
-  assert.match(progress.text, /三关已完成.*距精英解锁 4 点/u);
-  const result = evaluateAutoCheck(inventory, null, now, null, syncedAt);
+  return {
+    now,
+    syncedAt,
+    inventory,
+    previousWeek,
+    samples: (extra = {}) => [{ kind: 'EntratiLab', weekStart: previousWeek, score: extra.score ?? score, tokens: extra.tokens ?? null, syncedAt, at: new Date(now - 86400000).toISOString() }],
+  };
+}
+
+test('深层科研 21 点 + 分数较上周变化时自动核销', () => {
+  const { now, syncedAt, inventory, samples } = conquestFixture({ score: 21 });
+  const result = evaluateAutoCheck(inventory, null, now, null, syncedAt, { conquestSamples: samples({ score: 18 }) });
+  assert.equal(result.auto['deep-archimedea'], true);
+  assert.match(result.progress['deep-archimedea'], /三关已完成.*距精英解锁 4 点/u);
+});
+
+test('深层科研分数与上周相同时不核销（快照携带上周遗留分）', () => {
+  const { now, syncedAt, inventory, samples } = conquestFixture({ score: 21 });
+  const result = evaluateAutoCheck(inventory, null, now, null, syncedAt, { conquestSamples: samples({ score: 21 }) });
+  assert.equal(result.auto['deep-archimedea'], undefined);
+  assert.match(result.progress['deep-archimedea'], /尚未确认本周完成/u);
+});
+
+test('深层科研没有历史样本时不核销，只显示诚实进度', () => {
+  const { now, syncedAt, inventory } = conquestFixture({ score: 21 });
+  const result = evaluateAutoCheck(inventory, null, now, null, syncedAt, { conquestSamples: [] });
+  assert.equal(result.auto['deep-archimedea'], undefined);
+  assert.match(result.progress['deep-archimedea'], /尚未确认本周完成/u);
+});
+
+test('本周电波征服挑战完成时，即使分数与上周相同也核销', () => {
+  const { now, syncedAt, samples } = conquestFixture({ score: 21 });
+  const inventory = {
+    EntratiLabConquestUnlocked: 1,
+    EntratiLabConquestCacheScoreMission: 21,
+    ChallengeProgress: [{ Name: 'SeasonWeeklyHardCompleteConquest', Progress: 1 }],
+  };
+  const worldState = { nightwave: { activeChallenges: [{ id: '1786924800000seasonweeklyhardcompleteconquest', isDaily: false, isElite: true }] } };
+  const result = evaluateAutoCheck(inventory, worldState, now, { seasonweeklyhardcompleteconquest: 1 }, syncedAt, { conquestSamples: samples({ score: 21 }) });
   assert.equal(result.auto['deep-archimedea'], true);
 });
 
@@ -137,19 +172,6 @@ test('本周科研接口出现的全部词缀键都有中文映射', () => {
   assert.deepEqual(currentKeys.filter((key) => !staticData.archimedeaZh[key]), []);
 });
 
-test('科研词缀优先使用 Oracle 正式中文并按英文说明区分重名候选', () => {
-  const oracle = new Map([['Sealed Armor', [
-    { name: '密闭装甲', descEn: 'Enemies take 95% less damage.', desc: '非弱点伤害降低 95%。' },
-    { name: '密闭装甲', descEn: 'Enemies take 90% less damage.', desc: '非弱点伤害降低 90%。' },
-  ]]]);
-  const result = localizeArchimedeaModifier({
-    key: 'FortifiedFoes',
-    name: 'Sealed Armor',
-    description: 'Enemies take 90% less damage.',
-  }, oracle, { FortifiedFoes: { name: '旧译名', desc: '旧说明' } });
-  assert.deepEqual(result, { name: '密闭装甲', desc: '非弱点伤害降低 90%。' });
-});
-
 test('科研词缀会用接口数值替换 Oracle 说明里的参数占位符', () => {
   const oracle = new Map([['Lethargic Shields', [{
     name: '嗜睡护盾',
@@ -195,6 +217,82 @@ test('1999 增益使用官方日历路径映射，开发占位项不再显示未
     { title: 'Radial Javelin On Heavy' },
     '/Lotus/Upgrades/Calendar/RadialJavelinOnHeavy',
   ), /上游数据仍为占位说明/u);
+});
+
+// —— 名称自动化：科研词缀尾段索引 / 日历状态中文表 / 官方语言键尾段 ——
+
+test('官方备用源科研词缀路径尾段经 Oracle 语言键直查并按 LAB/HEX 消歧', () => {
+  const tailMap = new Map([
+    ['reinforcements', [
+      { key: '/Lotus/Language/Conquest/MissionVariant_LabConquest_Reinforcements', name: '协调阵线', descEn: '', desc: '卓越者敌人出现并支援。' },
+    ]],
+    ['tankreinforcements', [
+      { key: '/Lotus/Language/Conquest/MissionVariant_HexConquest_TankReinforcements', name: '支援', descEn: '', desc: '战斗过程中会有敌方援军抵达。' },
+    ]],
+  ]);
+  assert.equal(
+    localizeArchimedeaModifier({ key: 'Reinforcements', name: 'Reinforcements', description: '' }, new Map(), {}, { tailMap, kind: 'LAB' }).name,
+    '协调阵线',
+  );
+  assert.equal(
+    localizeArchimedeaModifier({ key: 'TankReinforcements', name: 'TankReinforcements', description: '' }, new Map(), {}, { tailMap, kind: 'HEX' }).name,
+    '支援',
+  );
+});
+
+test('官方备用源科研词缀尾段命中时同时带出官方中文说明', () => {
+  const tailMap = new Map([['starvation', [
+    { key: '/Lotus/Language/Conquest/PersonalMod_Starvation', name: '弹药亏空', descEn: '', desc: '通过掉落和道具恢复的弹药减少 75%。' },
+  ]]]);
+  const result = localizeArchimedeaModifier({ key: 'Starvation', name: 'Starvation', description: '' }, new Map(), {}, { tailMap, kind: 'LAB' });
+  assert.equal(result.name, '弹药亏空');
+  assert.match(result.desc, /弹药减少 75%/u);
+});
+
+test('科研词缀英文显示名路径仍按说明数字区分重名候选', () => {
+  const oracle = new Map([['Sealed Armor', [
+    { name: '密闭装甲', descEn: 'Enemies take 95% less damage.', desc: '非弱点伤害降低 95%。' },
+    { name: '密闭装甲', descEn: 'Enemies take 90% less damage.', desc: '非弱点伤害降低 90%。' },
+  ]]]);
+  const result = localizeArchimedeaModifier({
+    key: 'FortifiedFoes',
+    name: 'Sealed Armor',
+    description: 'Enemies take 90% less damage.',
+  }, oracle, { FortifiedFoes: { name: '旧译名', desc: '旧说明' } });
+  assert.deepEqual(result, { name: '密闭装甲', desc: '非弱点伤害降低 90%。' });
+});
+
+test('1999 增益自动吸收社区状态中文表（完整路径与尾段均可，静态表优先）', () => {
+  const stateZh = {
+    byPath: new Map([['/Lotus/Upgrades/Calendar/MagazineCapacity', { name: '重型弹夹', description: '增加25% 的弹匣容量。' }]]),
+    byTail: new Map([['energywavesoncombo', { name: '连击能量波', description: '' }]]),
+  };
+  assert.equal(calendarUpgradeZh({ title: 'MagazineCapacity' }, '/Lotus/Upgrades/Calendar/MagazineCapacity', stateZh), '重型弹夹');
+  assert.equal(calendarUpgradeZh({ title: 'Energy Waves On Combo' }, '/Lotus/Upgrades/Calendar/EnergyWavesOnCombo', stateZh), '连击能量波');
+  // 静态表已有条目的既有译名优先于社区表
+  assert.match(calendarUpgradeZh({ title: 'OvershieldCap' }, '/Lotus/Upgrades/Calendar/OvershieldCap', stateZh), /^强化超护盾/u);
+  assert.match(calendarUpgradeZh({ title: 'MeleeAttackSpeed' }, '/Lotus/Upgrades/Calendar/MeleeAttackSpeed', stateZh), /新增日历增益/u);
+});
+
+test('1999 奖励按官方语言键尾段解析连接器类物品', () => {
+  const names = {
+    languageTailZhOf: (tail) => (String(tail).toLowerCase() === 'weaponmeleearcaneunlocker' ? '近战武器赋能槽连接器' : null),
+    zhOf: () => null, catalogZhOf: () => null, catalogTailZhOf: () => null, frameByTail: new Map(),
+  };
+  const zh = calendarRewardZh(
+    'WeaponMeleeArcaneUnlocker',
+    '/Lotus/StoreItems/Types/Items/MiscItems/WeaponMeleeArcaneUnlocker',
+    names,
+    new Map(),
+  );
+  assert.equal(zh, '近战武器赋能槽连接器');
+});
+
+test('1999 奖励 3 天资源加成按静态别名解析', () => {
+  assert.equal(
+    calendarRewardZh('ResourceDropChance3DayStoreItem', '/Lotus/StoreItems/Types/Items/MiscItems/ResourceDropChance3DayStoreItem', null, new Map()),
+    '3 天资源掉落几率加成',
+  );
 });
 
 // —— 电波 requiredCount 契约：官方世界状态不含计数，计数只来自 Public Export ——

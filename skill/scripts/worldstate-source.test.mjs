@@ -51,6 +51,33 @@ test('official world state normalizes the public query sections', async () => {
   );
 });
 
+test('official conquest risks are split per difficulty without comma-joined keys', async () => {
+  const now = Date.now();
+  const expiry = now + 60 * 60 * 1000;
+  const raw = {
+    Time: Math.floor(now / 1000),
+    ActiveMissions: [], VoidStorms: [], Alerts: [], Invasions: [], Goals: [],
+    Sorties: [], LiteSorties: [], VoidTraders: [], SyndicateMissions: [],
+    EndlessXpSchedule: [], KnownCalendarSeasons: [],
+    SeasonInfo: null,
+    Conquests: [{
+      Activation: date(now - 1000), Expiry: date(expiry), Type: 'CT_LAB', Variables: ['Starvation', 'DullBlades'],
+      Missions: [{
+        faction: 'FC_MITW', missionType: 'MT_ALCHEMY',
+        difficulties: [
+          { type: 'CD_NORMAL', deviation: 'AlchemicalShields', risks: ['RegeneratingEnemies'] },
+          { type: 'CD_HARD', deviation: 'AlchemicalShields', risks: ['RegeneratingEnemies', 'AntiMaterialWeapons'] },
+        ],
+      }],
+    }],
+  };
+  const state = await normalizeOfficialWorldState(raw, { nodes: {}, now });
+  const mission = state.archimedeas[0].missions[0];
+  assert.deepEqual(mission.risks.map((risk) => risk.key), ['RegeneratingEnemies', 'AntiMaterialWeapons']);
+  assert.deepEqual(mission.risks.map((risk) => risk.isHard), [false, true]);
+  assert.deepEqual(state.archimedeas[0].personalModifiers.map((mod) => mod.key), ['Starvation', 'DullBlades']);
+});
+
 test('official world state completeness contract rejects missing seasonal sections', () => {
   assert.throws(() => assertOfficialWorldStateContract({
     timestamp: new Date().toISOString(), fissures: [], alerts: [], invasions: [], events: [],

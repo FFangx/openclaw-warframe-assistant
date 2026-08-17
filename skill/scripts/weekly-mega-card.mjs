@@ -147,12 +147,13 @@ export function labsSection(data) {
       <span style="flex:0 0 auto;padding:2px 9px;border-radius:6px;font-size:14px;font-weight:800;color:${tagColor};border:1px solid ${tagColor}">${tag}</span>
       <span style="flex:0 0 auto;font-size:17px;font-weight:850;color:${C.text}">${escapeHtml(mod.name)}</span>
       <span style="font-size:16px;color:${C.sub};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(mod.desc)}</span></div>`;
-  const blockH = 42 + 32 + 30 + 30 + 14;
+  // 风险行数随轮换变化（普通风险 + 精英独有风险各占一行），高度按实际行数计算
+  const blockH = (mission) => 42 + 32 + 30 + (mission.risks?.length || 0) * 30 + 14;
   const rendered = data.labs.map((lab) => {
     const available = lab.missions.length >= 3 && lab.personal.length > 0;
     const progressH = lab.progress ? 34 : 0;
     const bodyH = available
-      ? 48 + progressH + 46 + blockH * lab.missions.length + 34 + lab.personal.length * 30 + 36
+      ? 48 + progressH + 46 + lab.missions.reduce((sum, mission) => sum + blockH(mission), 0) + 34 + lab.personal.length * 30 + 36
       : 200;
     const blocks = lab.missions.map((mission, index) => `
       <div style="margin-top:${index ? 14 : 0}px;border-bottom:1px solid #262A38;padding-bottom:0">
