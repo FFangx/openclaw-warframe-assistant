@@ -57,6 +57,10 @@ Language: zh-hans
 - 中文奖励名、杜卡德与实时在线挂单由 Warframe.Market v2 补全
 - 纪元映射：古纪=Lith，前纪=Meso，中纪=Neo，后纪=Axi；不得把“前纪 X1”误写成 Lith X1
 
+## 入侵/警报奖励译名兜底链
+
+世界状态里的入侵奖励是内部路径尾段（如 `GrineerCombatKnifeHeatsink`）。翻译顺序：拆词 → 别名归一（`grineer combat knife`→`sheev`，灰机wiki 口径，见 `scripts/reward-zh-fallback.mjs`）→ Market v2 zh-hans 整词 → 官方词典（bounty maps）→ 学习词典（`.cache/warframe-data/reward-zh-fallback.json`，种子：希芙及部件）→ 组件词元（亡魂/破坏者/枪机/散热片…）。全链查无才落「未收录奖励」；别名+词元组合出的译名会自动写回学习词典。别名新增必须有灰机wiki/官方词典依据，禁止凭猜测加泛词。
+
 ## 名称解析
 
 - 对 slug、英文名、简体中文官方名进行小写并移除空格、下划线、连字符后匹配

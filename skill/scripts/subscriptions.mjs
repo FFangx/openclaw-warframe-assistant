@@ -17,6 +17,7 @@ import {
 } from './warframe-cards.mjs';
 import { nextReset as weeklyNextReset, renderWeeklyDetailCardFor, weekStart as weeklyWeekStart } from './weekly.mjs';
 import { getArbyTiers, getBountyZhMaps, getOracleEventMap, stripDataUriReplacer } from './wfdata.mjs';
+import { applyRewardAliases, learnReward, mergeLearnedRewards } from './reward-zh-fallback.mjs';
 import { loadWorldState } from './worldstate-source.mjs';
 
 const MARKET_ITEMS_URL = 'https://api.warframe.market/v2/items';
@@ -86,6 +87,8 @@ const REWARD_TOKEN_ZH = Object.freeze({
   'Barrel': '枪管', 'Stock': '枪托', 'Blade': '刀刃', 'Handle': '握柄',
   'Chassis': '机体', 'Systems': '系统', 'Neuroptics': '头部神经光元',
   'Credits': '现金', 'Credit': '现金', 'Alad V': 'Alad V',
+  // 希芙（Sheev）部件与常见组件词（2026-08-17 灰机wiki 口径；配合 reward-zh-fallback 别名归一）
+  'Sheev': '希芙', 'Heatsink': '散热片', 'Hilt': '刀柄', 'Twin Vipers': '双子蝰蛇',
 });
 const rewardNameTranslations = new Map(Object.entries(REWARD_ZH).map(([english, chinese]) => [english.toLowerCase(), chinese]));
 const rewardTokenPattern = new RegExp(`\\b(${Object.keys(REWARD_TOKEN_ZH).sort((a, b) => b.length - a.length).map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`, 'giu');
@@ -763,6 +766,10 @@ async function primeRewardTranslations() {
           if (!rewardNameTranslations.has(english)) rewardNameTranslations.set(english, chinese);
         }
       } catch { /* 词典拉不到保持原链路 */ }
+      // 学习词典（灰机wiki 口径）最后补缺：只在 Market/官方都查无时兜底
+      try {
+        await mergeLearnedRewards(rewardNameTranslations);
+      } catch { /* 学习词典不可用不阻断主流程 */ }
     }
   })();
   return rewardTranslationsPromise;
@@ -772,16 +779,23 @@ function translateRewardName(value, translations = rewardNameTranslations) {
   const raw = normalize(value);
   if (!raw) return '';
   // DE official worldState.php exposes some invasion parts as compact path
-  // tails (for example StrunWraithStock), while both Market and the official
-  // text dictionary index their display names with word boundaries.
-  const lookupName = raw
+  // tails (for example GrineerCombatKnifeHeatsink), while both Market and the
+  // official text dictionary index their display names with word boundaries
+  // and community names (Sheev Heatsink).  Alias-normalize after the split so
+  // both the raw and the aliased display names get a dictionary chance.
+  const split = raw
     .replace(/([a-z\d])([A-Z])/gu, '$1 $2')
     .replace(/([A-Z])([A-Z][a-z])/gu, '$1 $2');
+  const lookupName = applyRewardAliases(split);
   const exact = translations.get(raw.toLowerCase())
-    || translations.get(lookupName.toLowerCase());
+    || translations.get(split.toLowerCase())
+    || translations.get(lookupName);
   if (exact) return exact;
   const translated = lookupName.replace(rewardTokenPattern, (match) => REWARD_TOKEN_ZH[Object.keys(REWARD_TOKEN_ZH).find((key) => key.toLowerCase() === match.toLowerCase())] || match);
-  return /[A-Za-z]{2,}/u.test(translated) ? '未收录奖励' : translated;
+  if (/[A-Za-z]{2,}/u.test(translated)) return '未收录奖励';
+  // 别名+组件词组合出的整词译名：写进学习词典，下次整词直达、来源可追溯
+  learnReward(lookupName, translated);
+  return translated;
 }
 
 function notificationSource(items) {

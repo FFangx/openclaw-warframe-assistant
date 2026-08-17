@@ -5,6 +5,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { buildFissureAlertCard, buildIntelCard, renderWarframeCard } from './warframe-cards.mjs';
+import { applyRewardAliases } from './reward-zh-fallback.mjs';
 import { loadWorldState } from './worldstate-source.mjs';
 
 const WS_BASE = 'https://api.warframestat.us';
@@ -144,7 +145,7 @@ const ZH_ITEM = {
 const ZH_ITEM_TOKENS = {
   Wraith: '亡魂', Vandal: '破坏者', Blueprint: '蓝图', Receiver: '枪机', Blade: '刀刃',
   Barrel: '枪管', Stock: '枪托', Handle: '握柄', Neuroptics: '头部神经光元', Chassis: '机体',
-  Systems: '系统', Sheev: '希芙', Dera: '德拉', Karak: '卡拉克', Snipetron: '狙击特昂',
+  Systems: '系统', Sheev: '希芙', Heatsink: '散热片', Hilt: '刀柄', Dera: '德拉', Karak: '卡拉克', Snipetron: '狙击特昂',
   Latron: '拉特昂', Strun: '斯特朗', Brakk: '布拉克', Detron: '德特昂', 'Twin Vipers': '双子蝰蛇',
   Marelok: '玛瑞火枪', Gorgon: '蛇发女妖', Credits: '现金', Forma: 'Forma', Endo: '内融核心',
   'Orokin Cell': '奥罗金电池', 'Argon Crystal': '氩结晶', Tellurium: '碲',
@@ -153,7 +154,11 @@ const ZH_ITEM_TOKEN_PATTERN = new RegExp(`\\b(${Object.keys(ZH_ITEM_TOKENS).sort
 function zhItem(value) {
   const str = String(value ?? '').trim();
   if (ZH_ITEM[str]) return ZH_ITEM[str];
-  const translated = str.replace(ZH_ITEM_TOKEN_PATTERN, (match) => ZH_ITEM_TOKENS[Object.keys(ZH_ITEM_TOKENS).find((k) => k.toLowerCase() === match.replace(/\s+/g, ' ').toLowerCase())] || match);
+  // 压缩路径尾段先拆词再别名归一（grineer combat knife → sheev），词元表才能命中
+  const spaced = applyRewardAliases(str
+    .replace(/([a-z\d])([A-Z])/gu, '$1 $2')
+    .replace(/([A-Z])([A-Z][a-z])/gu, '$1 $2'));
+  const translated = spaced.replace(ZH_ITEM_TOKEN_PATTERN, (match) => ZH_ITEM_TOKENS[Object.keys(ZH_ITEM_TOKENS).find((k) => k.toLowerCase() === match.replace(/\s+/g, ' ').toLowerCase())] || match);
   return /[A-Za-z]{2,}/u.test(translated) ? '未收录物品' : translated;
 }
 function zhNode(value) {
