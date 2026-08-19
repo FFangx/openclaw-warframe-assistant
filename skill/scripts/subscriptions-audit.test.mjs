@@ -112,6 +112,19 @@ test('全链查无的奖励名会排队进 AI 查证 inbox', async () => {
   assert.ok(pending.some((item) => item.english === 'totally unknown xyz thing'));
 });
 
+test('官方预翻译的混写奖励名保留拉丁专名、不进 inbox', async () => {
+  await clearPendingRewards();
+  // 2026-08-19 冥王星 Hades 入侵防守方实拍：世界状态直接给「异融 Alad V 导航坐标」
+  assert.equal(translateRewardName('异融 Alad V 导航坐标', new Map()), '异融 Alad V 导航坐标');
+  assert.equal(translateRewardName('暗影 Forma 蓝图', new Map()), '暗影 Forma 蓝图');
+  // 纯英文名即使带 Alad V 也照旧排队，不猜
+  assert.equal(translateRewardName('Totally Alad V Xyz Thing', new Map()), '未收录奖励');
+  await flushRewardQueues();
+  const pending = await readPendingRewards();
+  assert.ok(!pending.some((item) => item.english === '异融 alad v 导航坐标'));
+  assert.ok(pending.some((item) => item.english === 'totally alad v xyz thing'));
+});
+
 test('订阅卡来源只依据本次实际展示的情报', () => {
   const invasion = { type: 'invasion' };
   const scheduledArbitration = { type: 'arbitration', source: 'browse.wf' };

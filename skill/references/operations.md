@@ -41,6 +41,7 @@ SKILL.md 瘦身移入（2026-08-07）。这些规则的执行主体是脚本与 
 ## 未收录奖励 AI 查证闭环
 
 - 兜底链全链查无落「未收录奖励」时，把拆词后的内部名排队进 `.cache/warframe-data/reward-zh-inbox.json`（去重累计、上限 100、纯中文不入队），热路径不联网不调模型
+- 官方源预翻译的混写名（输入含中文、仅残留 Alad V/Forma 等官方保留专名）直接放行，不落占位也不进 inbox
 - 每日一条 agent 型 cron（查证需要网页搜索与判断，命令型 cron 不调模型）：读 inbox，逐键查证 Warframe.Market zh-hans / 灰机wiki
 - 有依据：`node skills/warframe-assistant/scripts/reward-zh-fallback.mjs learn --english <inbox键> --zh <纯中文名> --source <依据>`
   按同键回填学习词典并出队，下次推送直接命中；learn CLI 拒绝夹带英文的译名，词典只补缺不覆盖 Market/官方结果

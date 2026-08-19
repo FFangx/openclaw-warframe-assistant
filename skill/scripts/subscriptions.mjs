@@ -89,6 +89,8 @@ const REWARD_TOKEN_ZH = Object.freeze({
   'Credits': '现金', 'Credit': '现金', 'Alad V': 'Alad V',
   // 希芙（Sheev）部件与常见组件词（2026-08-17 灰机wiki 口径；配合 reward-zh-fallback 别名归一）
   'Sheev': '希芙', 'Heatsink': '散热片', 'Hilt': '刀柄', 'Twin Vipers': '双子蝰蛇',
+  // 官方简中刻意保留原名的拉丁专名（2026-08-19 冥王星 Hades 入侵实拍：混写名按词元还原大小写）
+  'Forma': 'Forma',
 });
 const rewardNameTranslations = new Map(Object.entries(REWARD_ZH).map(([english, chinese]) => [english.toLowerCase(), chinese]));
 const rewardTokenPattern = new RegExp(`\\b(${Object.keys(REWARD_TOKEN_ZH).sort((a, b) => b.length - a.length).map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`, 'giu');
@@ -793,11 +795,15 @@ function translateRewardName(value, translations = rewardNameTranslations) {
   if (exact) return exact;
   const translated = lookupName.replace(rewardTokenPattern, (match) => REWARD_TOKEN_ZH[Object.keys(REWARD_TOKEN_ZH).find((key) => key.toLowerCase() === match.toLowerCase())] || match);
   if (/[A-Za-z]{2,}/u.test(translated)) {
-    // 兜底链全链查无：把拆词后的内部名排队进 AI 查证 inbox（reward-zh-inbox.json），
-    // 每日定时任务会用 Market/灰机wiki 查证后按同一键回填学习词典，下次直接命中；
-    // 本进程不联网、不猜译名
-    queuePendingReward(split);
-    return '未收录奖励';
+    // 官方源可能已把奖励预翻译成中文，只保留官方简中刻意不译的拉丁专名
+    // （Alad V、Forma；2026-08-19 冥王星 Hades 入侵防守方「异融 Alad V 导航坐标」实拍）。
+    // 输入本身含中文才视为预翻译名，直接放行；纯英文输入照旧排队进 AI 查证 inbox，不猜译名
+    const isPreTranslated = /[\u4e00-\u9fff]/u.test(raw);
+    const leftover = translated.replace(/\b(Alad V|Forma)\b/giu, ' ');
+    if (!isPreTranslated || /[A-Za-z]{2,}/u.test(leftover)) {
+      queuePendingReward(split);
+      return '未收录奖励';
+    }
   }
   // 别名+组件词组合出的整词译名：写进学习词典，下次整词直达、来源可追溯
   learnReward(lookupName, translated);
