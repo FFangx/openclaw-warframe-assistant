@@ -7,7 +7,7 @@ import path from 'node:path';
 // 隔离缓存目录：模块在 import 时解析 WARFRAME_DATA_CACHE_DIR，必须先设再动态导入
 const cacheDir = await mkdtemp(path.join(os.tmpdir(), 'reward-zh-fallback-'));
 process.env.WARFRAME_DATA_CACHE_DIR = cacheDir;
-const { applyRewardAliases, getLearnedRewardTranslations, learnReward, mergeLearnedRewards } = await import('./reward-zh-fallback.mjs');
+const { applyRewardAliases, getLearnedRewardTranslations, learnReward, learnRewardVerified, mergeLearnedRewards, queuePendingReward, readPendingRewards, removePendingReward, clearPendingRewards, flushRewardQueues } = await import('./reward-zh-fallback.mjs');
 const { translateRewardName } = await import('./subscriptions.mjs');
 
 test.after(async () => {
@@ -63,4 +63,47 @@ test('真正未知的奖励保持诚实占位', () => {
 test('既有拆词回归：StrunWraithStock 仍整词命中', () => {
   const dict = new Map([['strun wraith stock', '斯特朗亡魂枪托']]);
   assert.equal(translateRewardName('StrunWraithStock', dict), '斯特朗亡魂枪托');
+});
+
+test('未知奖励进 inbox：去重累计、中文不入队、learn 同键回填并出队', async () => {
+  await clearPendingRewards();
+  await queuePendingReward('Grineer Combat Knife Sortie Blueprint');
+  await queuePendingReward('  GRINEER Combat Knife Sortie Blueprint ');
+  await queuePendingReward('电磁力场装置'); // 纯中文不入队
+  let pending = await readPendingRewards();
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].english, 'grineer combat knife sortie blueprint');
+  assert.equal(pending[0].count, 2);
+  assert.ok(pending[0].firstAt <= pending[0].lastAt);
+  // learn 回填：按 inbox 同键写词典 + 出 inbox；重复 learn 幂等
+  const first = await learnRewardVerified('grineer combat knife sortie blueprint', '希芙 蓝图', '灰机wiki');
+  assert.equal(first.ok, true);
+  assert.equal(first.removedFromInbox, true);
+  // 学习文件落盘校验（词典缓存模块级，直接读文件验证）
+  const { readFile } = await import('node:fs/promises');
+  const learnFile = path.join(cacheDir, 'reward-zh-fallback.json');
+  const stored = JSON.parse(await readFile(learnFile, 'utf8'));
+  assert.equal(stored.entries['grineer combat knife sortie blueprint'].zh, '希芙 蓝图');
+  assert.equal(stored.entries['grineer combat knife sortie blueprint'].source, '灰机wiki');
+  // 词典里已有该键后，翻译链路直接命中，不再落占位
+  assert.equal(translateRewardName('GrineerCombatKnifeSortieBlueprint', new Map()), '希芙 蓝图');
+  pending = await readPendingRewards();
+  assert.equal(pending.length, 0);
+  const second = await learnRewardVerified('grineer combat knife sortie blueprint', '希芙 蓝图', '灰机wiki');
+  assert.equal(second.ok, true);
+  assert.equal(second.removedFromInbox, false); // 已不在 inbox，静默幂等
+  await flushRewardQueues();
+});
+
+test('learn 回填拒绝夹带英文的译名，dismiss 干净出队', async () => {
+  await clearPendingRewards();
+  await queuePendingReward('Totally Unknown Xyz Thing');
+  const rejected = await learnRewardVerified('totally unknown xyz thing', 'Totally 未知', '灰机wiki');
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.error, /纯中文/);
+  assert.equal((await readPendingRewards()).length, 1);
+  assert.equal(await removePendingReward('totally unknown xyz thing'), true);
+  assert.equal((await readPendingRewards()).length, 0);
+  assert.equal(await removePendingReward('totally unknown xyz thing'), false);
+  await flushRewardQueues();
 });

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { appendFreshMatches, currentNotificationMatches, diagnoseSubscriptions, manageCommand, matchedBountyTarget, notificationSource, translateRewardName } from './subscriptions.mjs';
 import { buildIntelCard } from './warframe-cards.mjs';
+import { clearPendingRewards, flushRewardQueues, readPendingRewards } from './reward-zh-fallback.mjs';
 
 async function fixture(ledger, run) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'wf-sub-audit-'));
@@ -101,6 +102,14 @@ test('备用世界状态的连写入侵部件名可命中简中目录', () => {
   assert.equal(translateRewardName('GrineerCombatKnifeSortieBlueprint', translations), '希芙 蓝图');
   const full = new Map([...translations, ['dera vandal stock', '德拉·破坏者 枪托']]);
   assert.equal(translateRewardName('DeraVandalStock', full), '德拉·破坏者 枪托');
+});
+
+test('全链查无的奖励名会排队进 AI 查证 inbox', async () => {
+  await clearPendingRewards();
+  assert.equal(translateRewardName('TotallyUnknownXyzThing', new Map()), '未收录奖励');
+  await flushRewardQueues();
+  const pending = await readPendingRewards();
+  assert.ok(pending.some((item) => item.english === 'totally unknown xyz thing'));
 });
 
 test('订阅卡来源只依据本次实际展示的情报', () => {

@@ -17,7 +17,7 @@ import {
 } from './warframe-cards.mjs';
 import { nextReset as weeklyNextReset, renderWeeklyDetailCardFor, weekStart as weeklyWeekStart } from './weekly.mjs';
 import { getArbyTiers, getBountyZhMaps, getOracleEventMap, stripDataUriReplacer } from './wfdata.mjs';
-import { applyRewardAliases, learnReward, mergeLearnedRewards } from './reward-zh-fallback.mjs';
+import { applyRewardAliases, learnReward, mergeLearnedRewards, queuePendingReward } from './reward-zh-fallback.mjs';
 import { loadWorldState } from './worldstate-source.mjs';
 
 const MARKET_ITEMS_URL = 'https://api.warframe.market/v2/items';
@@ -792,7 +792,13 @@ function translateRewardName(value, translations = rewardNameTranslations) {
     || translations.get(lookupName);
   if (exact) return exact;
   const translated = lookupName.replace(rewardTokenPattern, (match) => REWARD_TOKEN_ZH[Object.keys(REWARD_TOKEN_ZH).find((key) => key.toLowerCase() === match.toLowerCase())] || match);
-  if (/[A-Za-z]{2,}/u.test(translated)) return '未收录奖励';
+  if (/[A-Za-z]{2,}/u.test(translated)) {
+    // 兜底链全链查无：把拆词后的内部名排队进 AI 查证 inbox（reward-zh-inbox.json），
+    // 每日定时任务会用 Market/灰机wiki 查证后按同一键回填学习词典，下次直接命中；
+    // 本进程不联网、不猜译名
+    queuePendingReward(split);
+    return '未收录奖励';
+  }
   // 别名+组件词组合出的整词译名：写进学习词典，下次整词直达、来源可追溯
   learnReward(lookupName, translated);
   return translated;

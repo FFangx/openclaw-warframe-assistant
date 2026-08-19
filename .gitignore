@@ -1,3 +1,4 @@
 .export-manifest.txt
 node_modules/
 *.bak
+.cache/

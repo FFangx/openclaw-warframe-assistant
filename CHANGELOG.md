@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+### 新增
+
+- 未收录奖励 AI 查证闭环：兜底链查无时把拆词后的内部名写入 `reward-zh-inbox.json`；`reward-zh-fallback.mjs` 新增 `learn/dismiss/inbox` CLI；每日 agent 型 cron 用网页搜索查证 Market/灰机wiki 后按同键回填学习词典，下次推送直接命中，查无实据 `dismiss` 保持诚实占位。
+
 ### 修复
 
 - 入侵奖励兜底链补上希芙蓝图：DE 世界状态把该配方写成 `GrineerCombatKnifeSortieBlueprint`，别名归一新增 `sheev sortie blueprint → sheev blueprint`，学习词典种子补「希芙蓝图」；火卫一 Gulliver 入侵不再落「未收录奖励」。

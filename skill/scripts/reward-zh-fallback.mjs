@@ -13,7 +13,7 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const DATA_DIR = process.env.WARFRAME_DATA_CACHE_DIR
   || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '.cache', 'warframe-data');
@@ -105,4 +105,145 @@ export async function mergeLearnedRewards(target) {
     }
   }
   return added;
+}
+
+// ————————————————————————————————————————————————————————————————
+// 未收录奖励 inbox（AI 查证闭环，2026-08-19）
+//
+// 全链查无落「未收录奖励」时，把原始内部名排队进 inbox 文件；每日 AI 定时任务
+// 读取后用 Market/灰机wiki 查证：有依据的 learn 回填学习词典，查无实据的 dismiss
+// 保持诚实占位。词典仍只补缺、不覆盖 Market/官方结果，卡片上永远是有据的译名。
+//
+// 文件：.cache/warframe-data/reward-zh-inbox.json
+//   { "version": 1, "items": { "<小写英文显示名>": { "firstAt": ms, "lastAt": ms, "count": n } } }
+// ————————————————————————————————————————————————————————————————
+
+const INBOX_FILE = path.join(DATA_DIR, 'reward-zh-inbox.json');
+const INBOX_MAX_ITEMS = 100;
+
+function normalizeKey(value) {
+  return String(value || '').normalize('NFKC').replace(/[\u3000\s]+/gu, ' ').trim().toLowerCase();
+}
+
+async function readInboxItems() {
+  try {
+    const raw = JSON.parse(await readFile(INBOX_FILE, 'utf8'));
+    return raw && typeof raw === 'object' && raw.items ? raw.items : {};
+  } catch {
+    return {};
+  }
+}
+
+async function writeInboxItems(items) {
+  await mkdir(DATA_DIR, { recursive: true });
+  await writeFile(INBOX_FILE, JSON.stringify({ version: 1, items }, null, 2), 'utf8');
+}
+
+let inboxQueue = Promise.resolve();
+// 记录一个待查证名（异步静默；只收含英文的名，中文/空值不入队，重复只累计计数）
+export function queuePendingReward(rawName) {
+  const key = normalizeKey(rawName);
+  if (!key || !/[a-z]{2,}/u.test(key)) return inboxQueue;
+  inboxQueue = inboxQueue.then(async () => {
+    try {
+      const items = await readInboxItems();
+      if (!items[key] && Object.keys(items).length >= INBOX_MAX_ITEMS) {
+        // 满员且是新名：清掉最久未见的一条再收
+        const oldest = Object.entries(items).sort((left, right) => (left[1].lastAt || 0) - (right[1].lastAt || 0))[0];
+        if (oldest) delete items[oldest[0]];
+      }
+      const previous = items[key] || {};
+      items[key] = { firstAt: previous.firstAt ?? Date.now(), lastAt: Date.now(), count: (previous.count || 0) + 1 };
+      await writeInboxItems(items);
+    } catch { /* inbox 不可用不影响主流程 */ }
+  }).catch(() => {});
+  return inboxQueue;
+}
+
+// 当前待查证清单（最近出现优先）
+export async function readPendingRewards() {
+  const items = await readInboxItems();
+  return Object.entries(items)
+    .map(([english, meta]) => ({ english, ...meta }))
+    .sort((left, right) => (right.lastAt || 0) - (left.lastAt || 0));
+}
+
+// 从 inbox 移除一条（learn 成功后或查无实据 dismiss）
+export async function removePendingReward(english) {
+  const key = normalizeKey(english);
+  const items = await readInboxItems();
+  if (!items[key]) return false;
+  delete items[key];
+  await writeInboxItems(items);
+  return true;
+}
+
+// 测试/排障用：清空 inbox（先等排队中的写入落盘再清，避免竞态）
+export async function clearPendingRewards() {
+  await inboxQueue.catch(() => {});
+  await writeInboxItems({});
+}
+
+// 查证回填入口（供 AI 定时任务调用）：写学习词典 + 出 inbox；译名必须纯中文
+export async function learnRewardVerified(english, zh, source = '灰机wiki') {
+  const key = normalizeKey(english);
+  const name = String(zh || '').trim();
+  if (!key || !name) return { ok: false, error: 'english 与 zh 均不能为空' };
+  if (/[A-Za-z]{2,}/u.test(name)) return { ok: false, error: '译名必须为纯中文，禁止夹带英文' };
+  await learnReward(key, name, source);
+  const removed = await removePendingReward(key);
+  return { ok: true, english: key, zh: name, source, removedFromInbox: removed };
+}
+
+// 测试/调用方等待持久化队列落盘
+export function flushRewardQueues() {
+  return Promise.all([persistQueue, inboxQueue]);
+}
+
+// CLI：AI 查证闭环的读写入口（node reward-zh-fallback.mjs <inbox|learn|dismiss>）
+//   inbox  → 输出待查证清单 JSON
+//   learn  → --english <小写英文名> --zh <纯中文名> [--source <灰机wiki|Warframe.Market>]
+//   dismiss→ --english <小写英文名> [--reason <说明>]
+function parseCliArgs(argv) {
+  const args = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (token.startsWith('--')) {
+      const key = token.slice(2);
+      const value = argv[index + 1] && !argv[index + 1].startsWith('--') ? argv[++index] : true;
+      args[key] = value;
+    }
+  }
+  return args;
+}
+
+async function runCli([command, ...rest]) {
+  const args = parseCliArgs(rest);
+  if (command === 'inbox') {
+    const items = await readPendingRewards();
+    return { ok: true, count: items.length, items: items.map((item) => ({
+      english: item.english,
+      count: item.count,
+      firstAt: new Date(item.firstAt).toISOString(),
+      lastAt: new Date(item.lastAt).toISOString(),
+    })) };
+  }
+  if (command === 'learn') {
+    return await learnRewardVerified(args.english, args.zh, String(args.source || '灰机wiki'));
+  }
+  if (command === 'dismiss') {
+    const removed = await removePendingReward(args.english);
+    return { ok: true, removed, english: normalizeKey(args.english), reason: String(args.reason || '') || null };
+  }
+  return { ok: false, error: '用法：node reward-zh-fallback.mjs <inbox|learn|dismiss> [--english X --zh Y --source S --reason R]' };
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  runCli(process.argv.slice(2)).then((result) => {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    process.exitCode = result.ok === false ? 1 : 0;
+  }).catch((error) => {
+    process.stdout.write(`${JSON.stringify({ ok: false, error: String(error?.message || error) }, null, 2)}\n`);
+    process.exitCode = 1;
+  });
 }
