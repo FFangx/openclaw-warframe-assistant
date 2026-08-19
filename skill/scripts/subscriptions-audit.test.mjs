@@ -97,6 +97,10 @@ test('备用世界状态的连写入侵部件名可命中简中目录', () => {
   ]);
   assert.equal(translateRewardName('StrunWraithStock', translations), '斯特朗·亡魂 枪托');
   assert.equal(translateRewardName('DeraVandalBarrel', translations), '德拉·破坏者 枪管');
+  // 2026-08-19 火卫一 Gulliver 实拍回归：进攻方希芙蓝图（Sortie 路径词）/ 防守方德拉枪托
+  assert.equal(translateRewardName('GrineerCombatKnifeSortieBlueprint', translations), '希芙 蓝图');
+  const full = new Map([...translations, ['dera vandal stock', '德拉·破坏者 枪托']]);
+  assert.equal(translateRewardName('DeraVandalStock', full), '德拉·破坏者 枪托');
 });
 
 test('订阅卡来源只依据本次实际展示的情报', () => {

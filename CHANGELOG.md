@@ -3,6 +3,12 @@
 本文件记录面向用户和运维者的可见变化，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 发布由 `release.ps1` 执行：读取根目录 `VERSION`，把 `[Unreleased]` 章节落成带日期的版本章节，然后提交并打 `vX.Y.Z` 标签。
 
+## [Unreleased]
+
+### 修复
+
+- 入侵奖励兜底链补上希芙蓝图：DE 世界状态把该配方写成 `GrineerCombatKnifeSortieBlueprint`，别名归一新增 `sheev sortie blueprint → sheev blueprint`，学习词典种子补「希芙蓝图」；火卫一 Gulliver 入侵不再落「未收录奖励」。
+
 ## [1.0.0] - 2026-08-17
 
 

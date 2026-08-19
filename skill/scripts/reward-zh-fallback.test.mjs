@@ -20,14 +20,24 @@ test('别名归一：Grineer Combat Knife → Sheev（灰机wiki 口径）', () 
   assert.equal(applyRewardAliases('strun wraith stock'), 'strun wraith stock');
 });
 
+test('别名归一：希芙蓝图配方尾段去掉 Sortie 路径词', () => {
+  assert.equal(applyRewardAliases('grineer combat knife sortie blueprint'), 'sheev blueprint');
+  assert.equal(applyRewardAliases('sheev sortie blueprint'), 'sheev blueprint');
+  assert.equal(applyRewardAliases('sheev blueprint'), 'sheev blueprint');
+});
+
 test('世界状态压缩尾段 + 别名 + 词典整词命中', () => {
   const dict = new Map([['sheev heatsink', '希芙散热片']]);
   assert.equal(translateRewardName('GrineerCombatKnifeHeatsink', dict), '希芙散热片');
+  // 2026-08-19 火卫一 Gulliver 入侵实拍：希芙蓝图配方尾段带 Sortie 路径词，归一后整词命中 Market
+  const blueprintDict = new Map([['sheev blueprint', '希芙 蓝图']]);
+  assert.equal(translateRewardName('GrineerCombatKnifeSortieBlueprint', blueprintDict), '希芙 蓝图');
 });
 
 test('无词典时别名+组件词元兜底，不落未收录奖励', () => {
   assert.equal(translateRewardName('GrineerCombatKnifeHeatsink', new Map()), '希芙 散热片');
   assert.equal(translateRewardName('GrineerCombatKnifeBlade', new Map()), '希芙 刀刃');
+  assert.equal(translateRewardName('GrineerCombatKnifeSortieBlueprint', new Map()), '希芙 蓝图');
 });
 
 test('组合译名会写入学习词典并可供整词直达', async () => {

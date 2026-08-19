@@ -24,6 +24,10 @@ const LEARN_FILE = path.join(DATA_DIR, 'reward-zh-fallback.json');
 export const REWARD_ALIAS_PHRASES = Object.freeze([
   // 灰机wiki「希芙」条目：Sheev 的世界状态内部名是 GrineerCombatKnife
   ['grineer combat knife', 'sheev'],
+  // DE 世界状态把希芙蓝图配方尾段写成 GrineerCombatKnifeSortieBlueprint（2026-08-19
+  // 火卫一 Gulliver 入侵进攻方奖励实拍），Market 整词键是 Sheev Blueprint；夹在中间的
+  // Sortie 是配方路径词，归一掉才能整词命中（灰机wiki「希芙蓝图」= Market Sheev Blueprint）
+  ['sheev sortie blueprint', 'sheev blueprint'],
 ]);
 
 // 学习词典种子（2026-08-17，灰机wiki「希芙」条目口径）
@@ -32,6 +36,7 @@ const SEED_ENTRIES = Object.freeze({
   'sheev blade': { zh: '希芙刀刃', source: '灰机wiki' },
   'sheev heatsink': { zh: '希芙散热片', source: '灰机wiki' },
   'sheev hilt': { zh: '希芙刀柄', source: '灰机wiki' },
+  'sheev blueprint': { zh: '希芙蓝图', source: '灰机wiki' },
 });
 
 async function readLearned() {

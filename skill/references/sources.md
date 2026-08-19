@@ -61,7 +61,7 @@ Language: zh-hans
 
 ## 入侵/警报奖励译名兜底链
 
-世界状态里的入侵奖励是内部路径尾段（如 `GrineerCombatKnifeHeatsink`）。翻译顺序：拆词 → 别名归一（`grineer combat knife`→`sheev`，灰机wiki 口径，见 `scripts/reward-zh-fallback.mjs`）→ Market v2 zh-hans 整词 → 官方词典（bounty maps）→ 学习词典（`.cache/warframe-data/reward-zh-fallback.json`，种子：希芙及部件）→ 组件词元（亡魂/破坏者/枪机/散热片…）。全链查无才落「未收录奖励」；别名+词元组合出的译名会自动写回学习词典。别名新增必须有灰机wiki/官方词典依据，禁止凭猜测加泛词。
+世界状态里的入侵奖励是内部路径尾段（如 `GrineerCombatKnifeHeatsink`）。翻译顺序：拆词 → 别名归一（`grineer combat knife`→`sheev`、`sheev sortie blueprint`→`sheev blueprint` 等，灰机wiki 口径，见 `scripts/reward-zh-fallback.mjs`；配方尾段夹带的 `Sortie` 是 DE 路径词，不归一就无法与 Market 的 `Sheev Blueprint` 整词对上）→ Market v2 zh-hans 整词 → 官方词典（bounty maps）→ 学习词典（`.cache/warframe-data/reward-zh-fallback.json`，种子：希芙及部件含蓝图）→ 组件词元（亡魂/破坏者/枪机/散热片…）。全链查无才落「未收录奖励」；别名+词元组合出的译名会自动写回学习词典。别名新增必须有灰机wiki/官方词典依据，禁止凭猜测加泛词。
 
 ## 名称解析
 
