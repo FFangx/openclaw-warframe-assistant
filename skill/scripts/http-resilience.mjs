@@ -7,6 +7,13 @@ const DEFAULT_STATE_DIR = process.env.WARFRAME_DATA_CACHE_DIR
 const DEFAULT_STATE_FILE = path.join(DEFAULT_STATE_DIR, 'endpoint-health.v1.json');
 const fileWriteQueues = new Map();
 
+// 持久化健康状态（endpoint-health.v1.json）字段白名单：
+//   当前状态   consecutiveFailures / lastSuccessAt / lastFailureAt / lastCategory / lastStatus / openedAt / openUntil
+//   累计遥测   totalFailures / failureCategoryCounts / failureStatusCounts / circuitOpenCount
+// 累计遥测在每次最终请求失败时 +1（类别/HTTP 状态分别累计），每次新打开熔断 circuitOpenCount +1；
+// 成功恢复只清当前连续失败/开路状态，累计计数保留。旧 v1 文件缺累计字段仍可读（按 0 起步）。
+// 绝不记录 URL、响应体、请求头或凭据。
+
 export class EndpointRequestError extends Error {
   constructor(message, diagnostic, cause = null) {
     super(message, cause ? { cause } : undefined);
@@ -152,6 +159,11 @@ export async function resilientJsonRequest(url, options = {}) {
           const healthy = {
             consecutiveFailures: 0, lastSuccessAt: now(), lastFailureAt: previous.lastFailureAt || null,
             lastCategory: null, lastStatus: null, openUntil: null, openedAt: null,
+            // 成功恢复：只清当前连续失败/开路状态，累计遥测保留
+            totalFailures: Number(previous.totalFailures || 0),
+            failureCategoryCounts: { ...(previous.failureCategoryCounts || {}) },
+            failureStatusCounts: { ...(previous.failureStatusCounts || {}) },
+            circuitOpenCount: Number(previous.circuitOpenCount || 0),
           };
           await writeEndpoint(healthStore, endpoint, healthy, states);
           return data;
@@ -179,6 +191,13 @@ export async function resilientJsonRequest(url, options = {}) {
   const openMs = shouldOpen ? cooldownFor({
     ...last, consecutiveFailures, baseOpenMs, maxOpenMs, forbiddenOpenMs,
   }) : 0;
+  const failureCategoryCounts = { ...(previous.failureCategoryCounts || {}) };
+  failureCategoryCounts[last.category] = (failureCategoryCounts[last.category] || 0) + 1;
+  const failureStatusCounts = { ...(previous.failureStatusCounts || {}) };
+  if (last.status != null) {
+    const statusKey = String(last.status);
+    failureStatusCounts[statusKey] = (failureStatusCounts[statusKey] || 0) + 1;
+  }
   const failed = {
     consecutiveFailures,
     lastSuccessAt: previous.lastSuccessAt || null,
@@ -187,6 +206,11 @@ export async function resilientJsonRequest(url, options = {}) {
     lastStatus: last.status,
     openedAt: shouldOpen ? failedAt : null,
     openUntil: shouldOpen ? failedAt + openMs : null,
+    // 累计遥测：每次最终请求失败 totalFailures/类别/HTTP 状态各 +1；每次新打开熔断 circuitOpenCount +1
+    totalFailures: Number(previous.totalFailures || 0) + 1,
+    failureCategoryCounts,
+    failureStatusCounts,
+    circuitOpenCount: Number(previous.circuitOpenCount || 0) + (shouldOpen ? 1 : 0),
   };
   await writeEndpoint(healthStore, endpoint, failed, states);
   throw new EndpointRequestError(`endpoint request failed: ${endpoint} (${last.category})`, {

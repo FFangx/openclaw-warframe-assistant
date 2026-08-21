@@ -43,10 +43,23 @@ SKILL.md 瘦身移入（2026-08-07）。这些规则的执行主体是脚本与 
 - 兜底链全链查无落「未收录奖励」时，把拆词后的内部名排队进 `.cache/warframe-data/reward-zh-inbox.json`（去重累计、上限 100、纯中文不入队），热路径不联网不调模型
 - 官方源预翻译的混写名（输入含中文、仅残留 Alad V/Forma 等官方保留专名）直接放行，不落占位也不进 inbox
 - 每日一条 agent 型 cron（查证需要网页搜索与判断，命令型 cron 不调模型）：读 inbox，逐键查证 Warframe.Market zh-hans / 灰机wiki
+- **任务定义可部署**：`config/cron/reward-zh-ai.job.json`（declarationKey `warframe-assistant:reward-zh-ai:default`，每日 24h、isolated 会话、agentTurn 提示词含 `{{SKILL_SCRIPTS_DIR}}`/`{{OWNER_C2C}}` 占位符）是该任务的唯一源码合同。`install.ps1` 幂等创建/修复（同 key 即同一任务；只修合同字段，**绝不改动用户既有投递目标**；非真实工作区或 `-SkipCron` 时跳过，避免测试触碰真实 cron 存储）；`verify.ps1` 在源码层校验合同文件（`tests/reward-zh-cron-contract.test.ps1`），运行时层只读校验任务存在/启用/每日/isolated
 - 有依据：`node skills/warframe-assistant/scripts/reward-zh-fallback.mjs learn --english <inbox键> --zh <纯中文名> --source <依据>`
-  按同键回填学习词典并出队，下次推送直接命中；learn CLI 拒绝夹带英文的译名，词典只补缺不覆盖 Market/官方结果
+  按同键回填学习词典并出队，下次推送直接命中；learn CLI 拒绝夹带英文的译名，词典只补缺不覆盖 Market/官方结果，种子键（希芙及部件）不可被 learn 覆盖
 - 查无实据：`dismiss --english <键>` 出队，保持诚实占位；禁止凭猜测翻译
 - inbox 为空时只回复 `NO_REPLY`，不打扰 QQ 会话
+- **持久化与并发**：inbox/学习词典的读写全部经进程内串行队列（入队/出队/清空同队列，先入队后 dismiss 不会复活条目）+ 临时文件 rename 原子落盘；多进程并发（订阅监测与每日任务分属不同进程）时最坏是丢失一次更新，文件不会损坏
+- **测试隔离铁律**：任何跑 inbox/学习词典的测试必须先把 `WARFRAME_DATA_CACHE_DIR` 指向临时目录（2026-08-21 实拍：`subscriptions-audit.test.mjs` 未隔离，把合成名 `totally alad v xyz thing` 写进了真实运行时与仓库缓存目录的 inbox，且清空过真实 inbox；模块已改为按需解析该环境变量，测试在文件顶部设置即可生效）
+
+## 数据源漂移监控（只读诊断）
+
+- `scripts/drift-report.mjs` 是纯函数漂移检测模块：统计 + 可审计键样本，零凭据、零联网、零写入，禁止用于生产告警、cron、缓存写入或运行时改动
+- 单次只读 CLI：`node scripts/drift-report.mjs health [--health <endpoint-health.v1.json>]` 输出 Market/worldstate 端点健康聚合（端点数、熔断中数、失败类别次数、最近失败/成功时间、各端点退避状态）；只输出白名单字段，即使文件混入 url/headers/token/body 也不外泄
+- 电波挑战漂移（缺 requiredCount/路径译名/关键字段）只报统计与键样本，绝不猜数量；`checkoffSafe=false` 只表示自动核销被保守禁用，不是完成判定
+- 科研词缀与 1999 日历增益占位统计不接收、不输出任何个人分数/快照字段
+- 商店装配泄漏扫描：合成未知名必须落中文占位；`scanZhTableLeaks` 可对当前 `weekly-static.json` 用户可见中文表逐值扫描（合法英文保留词走白名单）
+- DE 官方 worldState 结构漂移：关键集合缺失/畸形 → `cacheable=false`（拒绝写可靠缓存），与 `hasCompleteArchimedeas` 的周报可靠缓存口径叠加
+- 完整覆盖见 `scripts/drift-report.test.mjs`（随 `verify.ps1 -SourceOnly` 运行）
 
 ## AlecaFrame 快照边界
 

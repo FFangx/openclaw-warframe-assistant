@@ -3,9 +3,21 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+
+// 隔离奖励缓存目录：reward-zh-fallback 的 inbox/学习词典必须落在临时目录，
+// 否则本文件的合成 fixture（如 totally alad v xyz thing）会写进真实运行时或
+// 仓库缓存目录的 reward-zh-inbox.json（2026-08-21 实拍泄漏，两条缓存都被污染）。
+// 模块按需解析 WARFRAME_DATA_CACHE_DIR（延迟到首次读写），在此设置即可生效。
+const rewardCacheDir = await mkdtemp(path.join(os.tmpdir(), 'wf-sub-audit-reward-cache-'));
+process.env.WARFRAME_DATA_CACHE_DIR = rewardCacheDir;
+
 import { appendFreshMatches, currentNotificationMatches, diagnoseSubscriptions, manageCommand, matchedBountyTarget, notificationSource, translateRewardName } from './subscriptions.mjs';
 import { buildIntelCard } from './warframe-cards.mjs';
 import { clearPendingRewards, flushRewardQueues, readPendingRewards } from './reward-zh-fallback.mjs';
+
+test.after(async () => {
+  await rm(rewardCacheDir, { recursive: true, force: true });
+});
 
 async function fixture(ledger, run) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'wf-sub-audit-'));

@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildRelicFarmPlan, classifyRelicSources } from './relic-farm.mjs';
 import { buildRelicFarmCard, buildRelicFarmSetCard, buildShortcutContextEnvelope, buildShortcutNextActions, parseNaturalWorldQuestion, parseShortcutMessage } from './shortcuts.mjs';
+import { renderNextActions } from './card-actions.mjs';
+import { buildWhereToBuyCard } from './vendor-shop-card.mjs';
 
 const target = { name: 'Synthetic Prime Systems Blueprint', zhName: '合成 Prime 系统蓝图', slug: 'synthetic_prime_systems_blueprint', chance: 2, rarity: 'rare' };
 const matches = [
@@ -17,6 +19,78 @@ test('正式获取短命令走确定性路线，口语获取问法只由自然�
   assert.equal(parseShortcutMessage('怎么刷 悟空Prime系统蓝图'), null);
   assert.deepEqual(parseNaturalWorldQuestion('悟空系统在哪里获得'), { kind: 'relic-farm', command: '获取 悟空系统', personal: false });
   assert.deepEqual(parseNaturalWorldQuestion('悟空系统哪里出'), { kind: 'relic-reverse', command: '遗物 悟空系统', personal: false });
+});
+
+test('哪里刷/怎么刷/哪里买/在哪换是自然语言问法，规范到获取/购买而不是快捷命令', () => {
+  // 快捷命令入口只认正式的「获取」「购买」前缀
+  assert.deepEqual(parseShortcutMessage('获取 悟空Prime系统蓝图'), { command: 'relic-farm', query: '悟空Prime系统蓝图' });
+  assert.deepEqual(parseShortcutMessage('购买 诡文枭主'), { command: 'where-to-buy', query: '诡文枭主' });
+  for (const colloquial of [
+    '悟空Prime系统蓝图哪里刷', '哪里刷 悟空Prime系统蓝图', '怎么刷 悟空Prime系统蓝图', '悟空Prime系统蓝图怎么刷',
+    '诡文枭主在哪里买', '诡文枭主哪里买', '诡文枭主在哪换', '诡文枭主哪里换',
+    '哪里买 诡文枭主', '在哪换 诡文枭主', '怎么买 诡文枭主', '去哪买 诡文枭主',
+  ]) {
+    assert.equal(parseShortcutMessage(colloquial), null, colloquial);
+  }
+  // 自然语言路由把口语规范成正式命令：刷/获得→获取，买/换/兑换→购买
+  assert.deepEqual(parseNaturalWorldQuestion('Caliban p哪里刷'), { kind: 'relic-farm', command: '获取 Caliban p', personal: false });
+  assert.deepEqual(parseNaturalWorldQuestion('怎么刷 Caliban p'), { kind: 'relic-farm', command: '获取 Caliban p', personal: false });
+  assert.deepEqual(parseNaturalWorldQuestion('诡文枭主在哪里买'), { kind: 'where-to-buy', command: '购买 诡文枭主', personal: false });
+  assert.deepEqual(parseNaturalWorldQuestion('诡文枭主在哪换'), { kind: 'where-to-buy', command: '购买 诡文枭主', personal: false });
+  assert.deepEqual(parseNaturalWorldQuestion('哪里买 诡文枭主'), { kind: 'where-to-buy', command: '购买 诡文枭主', personal: false });
+  assert.deepEqual(parseNaturalWorldQuestion('在哪换 诡文枭主'), { kind: 'where-to-buy', command: '购买 诡文枭主', personal: false });
+  assert.deepEqual(parseNaturalWorldQuestion('怎么买 诡文枭主'), { kind: 'where-to-buy', command: '购买 诡文枭主', personal: false });
+});
+
+test('获取 X 的整套上下文保留实体规范名，下一句「这个甲多少钱」可直接续查市价', () => {
+  const rewards = [
+    { name: 'Synthetic Prime Blueprint', zhName: '合成 Prime 蓝图', slug: 'synthetic_prime_blueprint', chance: 11 },
+    { name: 'Synthetic Prime Neuroptics Blueprint', zhName: '合成 Prime 头部神经光元 蓝图', slug: 'synthetic_prime_neuroptics_blueprint', chance: 2 },
+    { name: 'Synthetic Prime Chassis Blueprint', zhName: '合成 Prime 机体 蓝图', slug: 'synthetic_prime_chassis_blueprint', chance: 25.33 },
+    { name: 'Synthetic Prime Systems Blueprint', zhName: '合成 Prime 系统 蓝图', slug: 'synthetic_prime_systems_blueprint', chance: 2 },
+  ];
+  const setMatches = rewards.map((reward, index) => ({ name: `Lith S${index + 1}`, vaulted: false, rewards: [reward] }));
+  const data = buildRelicFarmPlan({ query: '合成 p', matches: setMatches, sourceMap: {}, bountyChecked: true });
+  assert.equal(data.ok, true);
+  assert.equal(data.setMode, true);
+  data.nextActions = buildShortcutNextActions(data, { query: '合成 p' });
+  const envelope = buildShortcutContextEnvelope(data, { query: '合成 p' });
+  // 实体：整套战甲，displayName 给模型看，canonicalName 可直接拼成 wm 查询
+  assert.deepEqual(envelope.entities[0], { type: 'prime-set', displayName: '合成 Prime', canonicalName: 'Synthetic Prime' });
+  const priceFollowup = parseShortcutMessage(`wm ${envelope.entities[0].canonicalName}`);
+  assert.deepEqual(priceFollowup, { command: 'market', query: 'Synthetic Prime' });
+  // 信封携带的 nextActions 与卡片渲染的是同一份 {command,label} 数据
+  assert.deepEqual(envelope.nextActions, data.nextActions);
+  assert.equal(envelope.scope, 'public');
+});
+
+test('nextActions 与卡片提示、上下文信封使用同一结构且内容一致', () => {
+  // Prime 整套市价卡 → 提示获取路线
+  const marketData = { ok: true, kind: 'market', query: '夜灵p', item: { name: 'Revenant Prime Set', zhName: 'Revenant Prime Set' }, sell: [{ platinum: 100 }], buy: [], fetchedAt: '2026-08-21T00:00:00.000Z' };
+  marketData.nextActions = buildShortcutNextActions(marketData, { query: '夜灵p' });
+  assert.deepEqual(marketData.nextActions, [{ command: '获取 Revenant Prime', label: '查看获取路线' }]);
+  const marketEnvelope = buildShortcutContextEnvelope(marketData, { query: '夜灵p' });
+  assert.deepEqual(marketEnvelope.nextActions, marketData.nextActions);
+  assert.equal(marketEnvelope.entities[0].type, 'market-item');
+  const marketChips = renderNextActions(marketData.nextActions);
+  for (const action of marketData.nextActions) assert.match(marketChips, new RegExp(action.command.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
+
+  // 购买反查卡 → 提示市价 + 商人货单
+  const buyData = {
+    ok: true, kind: 'where-to-buy', query: '诡文枭主',
+    hits: [{ itemName: '诡文枭主', vendorZh: '泰辛', availability: '常驻' }], total: 1,
+    fetchedAt: '2026-08-21T00:00:00.000Z',
+  };
+  buyData.nextActions = buildShortcutNextActions(buyData, { query: '诡文枭主' });
+  assert.deepEqual(buyData.nextActions, [
+    { command: 'wm 诡文枭主', label: '查看玩家市场' },
+    { command: '商店 泰辛', label: '查看商人货单' },
+  ]);
+  const buyEnvelope = buildShortcutContextEnvelope(buyData, { query: '诡文枭主' });
+  assert.deepEqual(buyEnvelope.nextActions, buyData.nextActions);
+  assert.deepEqual(buyEnvelope.entities[0], { type: 'shop-item', displayName: '诡文枭主', canonicalName: '诡文枭主' });
+  const buyCard = buildWhereToBuyCard(buyData, buyData.fetchedAt);
+  for (const action of buyData.nextActions) assert.match(buyCard.html, new RegExp(action.command.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
 });
 
 test('获取结果生成可复用的下一步动作与安全上下文', () => {

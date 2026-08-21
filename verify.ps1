@@ -62,7 +62,7 @@ function Test-TreeParity([string]$Source, [string]$Destination, [string]$TreeNam
 function Test-InstallerLifecycle {
   $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('warframe-install-test-' + [guid]::NewGuid().ToString('N'))
   try {
-    & (Join-Path $repoRoot 'install.ps1') -Workspace $testRoot -SkipAgents -SkipPreflight
+    & (Join-Path $repoRoot 'install.ps1') -Workspace $testRoot -SkipAgents -SkipPreflight -SkipCron
     if ($LASTEXITCODE -ne 0) { throw "initial install failed: $LASTEXITCODE" }
     $skillTarget = Join-Path $testRoot 'skills\warframe-assistant'
     $staleRelative = 'scripts/obsolete-managed-test.mjs'
@@ -72,7 +72,7 @@ function Test-InstallerLifecycle {
     $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath | ConvertFrom-Json
     $manifest.files = @($manifest.files) + [pscustomobject]@{ path = $staleRelative; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $stalePath).Hash.ToLowerInvariant() }
     [IO.File]::WriteAllText($manifestPath, (($manifest | ConvertTo-Json -Depth 8) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
-    & (Join-Path $repoRoot 'install.ps1') -Workspace $testRoot -SkipAgents -SkipPreflight
+    & (Join-Path $repoRoot 'install.ps1') -Workspace $testRoot -SkipAgents -SkipPreflight -SkipCron
     if ($LASTEXITCODE -ne 0) { throw "upgrade install failed: $LASTEXITCODE" }
     if (Test-Path -LiteralPath $stalePath) { throw 'stale managed file was not removed from runtime' }
     $backup = Get-ChildItem -LiteralPath (Join-Path $testRoot '.openclaw\warframe-assistant-deploy-backups') -Recurse -File -Filter 'obsolete-managed-test.mjs' -ErrorAction SilentlyContinue
@@ -93,6 +93,12 @@ Invoke-Checked 'source extension contract tests' {
   try { & node --test *.test.mjs } finally { Pop-Location }
 }
 if (-not $SkipInstallerTest) { Invoke-Checked 'installer lifecycle and stale-file quarantine' { Test-InstallerLifecycle } }
+Invoke-Checked 'release changelog contract tests' {
+  & (Join-Path $repoRoot 'tests\release-changelog.test.ps1')
+}
+Invoke-Checked 'reward-zh daily task contract tests' {
+  & (Join-Path $repoRoot 'tests\reward-zh-cron-contract.test.ps1')
+}
 
 if (-not $SourceOnly) {
   if (-not $Workspace) { $failures.Add('runtime verification: workspace cannot be resolved') }
@@ -139,6 +145,34 @@ if (-not $SourceOnly) {
       }
       if (-not $helpData -or -not $helpData.ok -or -not $helpData.handled -or -not $helpData.mediaUrl -or -not (Test-Path -LiteralPath $helpData.mediaUrl -PathType Leaf)) { throw "help command did not render a verifiable card result: $helpError" }
       Write-Host 'dispatch catalog and help-card rendering are healthy'
+    }
+    Invoke-Checked 'runtime reward-zh AI cron contract' {
+      $jobsRaw = & openclaw.cmd cron list --json 2>&1
+      if ($LASTEXITCODE -ne 0) { throw 'openclaw cron list failed' }
+      $text = ($jobsRaw -join "`n")
+      $start = $text.IndexOfAny([char[]]('[', '{'))
+      if ($start -lt 0) { throw 'openclaw cron list produced no JSON' }
+      $payload = $text.Substring($start) | ConvertFrom-Json
+      $jobs = @()
+      try { if ($null -ne $payload.jobs) { $jobs = @($payload.jobs) } } catch { }
+      if ($jobs.Count -eq 0 -and $payload -is [System.Array]) { $jobs = @($payload) }
+      $matched = @($jobs | Where-Object { [string]$_.declarationKey -eq 'warframe-assistant:reward-zh-ai:default' })
+      if ($matched.Count -eq 0) { throw 'daily reward-zh AI cron job missing; run install.ps1 to apply config/cron/reward-zh-ai.job.json' }
+      $entry = $matched[0]
+      $entryProps = @($entry.PSObject.Properties.Name)
+      $enabled = if ($entryProps -contains 'enabled') { [bool]$entry.enabled } else { $false }
+      if (-not $enabled) { throw 'daily reward-zh AI cron job is disabled' }
+      $scheduleObj = if ($entryProps -contains 'schedule') { $entry.schedule } else { $null }
+      $everyMs = 0
+      if ($null -ne $scheduleObj) {
+        $scheduleProps = @($scheduleObj.PSObject.Properties.Name)
+        if ($scheduleProps -contains 'everyMs') { $everyMs = [int64]$scheduleObj.everyMs }
+        elseif ($scheduleProps -contains 'every_ms') { $everyMs = [int64]$scheduleObj.every_ms }
+      }
+      if ($everyMs -ne 86400000) { throw "daily reward-zh AI cron schedule is not daily (everyMs=$everyMs)" }
+      $sessionTarget = if ($entryProps -contains 'sessionTarget') { [string]$entry.sessionTarget } else { '' }
+      if ($sessionTarget -ne 'isolated') { throw 'daily reward-zh AI cron session target is not isolated' }
+      Write-Host 'reward-zh AI cron contract verified: enabled, daily, isolated agent job'
     }
     if (-not $SkipDoctor) { Invoke-Checked 'runtime environment doctor' { & node (Join-Path $skillTarget 'scripts\doctor.mjs') } }
     if (-not $SkipPluginDoctor) { Invoke-Checked 'OpenClaw plugin doctor' { & openclaw.cmd plugins doctor } }

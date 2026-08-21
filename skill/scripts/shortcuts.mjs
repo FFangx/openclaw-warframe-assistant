@@ -1769,8 +1769,13 @@ export function parseNaturalWorldQuestion(message) {
     return { kind: 'weekly', command: '周常', personal: true };
   }
 
-  // 哪里买：「X在哪买/哪里换」——买/换 语义走商店反查，区别于下方 whereDrop 的 出/掉/刷（掉落语义）
-  const whereBuy = text.match(/^(.{1,20}?)(?:是|在|去)?(?:哪里|哪儿|哪)(?:能|可以)?(?:买|换|兑换)/u);
+  // 哪里买：「X在哪买/哪里换」——买/换 语义走商店反查，区别于下方 whereDrop 的 出/掉/刷（掉落语义）。
+  // 两种语序都收：物品在前（「诡文枭主哪里买」「诡文枭主在哪换」）或问词在前
+  // （「哪里买 诡文枭主」「在哪换 诡文枭主」「怎么买 诡文枭主」）；问词在前优先，
+  // 否则「在哪换 X」会被物品在前规则把「在」误当物品。
+  const whereBuyVerbFirst = text.match(/^(?:去|在)?(?:哪里|哪儿|哪|怎么)(?:能|可以)?(?:买|换|兑换)(.{1,20}?)$/u);
+  const whereBuyItemFirst = text.match(/^(.{1,20}?)(?:是|在|去)?(?:哪里|哪儿|哪)(?:能|可以)?(?:买|换|兑换)/u);
+  const whereBuy = whereBuyVerbFirst || whereBuyItemFirst;
   if (whereBuy) {
     const item = String(whereBuy[1] || '').replace(/[啊呀呢了吗么?？!！。.~～\s]+$/u, '').trim();
     if (item && item.length <= 16) return { kind: 'where-to-buy', command: `购买 ${item}`, personal: false };

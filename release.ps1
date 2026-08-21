@@ -16,8 +16,15 @@ param(
 # Gates (all must pass):
 #   1. Clean work tree, on branch main, HEAD == origin/main.
 #   2. Version is valid semver and the tag v<version> does not exist yet.
-#   3. CHANGELOG.md has exactly one non-empty [Unreleased] section.
+#   3. CHANGELOG.md starts with an empty [Unreleased] placeholder and has exactly
+#      one non-empty pending "## [<version>]" section matching VERSION
+#      (structure contract enforced by release-changelog.ps1).
 #   4. verify.ps1 -SourceOnly passes (source tests + installer lifecycle).
+#
+# Changelog convention: new entries go under the pending "## [<version>]" section;
+# the top-level [Unreleased] stays as an empty placeholder. On release the pending
+# section is stamped with the release date. This prevents the duplicate
+# [Unreleased]/[1.0.0] sections that the v1.0.0 release produced (2026-08-17).
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -27,6 +34,8 @@ $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $versionPath = Join-Path $repoRoot 'VERSION'
 $changelogPath = Join-Path $repoRoot 'CHANGELOG.md'
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+. (Join-Path $repoRoot 'release-changelog.ps1')
 
 function Read-Utf8([string]$Path) {
   return [IO.File]::ReadAllText($Path, [Text.Encoding]::UTF8)
@@ -69,31 +78,11 @@ function Get-Version {
 }
 
 function Get-ChangelogRelease([string]$ReleaseVersion) {
-  $text = (Read-Utf8 $changelogPath).Replace("`r`n", "`n")
-  $lines = New-Object 'System.Collections.Generic.List[string]'
-  $lines.AddRange([string[]]($text -split "`n", -1))
-  $unreleasedIndex = -1
-  for ($i = 0; $i -lt $lines.Count; $i++) {
-    if ($lines[$i] -eq '## [Unreleased]') {
-      if ($unreleasedIndex -ge 0) { throw 'CHANGELOG.md has more than one [Unreleased] section.' }
-      $unreleasedIndex = $i
-    }
-  }
-  if ($unreleasedIndex -lt 0) { throw 'CHANGELOG.md has no [Unreleased] section.' }
-  $entries = New-Object System.Collections.Generic.List[string]
-  $nextHeaderIndex = -1
-  for ($i = $unreleasedIndex + 1; $i -lt $lines.Count; $i++) {
-    if ($lines[$i] -match '^## ') { $nextHeaderIndex = $i; break }
-    if ($lines[$i].Trim()) { $entries.Add($lines[$i]) }
-  }
-  if ($entries.Count -eq 0) { throw 'The [Unreleased] section is empty; add changelog entries before releasing.' }
-  $date = (Get-Date).ToString('yyyy-MM-dd')
-  $lines[$unreleasedIndex] = "## [$ReleaseVersion] - $date"
-  # 新 [Unreleased] 占位插在内容之后（下一个版本章节之前），内容必须留在已发布章节名下
-  $insertAt = if ($nextHeaderIndex -ge 0) { $nextHeaderIndex } else { $lines.Count }
-  $lines.Insert($insertAt, '')
-  $lines.Insert($insertAt, '## [Unreleased]')
-  return ($lines -join "`n")
+  # Structure contract lives in release-changelog.ps1 (pure function, unit-tested):
+  # stamps the date onto the pending "## [<version>]" section and refuses to touch
+  # the [Unreleased] placeholder, so release runs can never re-create duplicate
+  # sections or misattribute entries.
+  return ConvertTo-ReleasedChangelog -Text (Read-Utf8 $changelogPath) -ReleaseVersion $ReleaseVersion
 }
 
 function Test-Gates {
@@ -140,7 +129,7 @@ $newChangelog = Get-ChangelogRelease $releaseVersion
 
 if ($DryRun) {
   Write-Host 'DryRun: nothing was written. Changelog header would become:'
-  ($newChangelog -split "`n") | Select-Object -First 6 | ForEach-Object { Write-Host "  $_" }
+  ($newChangelog -split "`n") | Select-Object -First 10 | ForEach-Object { Write-Host "  $_" }
   if ($versionChanged) { Write-Host "DryRun: VERSION would change to $releaseVersion" }
   Write-Host "DryRun: commit message: release v$releaseVersion"
   exit 0

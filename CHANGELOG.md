@@ -1,9 +1,11 @@
 # Changelog
 
 本文件记录面向用户和运维者的可见变化，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
-发布由 `release.ps1` 执行：读取根目录 `VERSION`，把 `[Unreleased]` 章节落成带日期的版本章节，然后提交并打 `vX.Y.Z` 标签。
+发布由 `release.ps1` 执行：读取根目录 `VERSION`，把 `## [<版本>]` 待发布章节落成带日期的版本章节（顶层 `[Unreleased]` 保持空占位），然后提交并打 `vX.Y.Z` 标签。
 
 ## [Unreleased]
+
+## [1.1.0]
 
 ### 新增
 
@@ -12,34 +14,38 @@
 - `获取/购买/wm/遗物/裂缝/商店`卡片新增结构化“下一步”命令提示，和 AI 上下文复用同一份`nextActions`。
 - `获取 <Prime部件|战甲p>`获取路线：复用遗物反查、WFCD 掉点、当前赏金和可选本机库存，具体部件给详细候选，战甲简称给四部件总览；按“库存优先→当前赏金/常驻节点→条件或悬赏轮换”给行动路线，并明确展示遗物掉率、目标开奖率与非时间口径的联合概率。
 - 未收录奖励 AI 查证闭环：兜底链查无时把拆词后的内部名写入 `reward-zh-inbox.json`；`reward-zh-fallback.mjs` 新增 `learn/dismiss/inbox` CLI；每日 agent 型 cron 用网页搜索查证 Market/灰机wiki 后按同键回填学习词典，下次推送直接命中，查无实据 `dismiss` 保持诚实占位。
+- 科研词缀、1999 日历奖励与增益名称自动解析（官方语言键尾段索引 + 社区状态表兜底、7 天缓存），不再要求逐周手改 `weekly-static.json`。
+- 数据源漂移监控（`drift-report.mjs`，只读诊断）：午夜电波挑战 requiredCount/译名/关键字段缺失、科研词缀与 1999 日历增益占位、商店装配内部名泄漏、DE 官方 worldState 结构漂移与端点健康熔断聚合，全部输出统计＋可审计键样本，零凭据、零联网、零写入；`node scripts/drift-report.mjs health` 单次读取 `endpoint-health.v1.json` 输出脱敏聚合（次数/类别/最近时间/退避状态），`doctor.mjs` 端点健康区同步显示聚合行。
+- Prime 奖励估值索引生成器（`prime-reward-index.mjs`，独立安全 CLI）：从全量遗物奖励表（现有正式 Relics.json 数据链，本地只读、缺失走 CDN 兜底）中筛出英文规范名含独立单词 Prime 的可交易奖励（明确排除 Forma/Requiem 等），与现有可靠成交统计（今日/90 日成交中位＋日均量，Prime MOD 用 rank 0 口径）预热成 WFInfo 同目录标准索引 `%APPDATA%\WFInfo\prime_reward_prices.json`（schemaVersion=1，含 generatedAt/expiresAt、覆盖统计与按 OCR 英文规范名索引的 platinum/basis/dailyVolume，只有可靠成交统计、platinum > 0 且基准为今日/90 日才入）。默认 24h TTL、并发 ≤4、同目录临时文件完整写入后单次原子 rename 替换（目标替换失败绝不触碰现有文件，旧文件路径与字节原样保留）；新鲜缓存零联网复用，generatedAt 明显晚于当前时间（>5 分钟）拒绝复用，过期/损坏/刷新失败诚实上报且绝不覆盖上一份文件；CLI 支持 `--output/--ttl-hours/--concurrency/--limit/--force`。
+
+### 变更
+
+- 已开封紫卡列表卡估价与详情页同口径：按词条相似度的拍卖估价（词条全同/正词条全同/共享≥2 三档区间，样本<3 标注「相似样本不足」，行情不可用诚实降级）。
 
 ### 修复
 
+- 周常科研自动核销要求本周得分证据（分数较上周样本变化、午夜电波相关挑战进度或 HEX 令牌变化），无证据只显示「快照显示 X 研究点 · 尚未确认本周完成」，绝不核销；无历史样本的首周同样保守。
 - 周常科研自动核销开始核对 AlecaFrame 的 `EntratiVaultCountResetDate` 周重置边界；字段已推进到下一周界时，即使本周研究点与上周相同也能正确核销，过期或错位字段继续保守拒绝。
 - 官方源预翻译的混写奖励名（如「异融 Alad V 导航坐标」）不再因残留官方保留的拉丁专名（Alad V/Forma）落「未收录奖励」，也不进 AI inbox；纯英文名照旧排队查证。
+- 未收录奖励 inbox 学习闭环加固：inbox/学习词典读写全部经同一串行队列并以临时文件 rename 原子落盘，「先入队后 dismiss」不再可能被排队中的写入复活条目，崩溃/中断不再留下半写 JSON；种子词典键（希芙及部件）不可被 learn 覆盖。
+- 修复 `subscriptions-audit.test.mjs` 未隔离缓存目录的问题：测试运行会把合成 fixture（如 `totally alad v xyz thing`）写进真实运行时与仓库缓存目录的 `reward-zh-inbox.json`（2026-08-21 实拍泄漏），现在测试强制使用临时目录，且模块改为按需解析 `WARFRAME_DATA_CACHE_DIR`。
 - 入侵奖励兜底链补上希芙蓝图：DE 世界状态把该配方写成 `GrineerCombatKnifeSortieBlueprint`，别名归一新增 `sheev sortie blueprint → sheev blueprint`，学习词典种子补「希芙蓝图」；火卫一 Gulliver 入侵不再落「未收录奖励」。
-
-## [1.0.0] - 2026-08-17
-
-
+- 入侵奖励「未收录奖励」根治：显示名先经别名归一（`grineer combat knife`→`sheev` 等）再查词典，并新增持久化学习词典 `.cache/warframe-data/reward-zh-fallback.json`（种子：希芙/刀刃/散热片/刀柄），组合译名自动写回（只补缺、不覆盖 Market/官方结果）。
+- 战甲强化 Mod（uniqueName 以 `Card` 结尾的 Powersuits 路径）在掉落/库存卡上显示官方中文名（如「摆荡钩索」），不再漏出英文；掉落卡缓存 key 升 `drops-v9`。
+- 未开封紫卡估价恢复：wm 统计行对未开封紫卡无 `mod_rank`，不再被 `Number(null)===0` 误滤成无价，保持成交中位口径。
+- 修复 `release.ps1` 在 git 推送进度输出触发 `NativeCommandError` 时中断的问题（2026-08-17 首次发布实锤）；并修复版本折叠后内容错挂到新 `[Unreleased]` 章节的结构问题。
 
 ### 工程
 
-- 新增 Windows CI（`.github/workflows/ci.yml`）：push/PR/tag 触发，运行源码 Skill 测试、扩展契约测试、安装器生命周期与陈旧文件隔离验证（`verify.ps1 -SourceOnly`），不接触真实 QQ、个人快照或凭据。
-- 新增发布闭环：根目录 `VERSION` 作为版本唯一来源；`release.ps1` 强制干净工作树、`main` 与远端一致、源码验证通过、tag 不存在，并生成版本化 CHANGELOG 章节与 `vX.Y.Z` 标签。
-- 受管部署的 `.warframe-assistant-build.json` 开始记录 `version`，Skill 与插件必须同一版本构建。
+- 每日「奖励译名 AI 查证」任务具备可部署合同：`config/cron/reward-zh-ai.job.json`（declarationKey `warframe-assistant:reward-zh-ai:default`，每日 24h、isolated agent 会话）成为该任务的唯一源码来源；`install.ps1` 幂等创建/修复（保留既有投递目标，测试工作区或 `-SkipCron` 时跳过，不触碰真实 cron），`verify.ps1` 源码层校验合同（`tests/reward-zh-cron-contract.test.ps1`）、运行时层只读校验任务存在/启用/每日/isolated。
+- WFInfo 配套合同：奸商目标模式在策略缺价时读取同目录标准 `prime_reward_prices.json` 兜底（策略内价格始终优先；索引 schema/时间/字段严格校验，缺失、损坏、过期、generatedAt 明显晚于当前时间（>5 分钟）或全部条目无效时整体忽略，条目级无效价格（platinum 非有限正数、basis 非今日/90 日口径、成交量非有限或为负）逐项跳过、旧别名 90d/90-day 规范化为 90days，并维持原有缺价安全停判；索引有效期不超出策略有效期）。
 
 ### 测试
 
-- 新增 `alecaframe.mjs` 白名单解析回归。
-- 新增紫卡（rivens）解析回归。
-- 新增轮换日历回归。
-- 新增关键卡片渲染结构回归（固定 HTML 结构断言）。
-- 扩充 Market 主流程错误分类合同。
-
-### 文档
-
-- 用户指南补齐赏金/突击/钢铁侵袭、商店、本周好货、轮换日历、紫卡、订阅诊断与新午夜电波回退语义。
+- 新增未收录奖励学习闭环回归：CLI 子进程级 `inbox→learn→词典命中→出队` 与 `inbox→dismiss→出队`、100 项上限挤兑、并发入队去重累计与原子落盘、dismiss 与排队写入的串行顺序、种子键不可覆盖、学习词典不覆盖 Market/官方译名。
+- 新增每日任务端到端模拟（`reward-zh-daily-task.test.mjs`）：以静态证据表替换联网+模型判断，其余全走真实 CLI 子进程，验证每日 agent 任务全链与空 inbox 的 `NO_REPLY` 分支，零联网零模型。
+- 新增漂移监控合同测试（`drift-report.test.mjs`，全部零联网零凭据）：电波挑战缺失统计不猜数字且自动核销被保守禁用、科研词缀/日历增益占位统计不含个人分数、合成未知名装配必须落中文占位、当前 `weekly-static.json` 用户可见中文表逐值零泄漏扫描、DE 官方 worldState 关键集合缺失拒绝写可靠缓存、端点健康白名单脱敏聚合与 CLI 只读子进程验证。
+- 新增 Prime 奖励索引回归（`prime-reward-index.test.mjs`，全部零联网零凭据）：构建口径与覆盖统计、严格校验（schema/时间/未来 generatedAt/过期/负有效期/条目逐项跳过/空结果拒绝）、集合来源（仅 Intact 行/按英文名去重/无 slug 跳过/仅含独立单词 Prime 且排除 Forma/Requiem）、新鲜缓存零联网复用、过期与损坏重建、刷新失败保旧文件、原子替换失败注入（写临时或 rename 任意错误时旧目标路径与字节不变、无临时残留）、并发上限、并行性能粗测、原子写入无残留、CLI 参数错误与离线 fresh 子进程。
 
 ## [1.0.0] - 2026-08-17
 
@@ -73,9 +79,18 @@
 - 可重复构建：`.gitattributes` 固定 LF（`003697c`）。
 - `verify.ps1` 全链路验证：源码/运行时测试、安装器生命周期、哈希一致性、入口冒烟、doctor、插件 doctor、Gateway 状态。
 - 证据协议：所有状态性结论携带 `scope/evidenceType/asOf/expiresAt/freshness/finding/source`（`d970a31`）。
+- 新增 Windows CI（`.github/workflows/ci.yml`）：push/PR/tag 触发，运行源码 Skill 测试、扩展契约测试、安装器生命周期与陈旧文件隔离验证（`verify.ps1 -SourceOnly`），不接触真实 QQ、个人快照或凭据。
+- 新增发布闭环：根目录 `VERSION` 作为版本唯一来源；`release.ps1` 强制干净工作树、`main` 与远端一致、源码验证通过、tag 不存在，并生成版本化 CHANGELOG 章节与 `vX.Y.Z` 标签。
+- 受管部署的 `.warframe-assistant-build.json` 开始记录 `version`，Skill 与插件必须同一版本构建。
 
-## [Unreleased]
+### 测试
 
-### 修复
+- 新增 `alecaframe.mjs` 白名单解析回归。
+- 新增紫卡（rivens）解析回归。
+- 新增轮换日历回归。
+- 新增关键卡片渲染结构回归（固定 HTML 结构断言）。
+- 扩充 Market 主流程错误分类合同。
 
-- 修复 `release.ps1` 在 git 推送进度输出触发 `NativeCommandError` 时中断的问题（2026-08-17 首次发布实锤）；并修复版本折叠后内容错挂到新 `[Unreleased]` 章节的结构问题。
+### 文档
+
+- 用户指南补齐赏金/突击/钢铁侵袭、商店、本周好货、轮换日历、紫卡、订阅诊断与新午夜电波回退语义。

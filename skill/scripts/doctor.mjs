@@ -84,6 +84,19 @@ try {
       ? `${last}；退避至 ${new Date(openUntil).toISOString()}`
       : `${last}；连续失败 ${Number(state?.consecutiveFailures) || 0}`);
   }
+  if (entries.length) {
+    // 聚合行：累计失败次数/类别/最近时间/退避状态；旧 v1 状态（无累计计数）仅按端点覆盖最近状态，
+    // 由 legacyStateEndpoints 单独报告，不冒充频率（脱敏见 drift-report.mjs）
+    const { aggregateEndpointHealth } = await import(pathToFileURL(path.join(here, 'drift-report.mjs')).href);
+    const aggregate = aggregateEndpointHealth(health, { now: Date.now() });
+    const categoryText = Object.entries(aggregate.byCategory)
+      .map(([category, count]) => `${category}×${count}`).join('、') || '无累计失败';
+    const legacyText = aggregate.legacyStateEndpoints
+      ? ` · 旧 v1 状态端点 ${aggregate.legacyStateEndpoints} 个（仅最近状态，无累计计数）` : '';
+    record('端点健康', '熔断聚合', aggregate.openCircuits ? 'warn' : 'ok',
+      `${aggregate.endpoints} 个端点 · 熔断中 ${aggregate.openCircuits} 个 · 累计失败 ${aggregate.totalFailures}（${categoryText}）`
+      + ` · 最近失败 ${aggregate.lastFailureIso || '—'} · 最近成功 ${aggregate.lastSuccessIso || '—'}${legacyText}`);
+  }
 } catch (error) {
   record('端点健康', '诊断文件读取失败', 'warn', String(error?.message || error).slice(0, 80));
 }

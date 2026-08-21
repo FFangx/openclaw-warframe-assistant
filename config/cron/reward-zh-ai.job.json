@@ -1,0 +1,25 @@
+{
+  "_comment": "每日「奖励译名 AI 查证」任务的唯一可部署定义（2026-08-21 从运行时 cron job 收敛为源码合同）。install.ps1 幂等安装/修复（declarationKey 相同即视为同一任务，只修合同字段、保留用户投递目标）；verify.ps1 -SourceOnly 校验本文件合同（tests/reward-zh-cron-contract.test.ps1）。占位符由 install.ps1 替换：{{SKILL_SCRIPTS_DIR}} → 实际 skills/warframe-assistant/scripts 目录；{{OWNER_C2C}} → qqbot:c2c:<ownerOpenId>（openclaw.json 插件配置），解析不到时任务仍安装但不投递 QQ。任务语义与 skill/scripts/reward-zh-fallback.mjs 的 inbox/learn/dismiss CLI 一一对应：读 inbox → 逐键查证（只认 Warframe.Market zh-hans / 灰机wiki）→ 有据 learn 回填学习词典（纯中文译名、只补缺不覆盖）→ 查无实据 dismiss；inbox 为空只回 NO_REPLY。",
+  "declarationKey": "warframe-assistant:reward-zh-ai:default",
+  "name": "Warframe奖励译名AI查证",
+  "description": "每日读取 reward-zh-inbox.json，用网页搜索查证未收录奖励的简体中文名并回填学习词典",
+  "enabled": true,
+  "schedule": {
+    "kind": "every",
+    "everyMs": 86400000,
+    "exact": true
+  },
+  "sessionTarget": "isolated",
+  "wakeMode": "now",
+  "payload": {
+    "kind": "agentTurn",
+    "timeoutSeconds": 900,
+    "message": "星际战甲助手每日维护任务：先执行 node {{SKILL_SCRIPTS_DIR}}/reward-zh-fallback.mjs inbox 读取待查证奖励清单。若 count 为 0 或 items 为空，只回复 NO_REPLY，不要做任何其他事。否则逐个处理 items 中的 english 键（DE 世界状态里的物品英文内部名，例如 grineer combat knife sortie blueprint）：用网页搜索查证该物品的简体中文名，依据只认 Warframe.Market zh-hans 或灰机wiki；查到后执行 node {{SKILL_SCRIPTS_DIR}}/reward-zh-fallback.mjs learn --english 「inbox键原文」 --zh 「纯中文名」 --source 「灰机wiki 或 Warframe.Market」 回填学习词典（english 必须逐字使用 inbox 里的键原文）；查无实据的执行同一脚本 dismiss --english 「键原文」。learn 若返回 ok:false（outcome 为 conflict 或 seed，即词典已有不同译名或该键是种子权威条目），说明该键已由词典覆盖：直接对同一键执行 dismiss 出队；若 error 含「写入失败」，保留该键待下轮重试，不得 dismiss。禁止凭猜测翻译，learn 只接受纯中文译名。全部处理完毕后回复简报：每项一行「键 → 已学习/已驳回/未处理」，注明依据来源。"
+  },
+  "delivery": {
+    "mode": "announce",
+    "channel": "qqbot",
+    "to": "{{OWNER_C2C}}",
+    "bestEffort": true
+  }
+}

@@ -30,6 +30,8 @@ test('natural language and contextual follow-ups reach the model tool router', (
     '我有这些遗物吗',
     '毒囊双枪灵化需要什么材料，去哪里拿',
     '诡文枭主在哪里买', '哪里买 诡文枭主',
+    '诡文枭主在哪换', '在哪换 诡文枭主', '诡文枭主哪里换', '哪里换 诡文枭主',
+    '怎么买 诡文枭主', '诡文枭主怎么买', '去哪买 诡文枭主',
     'Caliban p哪里刷', '哪里刷 Caliban p', '怎么刷 Caliban p', '获取路线 Caliban p',
     '这周还有哪些没做',
     '帮我订阅一下尖刃弹头赏金',
@@ -39,4 +41,41 @@ test('natural language and contextual follow-ups reach the model tool router', (
     assert.equal(isShortcut(input), false, input);
     assert.equal(isSubscriptionCommand(input), false, input);
   }
+});
+
+test('口语获取问法不得被快捷入口截获：四个语族均放行给自然语言路由', () => {
+  // 快捷硬拦截只认正式的「获取」「购买」前缀，口语问法一律是自然语言
+  for (const input of ['获取 Caliban p', '购买 诡文枭主']) assert.equal(isShortcut(input), true, input);
+  for (const input of [
+    '哪里刷', '哪里刷 Caliban p', 'Caliban p哪里刷', '怎么刷', '怎么刷 Caliban p', 'Caliban p怎么刷',
+    '哪里买', '哪里买 诡文枭主', '诡文枭主哪里买', '在哪换', '在哪换 诡文枭主', '诡文枭主在哪换',
+  ]) {
+    assert.equal(isShortcut(input), false, input);
+    assert.equal(isSubscriptionCommand(input), false, input);
+  }
+});
+
+test('SKILL.md 与插件工具说明把口语获取问法规范到正式短命令', async () => {
+  const [entry, skill] = await Promise.all([
+    readFile(new URL('./index.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../skill/SKILL.md', import.meta.url), 'utf8'),
+  ]);
+  // SKILL.md：口语问法必须作为自然语言理解，规范为获取/购买，不得由快捷入口截获
+  assert.match(skill, /获取`、`购买`是正式短命令/u);
+  assert.match(skill, /哪里刷|怎么刷|哪里买|在哪换/u);
+  assert.match(skill, /规范为`获取 X`、`购买 X`调用工具/u);
+  assert.match(skill, /不能由快捷入口直接截获/u);
+  // 插件工具描述：模型收到口语问法时改写为获取/购买规范命令
+  assert.match(entry, /哪里刷|怎么刷|哪里买|在哪换/u);
+  assert.match(entry, /改写为获取\/购买规范命令/u);
+});
+
+test('plugin context bridge keys isolate group senders and owner private chat', async () => {
+  const entry = await readFile(new URL('./index.ts', import.meta.url), 'utf8');
+  // contextBridgeKey 把会话与发送者都编进 key：群聊按发送者隔离，私聊与群聊互不可见
+  assert.match(entry, /\$\{session\}\|\$\{sender \|\| session\}/u);
+  // 群聊缺少发送者时不落上下文；私聊与群聊会话不同 → key 不同 → 天然隔离
+  assert.match(entry, /if \(!session \|\| \(group && !sender\)\) return null;/u);
+  // 个人域信封只在确认主人私聊时入桥（群聊即使同发送者也不入桥）
+  assert.match(entry, /envelope\.scope === 'personal' && !personalAllowed/u);
 });
