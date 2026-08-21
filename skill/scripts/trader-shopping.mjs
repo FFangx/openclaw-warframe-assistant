@@ -334,11 +334,15 @@ export function robustOrderLow(sells, todayMedian) {
   };
 }
 
-// 市场路线最终参考价：有卖单用稳健低值（basis=orders），否则沿用途成交统计的今日/90 天中位。
+// 市场路线最终参考价（对比价）：当前卖单稳健低值优先；无卖单改用今日成交中位；
+// Baro 期 90 天历史价混入非奸商期行情且被奸商冲击，无参考价值，不再兜底；
+// 两者都没有 → null（卡片显示市价待定）。对比价即「省 X 白金」的基数。
 export function resolveMarketReference(statistics, order) {
+  const orderOk = order?.orderLow != null;
+  const todayOk = statistics?.todayMedian != null;
   return {
-    platinum: order?.orderLow != null ? order.orderLow : (statistics?.platinum ?? null),
-    marketBasis: order?.orderLow != null ? 'orders' : (statistics?.basis ?? null),
+    platinum: orderOk ? order.orderLow : (todayOk ? statistics.todayMedian : null),
+    marketBasis: orderOk ? 'orders' : (todayOk ? 'today' : null),
     orderLow: order?.orderLow ?? null,
     orderCount: order?.orderCount ?? null,
     orderLowSuspicious: Boolean(order?.orderLowSuspicious),
@@ -627,17 +631,13 @@ export function formatTraderShopping(result) {
   const lines = [`【奸商购物推荐】${result.location}｜杜卡德余额 ${result.ducatBalance.toLocaleString('zh-CN')}`];
   for (const row of result.rows.slice(0, 16)) {
     const name = row.zhName || (row.tradable ? row.nameEn : '未收录物品');
-    const basis = row.marketBasis === 'orders' ? `挂单低值 ${row.platinum}p（${row.orderCount ?? 0} 单在售${row.orderLowSuspicious ? '·已剔除异常低单' : ''}）`
-      : row.marketBasis === 'today' ? `今日成交中位 ${row.platinum}p`
-        : row.marketBasis === '90days' ? `90天成交中位 ${row.platinum}p`
-          : `市场参考 ${row.platinum}p`;
-    // 今日/90 天无成交数据时显式标注，不出现「无p」
-    const todayPart = row.todayMedian == null ? '今日无数据' : `今日中位 ${row.todayMedian}p·${row.todayVolume ?? 0}笔`;
-    const days90Part = row.median90 == null ? '90天无数据' : `90天 ${row.median90}p·日均${row.dailyVolume ?? 0}笔`;
+    const basis = row.marketBasis === 'orders' ? `当前售价 ${row.platinum}p（${row.orderCount ?? 0} 单在售${row.orderLowSuspicious ? '·已剔除异常低单' : ''}）`
+      : row.marketBasis === 'today' ? `今日成交中位 ${row.platinum}p（${row.todayVolume ?? 0} 笔）`
+        : '市价待定（无近期成交）';
     const price = row.tradable
       ? row.platinum != null
-        ? `${basis}${row.marketStatsStale ? '（缓存）' : ''}｜${todayPart} · ${days90Part}`
-        : '暂无成交统计'
+        ? `${basis}${row.marketStatsStale ? '（缓存）' : ''}`
+        : '市价待定（无近期成交）'
       : '独占无市场价';
     const ratio = row.ratio != null ? `｜1杜=${row.ratio}p` : '';
     // 所有可交易商品统一展示：补足杜卡德（或缺口）/ 奸商价 / 交易税，无论推荐与否
@@ -653,6 +653,6 @@ export function formatTraderShopping(result) {
     lines.push(`${row.advice.zh}｜${name}｜${row.ducats}杜+${credits}现金｜${price}${route}${ratio}${row.owned ? '｜已有' : ''}`);
   }
   if (result.rows.length > 16) lines.push(`其余 ${result.rows.length - 16} 件已在卡片中省略，优先保留会影响购买决策的项目。`);
-  lines.push(`经济性推荐合计 ${result.wantDucats} 杜卡德${result.affordable ? '，余额够用' : `，还差 ${result.ducatShortfall} 杜卡德，可发「杜卡德 ${result.ducatShortfall}」生成兑换方案`}。市场路线优先当前挂单低值（剔除异常低单），无卖单回退今日/90 天成交中位；补足杜卡德按激进口径（含已入库部件）估算；仅供参考。`);
+  lines.push(`经济性推荐合计 ${result.wantDucats} 杜卡德${result.affordable ? '，余额够用' : `，还差 ${result.ducatShortfall} 杜卡德，可发「杜卡德 ${result.ducatShortfall}」生成兑换方案`}。市场路线优先当前售价（剔除异常低单），无卖单改用今日成交中位；90 天历史价不适用 Baro 期行情；补足杜卡德按激进口径（含已入库部件）估算；仅供参考。`);
   return lines.join('\n');
 }

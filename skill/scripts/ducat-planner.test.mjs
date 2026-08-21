@@ -298,7 +298,6 @@ test('安全库存无法补足时不会误报奸商路线划算', async () => {
   assert.equal(result.rows[0].ducatPlanShortfall, 105);
   const card = buildTraderShoppingCard(result);
   assert.match(card.html, /今日成交中位/u);
-  assert.match(card.html, /90天 \d+p · 日均/u);
   assert.match(card.html, /库存可动/u);
   assert.match(card.html, /奸商/u);
   assert.match(card.html, /税/u);
