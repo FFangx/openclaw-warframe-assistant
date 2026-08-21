@@ -33,6 +33,14 @@ function Get-RelativePath([string]$Root, [string]$Path) {
   return $Path.Substring($Root.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar).Replace('\', '/')
 }
 
+function Get-TestFiles([string]$Directory) {
+  $files = @(Get-ChildItem -LiteralPath $Directory -File -Filter '*.test.mjs' |
+      Sort-Object -Property FullName |
+      ForEach-Object { $_.FullName })
+  if ($files.Count -eq 0) { throw "No test files found in $Directory" }
+  return $files
+}
+
 function Test-TreeParity([string]$Source, [string]$Destination, [string]$TreeName) {
   $sourcePath = [IO.Path]::GetFullPath($Source)
   $destinationPath = [IO.Path]::GetFullPath($Destination)
@@ -85,12 +93,12 @@ function Test-InstallerLifecycle {
 }
 
 Invoke-Checked 'source skill tests' {
-  Push-Location (Join-Path $repoRoot 'skill')
-  try { & node --test scripts/*.test.mjs } finally { Pop-Location }
+  $tests = @(Get-TestFiles (Join-Path $repoRoot 'skill\scripts'))
+  & node --test @tests
 }
 Invoke-Checked 'source extension contract tests' {
-  Push-Location (Join-Path $repoRoot 'extension')
-  try { & node --test *.test.mjs } finally { Pop-Location }
+  $tests = @(Get-TestFiles (Join-Path $repoRoot 'extension'))
+  & node --test @tests
 }
 if (-not $SkipInstallerTest) { Invoke-Checked 'installer lifecycle and stale-file quarantine' { Test-InstallerLifecycle } }
 Invoke-Checked 'release changelog contract tests' {

@@ -2,7 +2,7 @@
 # package manifests, standard MIT license, third-party asset documentation and
 # governance files. Plain PowerShell assertions (no Pester dependency).
 #
-# Locks the v1.1.0 release-prep decisions:
+# Locks the v1.1 release-prep decisions:
 #   - VERSION is the single source of truth; skill/package.json and
 #     extension/package.json versions must equal it (the extension is private,
 #     never published, and ships in lockstep with the repo release).
@@ -39,7 +39,6 @@ function Read-File([string]$Relative) {
 # --- version unification ---
 $version = (Read-File 'VERSION').Trim()
 Assert-True 'VERSION is valid semver' ($version -match '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$')
-Assert-True 'VERSION is 1.1.0' ($version -eq '1.1.0')
 
 $skillPkg = Read-File 'skill\package.json' | ConvertFrom-Json
 Assert-True 'skill package version equals VERSION' ([string]$skillPkg.version -eq $version)
@@ -140,7 +139,7 @@ Assert-True 'CODEOWNERS assigns the repository owner' ((Read-File 'CODEOWNERS').
 
 # --- docs version drift ---
 $installDoc = Read-File 'INSTALL.md'
-Assert-True 'INSTALL.md states the current version as 1.1.0' ($installDoc.Contains('当前 `1.1.0`'))
+Assert-True 'INSTALL.md states the current version' ($installDoc.Contains("当前 ``$version``"))
 
 # --- uninstall lifecycle is documented ---
 $readme = Read-File 'README.md'
