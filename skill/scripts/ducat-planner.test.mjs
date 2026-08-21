@@ -147,6 +147,8 @@ const traderFixture = (inventoryCount = 10, traderInventory = defaultTraderInven
     '48hours': [{ datetime: new Date().toISOString(), median: 25, volume: 8, mod_rank: 0 }],
     '90days': [{ datetime: '2026-08-06T00:00:00.000Z', median: 24, volume: 90, mod_rank: 0 }],
   } } }),
+  // 无有效卖单 → 回退成交统计，保持既有断言；挂单低值口径由 trader-shopping.test.mjs 单独覆盖
+  ordersFetcher: async () => ({ sell: [] }),
   detailFetcher: async () => ({ data: { tradingTax: 1_000_000 } }),
   inventoryValuation: [part({ count: inventoryCount })],
   ducatCatalog: {
@@ -282,7 +284,7 @@ test('安全库存无法补足时不会误报奸商路线划算', async () => {
   assert.equal(result.rows[0].ducatPlanShortfall, 150);
   const card = buildTraderShoppingCard(result);
   assert.match(card.html, /今日成交中位/u);
-  assert.match(card.html, /90日均/u);
+  assert.match(card.html, /90天 \d+p · 日均/u);
   assert.match(card.html, /市场行情仍可参考/u);
   assert.match(card.html, /Kronia 中继站（土星）/u);
 });

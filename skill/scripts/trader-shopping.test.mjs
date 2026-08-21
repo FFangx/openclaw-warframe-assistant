@@ -1,0 +1,174 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  robustOrderLow,
+  resolveMarketReference,
+  summarizeTradeStatistics,
+  mergeTraderStates,
+  formatTraderShopping,
+} from './trader-shopping.mjs';
+
+test('robustOrderLow：无有效卖单返回无价', () => {
+  assert.deepEqual(robustOrderLow([], 50), { orderLow: null, orderCount: 0, orderLowSuspicious: false });
+  assert.deepEqual(robustOrderLow([{ platinum: 0 }, { platinum: -1 }, { platinum: null }], 50), { orderLow: null, orderCount: 0, orderLowSuspicious: false });
+});
+
+test('robustOrderLow：单卖单直接采用最低价', () => {
+  const result = robustOrderLow([{ platinum: 50 }], 55);
+  assert.deepEqual(result, { orderLow: 50, orderCount: 1, orderLowSuspicious: false });
+});
+
+test('robustOrderLow：正常多单取最低价，不判钓鱼', () => {
+  const result = robustOrderLow([{ platinum: 10 }, { platinum: 12 }, { platinum: 15 }], 15);
+  assert.deepEqual(result, { orderLow: 10, orderCount: 3, orderLowSuspicious: false });
+});
+
+test('robustOrderLow：最低单远低于次低与今日中位 → 剔除改用次低价', () => {
+  const result = robustOrderLow([{ platinum: 2 }, { platinum: 30 }, { platinum: 32 }], 50);
+  assert.deepEqual(result, { orderLow: 30, orderCount: 3, orderLowSuspicious: true });
+});
+
+test('robustOrderLow：无今日中位时仅凭次低价差距判定', () => {
+  const fishing = robustOrderLow([{ platinum: 2 }, { platinum: 30 }], null);
+  assert.deepEqual(fishing, { orderLow: 30, orderCount: 2, orderLowSuspicious: true });
+  const normal = robustOrderLow([{ platinum: 30 }, { platinum: 32 }], null);
+  assert.deepEqual(normal, { orderLow: 30, orderCount: 2, orderLowSuspicious: false });
+});
+
+test('robustOrderLow：最低/次低差距大但与今日中位相当 → 不判钓鱼', () => {
+  const result = robustOrderLow([{ platinum: 8 }, { platinum: 9 }], 10);
+  assert.deepEqual(result, { orderLow: 8, orderCount: 2, orderLowSuspicious: false });
+});
+
+test('resolveMarketReference：有卖单用挂单低值（basis=orders），保留成交对照', () => {
+  const stats = { platinum: 50, basis: 'today', todayVolume: 9, todayMedian: 50, median90: 55, dailyVolume: 5, deviationPct: 9 };
+  const order = { orderLow: 45, orderCount: 6, orderLowSuspicious: true };
+  const ref = resolveMarketReference(stats, order);
+  assert.equal(ref.platinum, 45);
+  assert.equal(ref.marketBasis, 'orders');
+  assert.equal(ref.orderLow, 45);
+  assert.equal(ref.orderCount, 6);
+  assert.equal(ref.orderLowSuspicious, true);
+  assert.equal(ref.todayMedian, 50);
+  assert.equal(ref.median90, 55);
+});
+
+test('resolveMarketReference：挂单不可用回退成交统计', () => {
+  const stats = { platinum: 50, basis: 'today', todayVolume: 9, todayMedian: 50, median90: 55, dailyVolume: 5 };
+  const ref = resolveMarketReference(stats, { orderLow: null, orderCount: 0, orderLowSuspicious: false });
+  assert.equal(ref.platinum, 50);
+  assert.equal(ref.marketBasis, 'today');
+  assert.equal(ref.orderLow, null);
+});
+
+test('resolveMarketReference：全部无价返回 null', () => {
+  const ref = resolveMarketReference(null, { orderLow: null, orderCount: 0, orderLowSuspicious: false });
+  assert.equal(ref.platinum, null);
+  assert.equal(ref.marketBasis, null);
+  assert.equal(ref.orderLowSuspicious, false);
+});
+
+const statisticsPayload = (todayRows, dailyRows) => ({ payload: { statistics_closed: { '48hours': todayRows, '90days': dailyRows } } });
+const now = Date.parse('2026-08-21T04:00:00Z'); // 北京 2026-08-21 12:00
+const todayRow = (hour, median, volume) => ({ datetime: `2026-08-21T0${hour}:00:00.000Z`, median, volume, mod_rank: null });
+const dayRow = (day, median, volume) => ({ datetime: `2026-08-${day}T00:00:00.000Z`, median, volume, mod_rank: null });
+
+test('summarizeTradeStatistics：今日 >=10 笔直接采用', () => {
+  const result = summarizeTradeStatistics(statisticsPayload(
+    [todayRow(2, 10, 6), todayRow(3, 12, 4)],
+    [dayRow(10, 15, 30)],
+  ), null, now);
+  assert.equal(result.basis, 'today');
+  assert.equal(result.platinum, 10);
+  assert.equal(result.todayVolume, 10);
+  assert.equal(result.median90, 15);
+});
+
+test('summarizeTradeStatistics：今日 5~9 笔且偏差 <=30% 采用今日', () => {
+  const result = summarizeTradeStatistics(statisticsPayload(
+    [todayRow(2, 12, 6)],
+    [dayRow(10, 15, 30)],
+  ), null, now);
+  assert.equal(result.basis, 'today');
+  assert.equal(result.platinum, 12);
+  assert.equal(result.deviationPct, 20);
+});
+
+test('summarizeTradeStatistics：今日 5~9 笔但偏差过大回退 90 天', () => {
+  const result = summarizeTradeStatistics(statisticsPayload(
+    [todayRow(2, 12, 6)],
+    [dayRow(10, 30, 30)],
+  ), null, now);
+  assert.equal(result.basis, '90days');
+  assert.equal(result.platinum, 30);
+  assert.equal(result.deviationPct, 60);
+});
+
+test('summarizeTradeStatistics：今日不足 5 笔回退 90 天', () => {
+  const result = summarizeTradeStatistics(statisticsPayload(
+    [todayRow(2, 12, 3)],
+    [dayRow(10, 30, 30)],
+  ), null, now);
+  assert.equal(result.basis, '90days');
+});
+
+test('summarizeTradeStatistics：无有效数据返回 null', () => {
+  const result = summarizeTradeStatistics(statisticsPayload([], []), null, now);
+  assert.equal(result, null);
+});
+
+test('mergeTraderStates：warframestat 补齐英文名并规范化地点', () => {
+  const official = {
+    character: "Baro Ki'Teer",
+    location: 'PlutoHUB',
+    activation: '2026-08-14T12:00:00.000Z',
+    expiry: '2026-08-16T12:00:00.000Z',
+    inventory: [{ uniqueName: '/Lotus/PrimeBucks', item: null, ducats: 350, credits: 140000 }],
+  };
+  const wfstat = {
+    location: 'Orcus 中继站',
+    inventory: [{ uniqueName: '/Lotus/StoreItems/PrimeBucks', item: 'Primed Sure Footed' }],
+  };
+  const merged = mergeTraderStates(official, wfstat);
+  assert.equal(merged.location, 'Orcus 中继站（冥王星）');
+  assert.equal(merged.inventory[0].item, 'Primed Sure Footed');
+  assert.equal(merged.inventory[0].ducats, 350);
+});
+
+test('formatTraderShopping：挂单低值口径与对照行', () => {
+  const rows = [{
+    zhName: '制衡 Prime', nameEn: 'Primed Equilibrium', uniqueName: '/x', tradable: true,
+    ducats: 300, credits: 220000, owned: false, advice: { tag: 'strong', zh: '强烈买' },
+    platinum: 45, marketBasis: 'orders', orderLow: 45, orderCount: 6, orderLowSuspicious: false,
+    todayMedian: 50, todayVolume: 9, median90: 55, dailyVolume: 6, ratio: 6.67,
+    ducatOpportunityPlat: null, ducatPlanShortfall: null,
+  }];
+  const text = formatTraderShopping({ arrived: true, location: 'Orcus 中继站（冥王星）', ducatBalance: 255, rows, wantDucats: 300, affordable: true });
+  assert.match(text, /挂单低值 45p（6 单在售）/);
+  assert.match(text, /今日中位 50p·9笔 · 90天 55p·日均6笔/);
+  assert.match(text, /市场路线优先当前挂单低值/);
+});
+
+test('formatTraderShopping：未到货分支', () => {
+  const text = formatTraderShopping({ arrived: false, character: "Baro Ki'Teer", location: 'Orcus 中继站（冥王星）', activation: '2026-08-22T12:00:00.000Z', ducatBalance: 0 });
+  assert.match(text, /尚未到达/);
+});
+
+test('buildTraderShoppingCard：挂单低值口径与异常低单标注', async () => {
+  const { buildTraderShoppingCard } = await import('./warframe-cards.mjs');
+  const card = buildTraderShoppingCard({
+    arrived: true, fetchedAt: '2026-08-21T12:00:00.000Z', location: 'Orcus 中继站（冥王星）',
+    ducatBalance: 255, wantDucats: 300, affordable: true, rows: [{
+      zhName: '制衡 Prime', nameEn: 'Primed Equilibrium', uniqueName: '/x', iconDataUri: null, tradable: true,
+      ducats: 300, credits: 220000, owned: false, advice: { tag: 'strong', zh: '强烈买' },
+      platinum: 30, marketBasis: 'orders', orderLow: 30, orderCount: 6, orderLowSuspicious: true,
+      todayMedian: 50, todayVolume: 9, median90: 55, dailyVolume: 6, ratio: 10,
+      ducatOpportunityPlat: null, ducatPlanShortfall: null, tradingTax: 1000000,
+    }],
+  });
+  assert.match(card.html, /挂单低值/u);
+  assert.match(card.html, /6 单在售/u);
+  assert.match(card.html, /已剔除异常低单/u);
+  assert.match(card.html, /今日中位 50p·9笔/u);
+  assert.match(card.html, /90天 55p/u);
+});

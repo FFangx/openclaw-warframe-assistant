@@ -918,7 +918,7 @@ export function formatRecommend(data) {
   const tierFilterZh = FISSURE_TIERS[data.tierFilter]?.zh || FISSURE_TIERS.all.zh;
   const modeZh = ducatMode ? (data.ducatGoal ? `奸商对标：${data.ducatGoal.name}` : '赚杜卡德') : '赚白金';
   const lines = [`🎯 开遗物 · ${modeZh} · ${fissureScopeZh} · ${tierFilterZh} · ${preferenceZh} · ${vaultFilterZh} · ${squadZh}口径（库存 × 双币期望）`];
-  if (data.ducatGoal) lines.push(`目标 ${data.ducatGoal.ducats} 杜 / 市场 ${data.ducatGoal.marketPlat}p｜盈亏线 1p≈${data.ducatGoal.ducatsPerPlat} 杜｜${data.ducatGoal.marketBasis === 'today' ? '今日中位' : '90天中位'}｜日均 ${data.ducatGoal.dailyVolume ?? '—'} 件`);
+  if (data.ducatGoal) lines.push(`目标 ${data.ducatGoal.ducats} 杜 / 市场 ${data.ducatGoal.marketPlat}p｜盈亏线 1p≈${data.ducatGoal.ducatsPerPlat} 杜｜${data.ducatGoal.marketBasis === 'orders' ? '挂单低值' : data.ducatGoal.marketBasis === 'today' ? '今日中位' : '90天中位'}｜日均 ${data.ducatGoal.dailyVolume ?? '—'} 件`);
   lines.push(data.ducatGoal
     ? `立即可开 ${data.matchedRelicCount ?? 0} 种估算过线候选；每种最多列两条当前路线。`
     : `可立即开 ${data.matchedRelicCount ?? 0} 种遗物；每种最多列两条当前路线。`);

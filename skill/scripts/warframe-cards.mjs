@@ -543,7 +543,7 @@ export function buildFissureRecommendCard(data) {
   const preferenceNote = preference === 'speed' ? '每枚优先匹配捕获/歼灭' : preference === 'comfort' ? '每枚优先匹配防御/生存' : preference === 'yield' ? '每枚优先匹配九重天→钢铁→无尽' : '遗物按期望收益；每枚最多两条路线';
   const title = ducatGoal ? `为「${escapeHtml(ducatGoal.name)}」开什么遗物` : ducatMode ? '现在换杜卡德开什么最赚' : '现在开什么遗物最值';
   const targetSummary = ducatGoal
-    ? `对标 ${currency('ducat', ducatGoal.ducats, { size: 10 })} / ${currency('plat', ducatGoal.marketPlat, { size: 10 })} · 盈亏线 1p≈${escapeHtml(ducatGoal.ducatsPerPlat)}杜 · ${ducatGoal.marketBasis === 'today' ? '今日中位' : '90天中位'} · 日均 ${escapeHtml(ducatGoal.dailyVolume ?? '—')} · ${fissureScopeZh}`
+    ? `对标 ${currency('ducat', ducatGoal.ducats, { size: 10 })} / ${currency('plat', ducatGoal.marketPlat, { size: 10 })} · 盈亏线 1p≈${escapeHtml(ducatGoal.ducatsPerPlat)}杜 · ${ducatGoal.marketBasis === 'orders' ? '挂单低值' : ducatGoal.marketBasis === 'today' ? '今日中位' : '90天中位'} · 日均 ${escapeHtml(ducatGoal.dailyVolume ?? '—')} · ${fissureScopeZh}`
     : `筛选：${fissureScopeZh} · ${vaultFilterZh} · 可切换白金/杜卡德＋速刷/舒适/收益 · 共 ${escapeHtml(data.totalFissures ?? 0)} 条裂缝`;
   const headerMeta = ducatGoal
     ? `<strong>还差 ${currency('ducat', ducatGoal.shortfall, { size: 14 })}</strong><span>余额 ${currency('ducat', ducatGoal.currentDucats, { size: 10 })} · ${escapeHtml(localTime(data.fetchedAt))}</span>`
@@ -653,10 +653,14 @@ export function buildTraderShoppingCard(data) {
   const body = rows.map((row, index) => {
     const advice = ADVICE_STYLE[row.advice?.tag] || ADVICE_STYLE.skip;
     const name = row.zhName || (row.tradable ? row.nameEn : (row.nameEn || '未收录物品'));
-    const basis = row.marketBasis === 'today' ? '今日成交中位' : '90天成交中位';
+    // 市场路线：决策价=当前挂单稳健低值（basis=orders）；成交中位(今日/90天)作对照行
     const priceText = !row.tradable ? '独占 · 无市场价'
       : row.platinum == null ? '暂无成交统计'
-        : `${basis} ${currency('plat', row.platinum, { size: 10, weight: 800 })} · 90日均 ${escapeHtml(row.dailyVolume ?? 0)} 笔/天${row.marketStatsStale ? ' · 缓存' : ''}`;
+        : row.marketBasis === 'orders'
+          ? `挂单低值 ${currency('plat', row.platinum, { size: 10, weight: 800 })} · ${escapeHtml(row.orderCount ?? 0)} 单在售${row.orderLowSuspicious ? ' · 已剔除异常低单' : ''} · 今日中位 ${escapeHtml(row.todayMedian ?? '无')}p·${escapeHtml(row.todayVolume ?? 0)}笔 · 90天 ${escapeHtml(row.median90 ?? '无')}p`
+          : row.marketBasis === 'today'
+            ? `今日成交中位 ${currency('plat', row.platinum, { size: 10, weight: 800 })} · 90天 ${escapeHtml(row.median90 ?? '无')}p · 日均 ${escapeHtml(row.dailyVolume ?? 0)}笔`
+            : `90天成交中位 ${currency('plat', row.platinum, { size: 10, weight: 800 })} · 今日中位 ${escapeHtml(row.todayMedian ?? '无')}p·${escapeHtml(row.todayVolume ?? 0)}笔 · 日均 ${escapeHtml(row.dailyVolume ?? 0)}笔`;
     const routeText = row.ducatOpportunityPlat != null
       ? `补足 ${currency('ducat', row.ducatNeed, { size: 9, weight: 760 })}≈${currency('plat', row.ducatOpportunityPlat, { size: 9, weight: 760 })} · 奸商 ${currency('credit', row.credits, { size: 9, weight: 700 })} · 税 ${row.tradingTax != null ? currency('credit', row.tradingTax, { size: 9, weight: 700 }) : '未知'}`
       : row.ducatPlanShortfall
@@ -685,8 +689,8 @@ export function buildTraderShoppingCard(data) {
   const content = `<div class="card"><div class="header" style="height:86px">${headerIcon('baro')}<div style="min-width:0"><div class="kicker">奸商购物推荐 · 仅用户私聊</div><div class="title" style="font-size:23px">${escapeHtml(data.location || '虚空商人')}</div></div><div class="header-meta"><strong>余额 ${currency('ducat', balance, { size: 14 })}</strong><span>${escapeHtml(localTime(data.fetchedAt))}</span></div></div>
     <div class="section"><span class="section-badge">${rows.length}/${allRows.length} 件</span>奸商兑换路线 vs 玩家市场路线<small>${data.arrived ? `当前 ${currency('ducat', balance, { size: 10, weight: 760 })}${data.safeDucatAvailable != null ? ` · 安全库存最多 ${currency('ducat', `+${data.safeDucatAvailable}`, { size: 10, weight: 760 })}` : ''} · 各商品独立判断` : '未到货'}</small></div>
     ${body || empty}
-    <div class="footer" style="height:34px"><span>${affordText}</span><span>MOD 按 0 级 · 成交中位价 · 仅供参考</span></div></div>`;
-  const keySeed = `trader-shop7|${data.fetchedAt}|${allRows.map((row) => `${row.uniqueName}:${row.advice?.tag}:${row.platinum ?? ''}:${row.marketBasis ?? ''}:${row.dailyVolume ?? ''}:${row.ducatOpportunityPlat ?? ''}:${row.tradingTax ?? ''}`).join('|')}`;
+    <div class="footer" style="height:34px"><span>${affordText}</span><span>MOD 按 0 级 · 市场路线=挂单低值 · 对照今日/90天成交 · 仅供参考</span></div></div>`;
+  const keySeed = `trader-shop8|${data.fetchedAt}|${allRows.map((row) => `${row.uniqueName}:${row.advice?.tag}:${row.platinum ?? ''}:${row.marketBasis ?? ''}:${row.orderLow ?? ''}:${row.orderCount ?? ''}:${row.orderLowSuspicious ? 1 : 0}:${row.todayMedian ?? ''}:${row.todayVolume ?? ''}:${row.median90 ?? ''}:${row.dailyVolume ?? ''}:${row.ducatOpportunityPlat ?? ''}:${row.tradingTax ?? ''}`).join('|')}`;
   return { html: documentShell(content, height), width: 600, height, key: `trader-shop-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 

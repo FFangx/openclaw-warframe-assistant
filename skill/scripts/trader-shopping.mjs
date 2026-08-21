@@ -1,17 +1,24 @@
 #!/usr/bin/env node
 
 // 奸商购物助手：到货单 × 本机库存 × 杜卡德余额 → 双路线购买建议，零 AI 判断。
-// 路线 A：安全兑换 Prime 部件的白金机会成本 + 奸商现金；路线 B：成交中位价 + 准确交易税。
-// 口径：Prime MOD 用 rank 0 成交统计（奸商卖 0 级，满级价含 4 万 Endo 虚高）；
-//      不可交易品标「独占无市场价」三态，绝不当 0 白金沉底。
+// 路线 A：安全兑换 Prime 部件的白金机会成本 + 奸商现金；路线 B：当前市场可买价 + 准确交易税。
+// 口径：
+//  - 市场路线决策价 = 当前卖单「稳健低值」：取最低价；若最低价明显低于次低价(<70%)且低于今日成交
+//    中位较多(<60%)，判定为钓鱼/抢跑单改用次低价；无卖单时回退今日成交中位(≥10 笔，或 5~9 笔且
+//    偏差 ≤30%)，再回退 90 天成交中位。Baro 到访期大量低价挂单立即反映，钓鱼单不会砸穿参考价。
+//  - 今日/90 天成交中位保留为对照展示；Prime MOD 用 rank 0 成交统计（奸商卖 0 级，满级价虚高）。
+//  - 不可交易品标「独占无市场价」三态，绝不当 0 白金沉底。
 import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { resilientJsonRequest } from './http-resilience.mjs';
 
 const WORLDSTATE_BASE = 'https://api.warframestat.us';
 const OFFICIAL_WORLDSTATE_URL = 'https://api.warframe.com/cdn/worldState.php';
 const MARKET_BASE = 'https://api.warframe.market';
-const TIMEOUT_MS = 20_000;
+// 官方 worldState.php 体积大（实测 ~9s），独立宽松超时；Market 端点沿用 resilience 的 8s×2
+const OFFICIAL_WORLDSTATE_TIMEOUT_MS = 20_000;
+const OFFICIAL_TRADER_CACHE_TTL_MS = 2 * 60 * 1000;
 const CATALOG_CACHE_TTL_MS = 60 * 60 * 1000;
 const STATISTICS_CACHE_TTL_MS = 60 * 60 * 1000;
 const PRICE_CONCURRENCY = 3;
@@ -57,16 +64,25 @@ const OWNED_GROUPS = [
 
 const DUCAT_ITEM_TYPE = '/Lotus/Types/Items/MiscItems/PrimeBucks';
 
-async function getJson(url, headers = {}, attempt = 0) {
-  const response = await fetch(url, { headers: { Accept: 'application/json', ...headers }, signal: AbortSignal.timeout(TIMEOUT_MS) });
-  if (!response.ok) {
-    if (attempt < 2 && (response.status === 429 || response.status >= 500)) {
-      await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
-      return getJson(url, headers, attempt + 1);
-    }
-    throw new Error(`HTTP ${response.status}: ${url}`);
-  }
-  return response.json();
+// 端点健康键：与 shortcuts/wfdata 共用同一份 health 文件，熔断与累计遥测跨入口一致。
+function endpointFor(url) {
+  if (url.includes('worldState.php')) return 'worldstate:official:raw';
+  if (url.includes('/pc/voidTrader/')) return 'worldstate:warframestat:trader';
+  if (url.includes('/v2/orders/item/')) return 'market:v2:orders';
+  if (url.includes('/v1/items/')) return 'market:v1:statistics';
+  if (url.includes('/v2/item/')) return 'market:v2:detail';
+  if (url.includes('/v2/items')) return 'market:v2:catalog';
+  return 'market:unknown';
+}
+
+// 网络级错误(超时/DNS/连接)与 429/5xx 均按 http-resilience 重试并记录端点健康；403 开 15 分钟熔断。
+async function getJson(url, headers = {}) {
+  return resilientJsonRequest(url, {
+    endpoint: endpointFor(url),
+    headers,
+    timeoutMs: url.includes('worldState.php') ? OFFICIAL_WORLDSTATE_TIMEOUT_MS : 8_000,
+    maxAttempts: 2,
+  });
 }
 
 async function mapLimit(values, limit, mapper) {
@@ -106,23 +122,28 @@ export async function fetchTraderState() {
 const stripStoreItem = (value) => String(value ?? '').replace('/StoreItems/', '/');
 
 // —— 官方 worldState.php VoidTraders：到货瞬间比镜像新鲜，Manifest 含 PrimePrice(杜)/RegularPrice(现金) ——
+// 该文件体积大、每次 ~9s；货单只在 Baro 周期内变化，提取结果按 2 分钟 TTL 磁盘缓存；刷新失败退陈旧。
 export async function fetchOfficialTrader() {
-  const state = await getJson(OFFICIAL_WORLDSTATE_URL, { 'User-Agent': 'Mozilla/5.0' });
-  const trader = state?.VoidTraders?.[0];
-  if (!trader) throw new Error('官方 worldState 无 VoidTraders');
-  const ms = (value) => Number(value?.$date?.$numberLong);
-  return {
-    character: "Baro Ki'Teer",
-    location: RELAY_ZH[trader.Node] || trader.Node || '未知中继站',
-    activation: new Date(ms(trader.Activation)).toISOString(),
-    expiry: new Date(ms(trader.Expiry)).toISOString(),
-    inventory: (trader.Manifest || []).map((item) => ({
-      uniqueName: stripStoreItem(item.ItemType),
-      item: null, // 英文名由 warframestat 同步补齐；兼不可得时用 zhOf/目录中文名兑付
-      ducats: Number(item.PrimePrice) || 0,
-      credits: Number(item.RegularPrice) || 0,
-    })),
-  };
+  const { staleCachedJson } = await import('./wfdata.mjs');
+  const result = await staleCachedJson('official-trader-manifest', { ttlMs: OFFICIAL_TRADER_CACHE_TTL_MS, version: 1 }, async () => {
+    const state = await getJson(OFFICIAL_WORLDSTATE_URL, { 'User-Agent': 'Mozilla/5.0' });
+    const trader = state?.VoidTraders?.[0];
+    if (!trader) throw new Error('官方 worldState 无 VoidTraders');
+    const ms = (value) => Number(value?.$date?.$numberLong);
+    return {
+      character: "Baro Ki'Teer",
+      location: RELAY_ZH[trader.Node] || trader.Node || '未知中继站',
+      activation: new Date(ms(trader.Activation)).toISOString(),
+      expiry: new Date(ms(trader.Expiry)).toISOString(),
+      inventory: (trader.Manifest || []).map((item) => ({
+        uniqueName: stripStoreItem(item.ItemType),
+        item: null, // 英文名由 warframestat 同步补齐；兼不可得时用 zhOf/目录中文名兑付
+        ducats: Number(item.PrimePrice) || 0,
+        credits: Number(item.RegularPrice) || 0,
+      })),
+    };
+  });
+  return { ...result.data, stale: result.stale, cachedAt: result.cachedAt };
 }
 
 // 双源合并：官方定「货单+价格+时间」（真值），warframestat 补英文名；任一源挂了用另一源兼底
@@ -265,6 +286,57 @@ export async function fetchTradeStatistics(slug, rankFilter, statisticsFetcher) 
   }
 }
 
+// —— 当前卖单（/top 原始顺序不可信，只取价格做稳健低值；失败/无效卖单回退成交统计）——
+export async function fetchMarketOrders(slug, ordersFetcher) {
+  try {
+    if (ordersFetcher) {
+      const payload = await ordersFetcher(slug);
+      return { sell: Array.isArray(payload?.sell) ? payload.sell : [] };
+    }
+    const payload = await getJson(`${MARKET_BASE}/v2/orders/item/${slug}/top`, { Platform: 'pc', Crossplay: 'true', Language: 'zh-hans' });
+    return { sell: Array.isArray(payload?.data?.sell) ? payload.data.sell : [] };
+  } catch {
+    return null;
+  }
+}
+
+// 稳健低值：最低价与次低价差距大（<70%）、且相对今日成交中位明显偏低（<60%）时，
+// 最低单按钓鱼/抢跑单剔除改用次低价；不满足则用最低价。
+export function robustOrderLow(sells, todayMedian) {
+  const prices = (sells || [])
+    .map((order) => Number(order?.platinum))
+    .filter((price) => Number.isFinite(price) && price > 0)
+    .sort((a, b) => a - b);
+  if (!prices.length) return { orderLow: null, orderCount: 0, orderLowSuspicious: false };
+  const low1 = prices[0];
+  const low2 = prices[1] ?? null;
+  const suspicious = low2 != null && low1 < low2 * 0.7
+    && (todayMedian == null || low1 < todayMedian * 0.6);
+  return {
+    orderLow: Math.round((suspicious ? low2 : low1) * 10) / 10,
+    orderCount: prices.length,
+    orderLowSuspicious: Boolean(suspicious),
+  };
+}
+
+// 市场路线最终参考价：有卖单用稳健低值（basis=orders），否则沿用途成交统计的今日/90 天中位。
+export function resolveMarketReference(statistics, order) {
+  return {
+    platinum: order?.orderLow != null ? order.orderLow : (statistics?.platinum ?? null),
+    marketBasis: order?.orderLow != null ? 'orders' : (statistics?.basis ?? null),
+    orderLow: order?.orderLow ?? null,
+    orderCount: order?.orderCount ?? null,
+    orderLowSuspicious: Boolean(order?.orderLowSuspicious),
+    todayVolume: statistics?.todayVolume ?? null,
+    todayMedian: statistics?.todayMedian ?? null,
+    median90: statistics?.median90 ?? null,
+    dailyVolume: statistics?.dailyVolume ?? null,
+    deviationPct: statistics?.deviationPct ?? null,
+    stale: statistics?.stale ?? null,
+    cachedAt: statistics?.cachedAt ?? null,
+  };
+}
+
 // 推荐矩阵：缺+贵=强烈买；缺+便宜=顺手买；已有+比值高=可倒卖；已有+比值低=跳过
 export function decide(row) {
   if (!row.tradable) return row.owned ? { tag: 'skip', zh: '已拥有' } : { tag: 'exclusive', zh: '独占·看喜好' };
@@ -323,37 +395,55 @@ export async function appraiseTraderGoods(goods, options = {}) {
     const isMod = /\/Mods\//u.test(entry.uniqueName || '');
     const zhLocal = entry.zhLocal ?? options.zhOf?.(entry.uniqueName) ?? null;
     const meta = catalog[compact(entry.item)] || (zhLocal ? catalogByZh.get(compact(zhLocal)) : null) || null;
-    const [quote, tradingTax] = meta ? await Promise.all([
-      fetchTradeStatistics(meta.slug, isMod, options.statisticsFetcher),
-      fetchTradingTax(meta.slug, options.detailFetcher),
-    ]) : [null, null];
-    const platinum = quote?.platinum ?? null;
-    const ducats = Number(entry.ducats) || 0;
-    // 比值 = 白金/杜卡德：花同样杜卡德换回最多白金的货排最前
-    const ratio = platinum != null && ducats > 0 ? platinum / ducats : null;
-    const row = {
+    const base = {
       uniqueName: entry.uniqueName,
       nameEn: entry.item,
       zhName: meta?.zh || zhLocal || null,
       wmIcon: meta?.icon || null,
       wmThumb: meta?.thumb || null,
       wmSubIcon: meta?.subIcon || null,
-      ducats,
+      ducats: Number(entry.ducats) || 0,
       credits: Number(entry.credits) || 0,
       // 商店路径归一后比对：快照库存用的是非 StoreItems 路径
       owned: owned.has(stripStoreItem(entry.uniqueName)),
       tradable: Boolean(meta),
-      platinum,
-      marketBasis: quote?.basis ?? null,
-      marketStatsStale: Boolean(quote?.stale),
-      marketStatsCachedAt: quote?.cachedAt ?? null,
-      todayVolume: quote?.todayVolume ?? null,
-      median90: quote?.median90 ?? null,
-      dailyVolume: quote?.dailyVolume ?? null,
-      ratio: ratio != null ? Math.round(ratio * 100) / 100 : null,
-      tradingTax: tradingTax ?? meta?.tradingTax ?? null,
     };
-    return { ...row, advice: decide(row) };
+    // 单件行情/税/挂单失败不整条爆炸：该行无价继续展示（诚实降级），其余商品照常建议
+    try {
+      const [quote, tradingTax, orders] = meta ? await Promise.all([
+        fetchTradeStatistics(meta.slug, isMod, options.statisticsFetcher),
+        fetchTradingTax(meta.slug, options.detailFetcher),
+        fetchMarketOrders(meta.slug, options.ordersFetcher),
+      ]) : [null, null, null];
+      const ref = resolveMarketReference(quote, orders);
+      const row = {
+        ...base,
+        platinum: ref.platinum,
+        marketBasis: ref.marketBasis,
+        orderLow: ref.orderLow,
+        orderCount: ref.orderCount,
+        orderLowSuspicious: ref.orderLowSuspicious,
+        marketStatsStale: Boolean(ref.stale),
+        marketStatsCachedAt: ref.cachedAt ?? null,
+        todayVolume: ref.todayVolume ?? null,
+        todayMedian: ref.todayMedian ?? null,
+        median90: ref.median90 ?? null,
+        dailyVolume: ref.dailyVolume ?? null,
+        deviationPct: ref.deviationPct ?? null,
+        tradingTax: tradingTax ?? meta?.tradingTax ?? null,
+      };
+      const ratio = row.platinum != null && row.ducats > 0 ? row.platinum / row.ducats : null;
+      row.ratio = ratio != null ? Math.round(ratio * 100) / 100 : null;
+      return { ...row, advice: decide(row) };
+    } catch {
+      const row = {
+        ...base,
+        platinum: null, marketBasis: null, orderLow: null, orderCount: null, orderLowSuspicious: false,
+        marketStatsStale: false, marketStatsCachedAt: null, todayVolume: null, todayMedian: null,
+        median90: null, dailyVolume: null, deviationPct: null, ratio: null, tradingTax: null,
+      };
+      return { ...row, advice: decide(row) };
+    }
   });
   // 排序：可交易按比值降序；独占压后但不沉底（放跳过之前）
   const rank = { strong: 0, buy: 1, flip: 2, exclusive: 3, skip: 4 };
@@ -517,8 +607,15 @@ export function formatTraderShopping(result) {
   const lines = [`【奸商购物推荐】${result.location}｜杜卡德余额 ${result.ducatBalance.toLocaleString('zh-CN')}`];
   for (const row of result.rows.slice(0, 16)) {
     const name = row.zhName || (row.tradable ? row.nameEn : '未收录物品');
-    const basis = row.marketBasis === 'today' ? '今日成交中位' : '90天成交中位';
-    const price = row.tradable ? (row.platinum != null ? `${basis}${row.platinum}p${row.marketStatsStale ? '（缓存）' : ''}，日均${row.dailyVolume ?? 0}笔` : '暂无成交统计') : '独占无市场价';
+    const basis = row.marketBasis === 'orders' ? `挂单低值 ${row.platinum}p（${row.orderCount ?? 0} 单在售${row.orderLowSuspicious ? '·已剔除异常低单' : ''}）`
+      : row.marketBasis === 'today' ? `今日成交中位 ${row.platinum}p`
+        : row.marketBasis === '90days' ? `90天成交中位 ${row.platinum}p`
+          : `市场参考 ${row.platinum}p`;
+    const price = row.tradable
+      ? row.platinum != null
+        ? `${basis}${row.marketStatsStale ? '（缓存）' : ''}｜今日中位 ${row.todayMedian ?? '无'}p·${row.todayVolume ?? 0}笔 · 90天 ${row.median90 ?? '无'}p·日均${row.dailyVolume ?? 0}笔`
+        : '暂无成交统计'
+      : '独占无市场价';
     const ratio = row.ratio != null ? `｜1杜=${row.ratio}p` : '';
     const route = row.ducatOpportunityPlat != null
       ? `｜补足${row.ducatNeed}杜机会成本${row.ducatOpportunityPlat}p｜交易税${row.tradingTax?.toLocaleString('zh-CN') ?? '未知'}现金`
@@ -526,6 +623,6 @@ export function formatTraderShopping(result) {
     lines.push(`${row.advice.zh}｜${name}｜${row.ducats}杜+${row.credits.toLocaleString('zh-CN')}现金｜${price}${route}${ratio}${row.owned ? '｜已有' : ''}`);
   }
   if (result.rows.length > 16) lines.push(`其余 ${result.rows.length - 16} 件已在卡片中省略，优先保留会影响购买决策的项目。`);
-  lines.push(`经济性推荐合计 ${result.wantDucats} 杜卡德${result.affordable ? '，余额够用' : `，还差 ${result.ducatShortfall} 杜卡德，可发「杜卡德 ${result.ducatShortfall}」生成兑换方案`}。价格优先取今日成交中位，样本不足回退 90 天成交中位；仅供参考。`);
+  lines.push(`经济性推荐合计 ${result.wantDucats} 杜卡德${result.affordable ? '，余额够用' : `，还差 ${result.ducatShortfall} 杜卡德，可发「杜卡德 ${result.ducatShortfall}」生成兑换方案`}。市场路线优先当前挂单低值（剔除异常低单），无卖单回退今日/90 天成交中位；仅供参考。`);
   return lines.join('\n');
 }
