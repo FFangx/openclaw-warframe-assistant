@@ -102,6 +102,12 @@ Invoke-Checked 'reward-zh daily task contract tests' {
 Invoke-Checked 'WFInfo companion installer contract tests' {
   & (Join-Path $repoRoot 'tests\wfinfo-companion-installer.test.ps1')
 }
+Invoke-Checked 'uninstall lifecycle contract tests' {
+  & (Join-Path $repoRoot 'tests\uninstall.test.ps1')
+}
+Invoke-Checked 'repo metadata contract tests' {
+  & (Join-Path $repoRoot 'tests\repo-metadata.test.ps1')
+}
 
 if (-not $SourceOnly) {
   if (-not $Workspace) { $failures.Add('runtime verification: workspace cannot be resolved') }

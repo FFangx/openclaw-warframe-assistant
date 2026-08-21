@@ -1,0 +1,37 @@
+name: Feature Request
+description: 建议一个新命令、能力或改进。请先确认它不是「市场写操作/游戏自动化」（这类需求不做）。
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢建议。请先读 [CONTRIBUTING.md](../../blob/main/CONTRIBUTING.md) 了解项目边界：
+        **不做**市场写操作、游戏内自动化/宏、绕过个人数据身份门的功能；素材/截图类改动受 [ASSET-LICENSES.md](../../blob/main/ASSET-LICENSES.md) 约束。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决什么问题
+      description: 场景与痛点；命令示例：`我想输入 X 得到 Y`
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议的方案
+      description: 命令格式、卡片/回答内容、数据来源（应来自现有数据源，见 NOTICE.md）
+    validations:
+      required: true
+  - type: dropdown
+    id: scope
+    attributes:
+      label: 影响范围
+      options:
+        - 公开查询（所有用户）
+        - 个人功能（仅主人私聊）
+        - 安装/部署/文档
+        - 其他
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 替代方案
+      description: 有没有已试过的现有命令/工具

@@ -38,16 +38,30 @@
 
 ### 工程
 
+- 新增安全卸载 `uninstall.ps1`：只处理受管标记内容（Skill/插件清单文件与受控 AGENTS 片段，全部移入可恢复备份、绝不删除），cron 只按 `config/cron/reward-zh-ai.job.json` 的 declarationKey 精确删除，WFInfo 仅在显式 `-RemoveWFInfo` 且验证受管 marker 后做可恢复移动；全流程支持 `-WhatIf`。
+- 版本与包元数据统一到根 `VERSION=1.1.0`：`skill/package.json` 与 `extension/package.json` 对齐（MIT、去掉无效 main、`sharp` 移入 optionalDependencies、新增可复现 `package-lock.json`，锁文件按官方 registry 生成、生命周期脚本不执行）。
+- 许可证与素材治理：`LICENSE` 恢复为标准 MIT 原文，素材/数据排除移入 `NOTICE.md`，新增 `ASSET-LICENSES.md` 逐项素材来源与授权状态清单（DE 非商业粉丝政策、genesis-assets Apache-2.0 可验证、DE 游戏素材按政策保留且取得渠道如实记录）。
+- 新增开源治理文件：`SECURITY.md`（私有漏洞报告优先）、`CONTRIBUTING.md`、`CODE_OF_CONDUCT.md`、`SUPPORT.md`（无 SLA）、`CODEOWNERS`、issue 表单、PR 模板与 Dependabot 配置。
+- CI 供应链加固：Node 20 与 24 双版本矩阵；第三方 action 固定完整 commit SHA（注释原 tag）；`checkout` 关闭凭据持久化；保持最小只读权限；新增 `npm ci --ignore-scripts` 锁文件可复现校验。
 - 每日「奖励译名 AI 查证」任务具备可部署合同：`config/cron/reward-zh-ai.job.json`（declarationKey `warframe-assistant:reward-zh-ai:default`，每日 24h、isolated agent 会话）成为该任务的唯一源码来源；`install.ps1` 幂等创建/修复（保留既有投递目标，测试工作区或 `-SkipCron` 时跳过，不触碰真实 cron），`verify.ps1` 源码层校验合同（`tests/reward-zh-cron-contract.test.ps1`）、运行时层只读校验任务存在/启用/每日/isolated。
 - WFInfo 配套合同：奸商目标模式在策略缺价时读取同目录标准 `prime_reward_prices.json` 兜底（策略内价格始终优先；索引 schema/时间/字段严格校验，缺失、损坏、过期、generatedAt 明显晚于当前时间（>5 分钟）或全部条目无效时整体忽略，条目级无效价格（platinum 非有限正数、basis 非今日/90 日口径、成交量非有限或为负）逐项跳过、旧别名 90d/90-day 规范化为 90days，并维持原有缺价安全停判；索引有效期不超出策略有效期）。
 - WFInfo 托管安装器合同测试覆盖固定发布清单、离线安装、许可证随包、幂等重装、错误哈希拒绝且不破坏现有安装、验证后升级与旧版本备份。
+- 安全卸载加固（`uninstall.ps1`，Codex 复核）：备份目录每次运行唯一（时间戳+树名+GUID 短尾，碰撞时递增后缀），同秒重跑/重装再卸载不再可能复用并静默覆盖旧备份；备份目录创建移入 `ShouldProcess` 守卫内，`-WhatIf` 显式零写入（不再依赖 cmdlet 偏好传播）；受管文件移动去掉 `-Force`，目标已存在时大声失败而非覆盖。
 
 ### 测试
 
+- 新增卸载合同测试（`tests/uninstall.test.ps1`，50 项）：GUID 临时工作区 + 假 openclaw CLI，覆盖 WhatIf 零改动（含无临时文件残留）、受管文件可恢复备份、未标记用户文件保留、AGENTS 片段精确移除、cron 精确 declarationKey（订阅哈希 key 不动）、WFInfo 显式开关 + marker 校验 + 可恢复移动、仓库根目录拒绝、幂等二次卸载、manifest 路径穿越负向测试（`..` 逃逸/绝对路径/空路径均拒绝且零移动）、备份目录跨运行唯一性（重装再卸载不覆盖旧备份）。
+- 新增仓库元数据合同测试（`tests/repo-metadata.test.ps1`）：VERSION/skill/extension 三处版本一致、标准 MIT 原文、sharp 仅 optional、锁文件官方 registry、治理文件存在且无邮箱/QQ/SLA 承诺、文档版本漂移检查。
 - 新增未收录奖励学习闭环回归：CLI 子进程级 `inbox→learn→词典命中→出队` 与 `inbox→dismiss→出队`、100 项上限挤兑、并发入队去重累计与原子落盘、dismiss 与排队写入的串行顺序、种子键不可覆盖、学习词典不覆盖 Market/官方译名。
 - 新增每日任务端到端模拟（`reward-zh-daily-task.test.mjs`）：以静态证据表替换联网+模型判断，其余全走真实 CLI 子进程，验证每日 agent 任务全链与空 inbox 的 `NO_REPLY` 分支，零联网零模型。
 - 新增漂移监控合同测试（`drift-report.test.mjs`，全部零联网零凭据）：电波挑战缺失统计不猜数字且自动核销被保守禁用、科研词缀/日历增益占位统计不含个人分数、合成未知名装配必须落中文占位、当前 `weekly-static.json` 用户可见中文表逐值零泄漏扫描、DE 官方 worldState 关键集合缺失拒绝写可靠缓存、端点健康白名单脱敏聚合与 CLI 只读子进程验证。
 - 新增 Prime 奖励索引回归（`prime-reward-index.test.mjs`，全部零联网零凭据）：构建口径与覆盖统计、严格校验（schema/时间/未来 generatedAt/过期/负有效期/条目逐项跳过/空结果拒绝）、集合来源（仅 Intact 行/按英文名去重/无 slug 跳过/仅含独立单词 Prime 且排除 Forma/Requiem）、新鲜缓存零联网复用、过期与损坏重建、刷新失败保旧文件、原子替换失败注入（写临时或 rename 任意错误时旧目标路径与字节不变、无临时残留）、并发上限、并行性能粗测、原子写入无残留、CLI 参数错误与离线 fresh 子进程。
+
+### 文档
+
+- README 新增公开安装生命周期（安装/升级/卸载）、支持边界（个人项目无 SLA、Windows + 国际服）与隐私摘要（离开本机的只有查询本身，快照/凭据永不离机）。
+- 新增 `ASSET-LICENSES.md`（素材来源与授权状态清单）与 `PUBLIC-RELEASE.md`（公开仓库转换核对清单与维护方式）；INSTALL.md 新增卸载章节，CONFIG.md 补充卸载备份路径。
+- 许可证治理复核修订（Codex 复核）：`LICENSES/` 新增 genesis-assets 的 Apache-2.0 全文（上游逐字节副本）与来源/核对说明；货币/遗物/源力石/未开封紫卡确认为 DE 游戏素材，按 DE Content Policy 非商业条件保留（取得渠道如实记录、不主张 AlecaFrame 授权），不再列为发布阻塞；`img/` 截图记为所有者接受并延后处理的已知隐私/展示风险（非阻塞）；SECURITY.md 协调披露改为不承诺时限的个人项目措辞。
 
 ## [1.0.0] - 2026-08-17
 

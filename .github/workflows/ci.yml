@@ -6,30 +6,46 @@ on:
     tags: ['v*']
   pull_request:
 
+# 最小权限：CI 只读仓库内容，从不写回、从不发布。
 permissions:
   contents: read
 
 jobs:
   source-verify:
-    name: Source verification (Windows)
+    name: Source verification (Windows, Node ${{ matrix.node-version }})
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 24]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # v4 — 固定完整 commit SHA（供应链安全），原 tag 见注释
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          # 不需要写权限；禁用 GIT 凭据持久化，防止任何 step 意外使用仓库令牌推送
+          persist-credentials: false
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        # v4 — 固定完整 commit SHA（供应链安全），原 tag 见注释
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 24
+          node-version: ${{ matrix.node-version }}
 
       - name: Show toolchain
         shell: pwsh
         run: |
           node --version
           $PSVersionTable.PSVersion.ToString()
+
+      - name: Reproducible lockfile check (skill, no lifecycle scripts)
+        shell: pwsh
+        working-directory: skill
+        # 验证 package-lock.json 与 package.json 一致且可用官方 registry 复现；
+        # --ignore-scripts 禁止任何依赖生命周期脚本（sharp 的 postinstall 不执行）。
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Source tests + installer lifecycle (verify.ps1 -SourceOnly)
         shell: pwsh

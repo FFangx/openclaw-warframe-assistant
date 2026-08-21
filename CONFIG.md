@@ -42,3 +42,5 @@
 - `skills/warframe-assistant/.warframe-assistant-build.json` 与插件目录同名文件——当前 commit、脏工作树标志、内容哈希和部署时间
 - 两个运行目录的 `.warframe-assistant-managed.json`——安装器受管文件及 SHA-256 清单
 - `.openclaw/warframe-assistant-deploy-backups/`——升级时被替换或移出的旧受管文件，可用于人工恢复；不属于运行路径
+- `.openclaw/warframe-assistant-uninstall-backups/`——`uninstall.ps1` 卸载时移出的受管文件（可恢复备份，不删除）；确认不再需要后手动删除
+- `WFInfo.uninstall-backup-<时间>`——`uninstall.ps1 -RemoveWFInfo` 把配套版整体移动到的同级备份目录

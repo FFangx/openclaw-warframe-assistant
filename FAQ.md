@@ -19,7 +19,7 @@
 未测试。公开查询链路理论上只依赖 Node+Chromium 系浏览器，路径探测是 Windows 写法，要自己改。AlecaFrame 只有 Windows 版，个人功能在其他平台无解。
 
 **Q: 图标/图片素材从哪来的？**
-DE 官方素材（经 warframe.market、browse.wf、AlecaFrame CDN、WFCD 社区仓库分发），版权归 DE，fan 项目惯例使用。详见 NOTICE.md。
+DE 官方素材（经 warframe.market、browse.wf、AlecaFrame CDN、WFCD 社区仓库分发），版权归 DE，fan 项目惯例使用。逐项来源、授权范围与公开发布处置见 [ASSET-LICENSES.md](ASSET-LICENSES.md) 与 [NOTICE.md](NOTICE.md)。
 
 **Q: 游戏更新出了新物品，数据要手动更新吗？**
 基本不用：词典/掉落/价格缓存 1 小时~7 天自动过期重建。物品小图想秒出可重跑一次 `prefetch-icons.mjs`（幂等增量）。周常静态表（weekly-static.json）里的奖励池描述在 DE 大改版时可能要手动对一遍。

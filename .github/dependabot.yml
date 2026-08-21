@@ -1,0 +1,31 @@
+# Dependabot 配置：只盯依赖更新，合并前必须通过 verify.ps1 -SourceOnly。
+# 个人项目：更新节奏保守，limit 调低，避免大量并发 PR。
+
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /skill
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 3
+    versioning-strategy: increase-if-necessary
+    labels:
+      - dependencies
+    ignore:
+      # sharp 是可选优化（optionalDependencies）；锁文件随包更新即可，不要单独升主版本
+      - dependency-name: "sharp"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies

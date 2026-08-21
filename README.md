@@ -11,7 +11,7 @@
 [![OpenClaw](https://img.shields.io/badge/Runs%20on-OpenClaw-orange)](https://openclaw.ai)
 [![Game](https://img.shields.io/badge/Warframe-国际服-8b5cf6)](https://www.warframe.com)
 
-[安装](INSTALL.md) · [配置](CONFIG.md) · [FAQ](FAQ.md) · [能力详单](skill/references/capabilities.md) · [更新日志](CHANGELOG.md)
+[安装](INSTALL.md) · [配置](CONFIG.md) · [FAQ](FAQ.md) · [能力详单](skill/references/capabilities.md) · [更新日志](CHANGELOG.md) · [素材授权](ASSET-LICENSES.md) · [安全](SECURITY.md)
 
 </div>
 
@@ -85,6 +85,13 @@ flowchart LR
 
 ## 快速开始
 
+先克隆仓库（或直接下载 ZIP）：
+
+```powershell
+git clone https://github.com/FFangx/openclaw-warframe-assistant.git
+cd openclaw-warframe-assistant
+```
+
 前置门槛请先读 [INSTALL.md](INSTALL.md)——**QQ 官方机器人申请是整个链路里最麻烦的一步**，不是本项目能简化的。
 
 ```powershell
@@ -104,9 +111,46 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\verify.ps1
 
 安装器会先跑源码测试，再用受管文件清单同步 Skill/插件并逐文件校验 SHA-256；源码已删除的旧受管文件会移入工作区内的可恢复部署备份。运行时的 `.warframe-assistant-build.json` 记录版本、Git commit、脏工作树标志和内容哈希，`doctor.mjs` 会直接显示当前运行构建。
 
+## 公开安装生命周期（安装 / 升级 / 卸载）
+
+| 操作 | 命令 | 说明 |
+|---|---|---|
+| 安装 | `.\install.ps1` | 同步 Skill/插件、幂等更新 AGENTS.md 安全片段、按合同安装每日 cron（详见 INSTALL.md） |
+| 升级 | `.\install.ps1`（同一命令） | 只更新受管文件；被替换/移出的旧受管文件进入 `.openclaw\warframe-assistant-deploy-backups\` 可恢复备份，`node_modules`、状态、缓存和个人配置绝不误动 |
+| 预览卸载 | `.\uninstall.ps1 -WhatIf` | 只打印将要做什么，不改任何文件 |
+| 卸载 | `.\uninstall.ps1` | 见下方「卸载边界」 |
+| 卸载（含 WFInfo 配套版） | `.\uninstall.ps1 -RemoveWFInfo` | 显式开关；验证受管标记后把整个 WFInfo 目录**移动**为同级 `.uninstall-backup-时间` 备份，不删除 |
+
+**卸载边界（安全合同，由 `tests/uninstall.test.ps1` 锁定）**：
+
+- 默认只处理**有受管标记**的内容：`skills/warframe-assistant/` 与 `.openclaw/extensions/warframe-fast-commands/` 中登记在
+  `.warframe-assistant-managed.json` 清单里的文件，以及 AGENTS.md 中 BEGIN/END 标记内的受控安全片段。所有文件**移动**到
+  `.openclaw\warframe-assistant-uninstall-backups\` 可恢复备份，**绝不永久删除**；未标记的用户文件原样保留，含用户文件的目录不会删除。
+- cron 只按 **declarationKey 精确匹配**删除 `config/cron/reward-zh-ai.job.json` 声明的任务；订阅/掉落监测任务是用户数据（按会话哈希的 key），
+  只报告、不删除。
+- WFInfo 只在 `-RemoveWFInfo` 且验证 `.openclaw-wfinfo-companion.json` 受管标记后做可恢复移动；无标记的目录直接拒绝。
+- 用户数据（`state/`、`.cache/`、部署备份、`AGENTS.md.warframe-assistant.bak`）默认全部保留，卸载总结里会列出。
+
+## 支持边界
+
+- 个人维护的业余项目：**无 SLA**，issue/PR 响应不保证时限，见 [SUPPORT.md](SUPPORT.md) 与 [CONTRIBUTING.md](CONTRIBUTING.md)。
+- 仅支持 **Windows**（AlecaFrame 限制）与 **Warframe 国际服**（国服无公开 API，见 FAQ）；Linux/Mac 未测试。
+- 运行时需 Node.js 20+（CI 同时验证 20 与 24）与 Chrome/Edge；`sharp` 为可选优化，不装功能不受影响。
+- 安全边界不可协商：无市场写操作、无游戏内自动化、个人数据仅限主人私聊。发现安全问题的报告方式见 [SECURITY.md](SECURITY.md)。
+
+## 隐私摘要
+
+- **离开本机的数据**：只有查询本身（物品名、命令、世界状态请求）发给公开数据源——api.warframestat.us、api.warframe.market、
+  browse.wf、DE 官方 worldState 与 AlecaFrame CDN（词典/图片兜底）。这些请求**不含**你的 QQ openid、账号标识或任何凭据。
+- **永不离开本机的数据**：AlecaFrame 个人快照（库存/账号/周报数据）只在本机只读解析；订阅账本、周常状态、卡片与缓存都写在你的
+  OpenClaw 工作区内。本项目不读取 warframe.market 登录令牌，不上传任何快照。
+- 安装器写入的 AGENTS.md 受控片段只声明只读与隐私边界，不含任何身份信息。
+
 ## 发布
 
-版本唯一来源是仓库根目录的 `VERSION`（当前 `1.1.0`）。GitHub Actions 在每次 push/PR/tag 时运行 `verify.ps1 -SourceOnly`（源码测试 + 安装器生命周期）。正式发布走 `release.ps1`：它校验干净工作树、`main` 与远端一致、源码验证通过、tag 不存在，然后把 `CHANGELOG.md` 的 `[Unreleased]` 章节落成版本章节并打 `vX.Y.Z` 标签：
+版本唯一来源是仓库根目录的 `VERSION`（当前 `1.1.0`）。GitHub Actions 在每次 push/PR/tag 时于 **Node 20 与 24** 两个版本上运行
+`verify.ps1 -SourceOnly`（源码测试 + 安装器生命周期 + 全部合同测试），并校验 `skill/package-lock.json` 可复现；
+第三方 action 固定完整 commit SHA、`checkout` 关闭凭据持久化、权限保持最小只读。正式发布走 `release.ps1`：它校验干净工作树、`main` 与远端一致、源码验证通过、tag 不存在，然后把 `CHANGELOG.md` 的 `[Unreleased]` 章节落成版本章节并打 `vX.Y.Z` 标签：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\release.ps1 -Version 1.1.0   # 预览用 -DryRun，推送加 -Push
@@ -122,13 +166,20 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\release.ps1 -Version 1
 
 | 文档 | 内容 |
 |---|---|
-| [INSTALL.md](INSTALL.md) | 安装步骤与前置门槛 |
+| [INSTALL.md](INSTALL.md) | 安装步骤与前置门槛（含卸载生命周期） |
 | [CONFIG.md](CONFIG.md) | 配置项（必填 1 项 + 可选环境变量） |
 | [FAQ.md](FAQ.md) | 常见问题 |
-| [NOTICE.md](NOTICE.md) | 数据源与素材归属 |
+| [NOTICE.md](NOTICE.md) | 授权范围：素材/数据排除与数据源归属 |
+| [ASSET-LICENSES.md](ASSET-LICENSES.md) | 第三方素材来源与授权范围逐项清单（含公开发布前处置） |
+| [SECURITY.md](SECURITY.md) | 安全漏洞报告（私有漏洞报告渠道） |
+| [SUPPORT.md](SUPPORT.md) | 支持边界（个人项目，无 SLA） |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南与测试要求 |
+| [PUBLIC-RELEASE.md](PUBLIC-RELEASE.md) | 公开仓库转换的风险核对清单与维护方式 |
 | [config/AGENTS.warframe.md](config/AGENTS.warframe.md) | 安装器维护的全局只读与隐私边界 |
 | skill/references/capabilities.md | 全部能力的完整行为说明与降级矩阵 |
 
 ## License
 
-代码 MIT（见 [LICENSE](LICENSE)）。游戏素材版权归 Digital Extremes，社区数据源归属见 [NOTICE.md](NOTICE.md)。
+代码 MIT（见 [LICENSE](LICENSE)）。游戏素材版权归 Digital Extremes，社区数据源归属见 [NOTICE.md](NOTICE.md)；
+内置素材的逐项来源、授权范围与公开发布处置见 [ASSET-LICENSES.md](ASSET-LICENSES.md)；
+genesis-assets 派生图标的 Apache-2.0 全文与来源说明见 [LICENSES/](LICENSES/genesis-assets.md)。

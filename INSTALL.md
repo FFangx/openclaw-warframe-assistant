@@ -81,7 +81,8 @@ WFInfo 默认安装到 `%LOCALAPPDATA%\OpenClaw\WFInfo`；可用 `-WFInfoInstall
 
 ```bash
 cd skills/warframe-assistant
-npm i sharp        # PNG 压缩，卡片体积 -70%；不装功能不受影响
+npm ci                     # 按 lockfile 安装；sharp 是 optionalDependencies，默认一并装上（PNG 压缩，卡片体积 -70%）
+npm ci --omit=optional     # 完全跳过 sharp 的最小安装；不装功能不受影响
 node scripts/prefetch-icons.mjs   # 预热全量物品小图（~64MB），掉落/购物卡行内图秒出；不跑则按需下载
 ```
 
@@ -124,9 +125,33 @@ Gateway 日志确认插件数量包含本插件（搜 `plugins:`）。然后 QQ 
 
 ## 6. CI 与发布
 
-- **CI**：`.github/workflows/ci.yml` 在每次 push 到 `main`、PR 与 `v*` tag 时于 windows-latest 上运行 `verify.ps1 -SourceOnly`——源码 Skill 测试、扩展契约测试、安装器生命周期与陈旧文件隔离验证。CI 不接触真实 QQ、个人快照或凭据。
-- **版本**：根目录 `VERSION` 是版本唯一来源（当前 `1.0.0`）。受管部署的 `.warframe-assistant-build.json` 会记录 `version`，`verify.ps1` 运行时层强制 Skill 与插件版本一致且等于源码 `VERSION`。
+- **CI**：`.github/workflows/ci.yml` 在每次 push 到 `main`、PR 与 `v*` tag 时于 windows-latest 上运行 `verify.ps1 -SourceOnly`——源码 Skill 测试、扩展契约测试、安装器生命周期、卸载/元数据/发布合同与陈旧文件隔离验证，**Node 20 与 24 两个版本**都跑；第三方 action 固定完整 commit SHA、`checkout` 关闭凭据持久化、权限最小只读；另校验 `skill/package-lock.json` 可复现（`npm ci --ignore-scripts`）。CI 不接触真实 QQ、个人快照或凭据。
+- **版本**：根目录 `VERSION` 是版本唯一来源（当前 `1.1.0`）。受管部署的 `.warframe-assistant-build.json` 会记录 `version`，`verify.ps1` 运行时层强制 Skill 与插件版本一致且等于源码 `VERSION`。`skill/package.json` 与 `extension/package.json` 的 `version` 字段与 `VERSION` 对齐（两者均不发布到 npm，属于仓库发布的一部分；`tests/repo-metadata.test.ps1` 强制校验）。
 - **发布**：在仓库根目录运行 `.\release.ps1`（`-DryRun` 预览、`-Version X.Y.Z` 改版本、`-Push` 推送）。脚本门禁：干净工作树、`main` 与 `origin/main` 一致、`verify.ps1 -SourceOnly` 通过、`vX.Y.Z` tag 不存在、CHANGELOG 有非空的 `[Unreleased]` 章节；通过后生成版本化 CHANGELOG 章节、提交 `release vX.Y.Z` 并打附注标签。
+
+## 7. 卸载（安全边界）
+
+在仓库根目录运行；**先预览**：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1 -WhatIf   # 只打印将要做什么
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1           # 实际卸载
+```
+
+卸载默认**只**处理有受管标记的内容，且全部是可恢复的：
+
+1. `skills/warframe-assistant/` 与 `.openclaw/extensions/warframe-fast-commands/` 中登记在
+   `.warframe-assistant-managed.json` 清单里的文件 → **移动**到 `.openclaw\warframe-assistant-uninstall-backups\<时间>\`；
+   未标记的用户文件原样保留，含用户文件的目录不会被删除。
+2. 工作区 `AGENTS.md` 中 BEGIN/END 标记内的受控安全片段被移除，其余个人内容逐字保留（`-SkipAgents` 可跳过）。
+3. cron 只按 `config/cron/reward-zh-ai.job.json` 的 **declarationKey 精确匹配**删除对应任务；订阅/掉落监测任务
+   （按会话哈希的 key）是用户数据，只报告、不删除（`-SkipCron` 可跳过）。
+4. WFInfo 配套版只在显式加 `-RemoveWFInfo` 且验证 `.openclaw-wfinfo-companion.json` 受管标记后，把整个目录
+   **移动**为同级 `WFInfo.uninstall-backup-<时间>` 备份（绝不删除）；无标记的目录直接拒绝。
+
+卸载**不会**删除的用户数据：`state/`（订阅账本/周常/掉落状态）、`.cache/`、部署备份
+（`.openclaw\warframe-assistant-deploy-backups\`）与 `AGENTS.md.warframe-assistant.bak`——总结里会列出。
+确认不再需要后，可手动删除备份目录。卸载边界由 `tests/uninstall.test.ps1` 合同测试锁定。
 
 ## 常见翻车点
 

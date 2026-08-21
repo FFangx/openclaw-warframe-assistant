@@ -1,0 +1,60 @@
+name: Bug Report
+description: 报告一个可复现的问题（功能/命令/安装/文档均可）。安全问题请走 SECURITY.md，不要在这里贴细节。
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢报告问题。请尽量完整填写；个人维护项目，信息越全处理越快。
+        安全问题（凭据泄漏、越权读取个人数据、脚本破坏性行为）请走 [SECURITY.md](../../blob/main/SECURITY.md) 私有报告渠道，**不要**在公开 issue 贴细节。
+  - type: input
+    id: command
+    attributes:
+      label: 触发命令或场景
+      description: 例如 `wm 悟空p`、`订阅 裂缝 钢铁 生存`、`pwsh -File .\install.ps1`
+      placeholder: 触发的命令/操作
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      description: 期望发生什么
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 实际发生了什么；贴关键输出/错误信息，删除其中任何 openid、账号数据或路径里的个人目录
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 最小复现步骤（1. 2. 3. …）
+  - type: textarea
+    id: doctor
+    attributes:
+      label: doctor 功能矩阵（如有）
+      description: 运行 `node <skill目录>/scripts/doctor.mjs` 的输出。可只贴 ❌/⚠️ 行。
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 源码 VERSION 或受管部署 `.warframe-assistant-build.json` 里的 version/commit
+      placeholder: 如 1.1.0 / commit 短号
+  - type: dropdown
+    id: node
+    attributes:
+      label: Node.js 版本
+      options:
+        - "20.x"
+        - "22.x"
+        - "24.x"
+        - 其他/不确定
+  - type: markdown
+    attributes:
+      value: |
+        提示：涉及个人账号数据（库存/周报/紫卡）的截图请先脱敏；`img/` 截图替换事项暂缓处理。
