@@ -560,6 +560,8 @@ function partVaultIndex(alecaDir) {
           const vaulted = Boolean(relicsByBase.get(base)?.vaulted);
           for (const reward of rewards) {
             put(reward.name, vaulted);
+            // 目录英文名可能是截断形式（如 Xaku Prime Chassis），奖励名带 Blueprint；双侧各建键
+            put(String(reward.name || '').replace(/\s+Blueprint$/iu, ''), vaulted);
             if (reward.slug) put(String(reward.slug).replace(/_/gu, ' '), vaulted);
           }
         }
@@ -577,7 +579,10 @@ export async function annotatePartVaultStatus(entries, alecaDir) {
   if (!index) return (entries || []).map((entry) => ({ ...entry, vaulted: null }));
   return (entries || []).map((entry) => {
     if (entry.catKey !== 'part') return { ...entry, vaulted: null };
-    const hit = index.get(compact(String(entry.englishName || '')));
+    const base = String(entry.englishName || '');
+    const hit = index.get(compact(base))
+      || index.get(compact(base.replace(/\s+Blueprint$/iu, '')))
+      || index.get(compact(`${base} Blueprint`));
     return { ...entry, vaulted: hit ? (hit.vaulted === hit.total) : null };
   });
 }
