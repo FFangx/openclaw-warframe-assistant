@@ -5,6 +5,7 @@
 // 已购状态视觉约定：✅绿=已购买（oid 对齐唯一解）；「已购 M 件」计数=对齐多解/真轮换的诚实降级。
 
 import { currency, documentShell, escapeHtml } from './warframe-cards.mjs';
+import { NEXT_ACTIONS_HEIGHT, renderNextActions } from './card-actions.mjs';
 
 const C = { text: '#f3f5f7', sub: '#aeb9c4', dim: '#8f9aa6', green: '#67dfb8', gold: '#f0c765', cyan: '#72ded3', purple: '#c98add', blue: '#9bb6d3' };
 
@@ -90,9 +91,10 @@ export function buildShopOverviewCard(overview, fetchedAt = new Date().toISOStri
         ? `<div style="font-size:17px;font-weight:900;color:${C.cyan};font-variant-numeric:tabular-nums">${escapeHtml(countdownMs(row.expiryMs))}</div><div style="font-size:10px;color:${C.dim}">距下次轮换</div>`
         : `<div style="font-size:12px;color:${C.dim}">—</div>`}</div></div>`;
   }).join('');
-  const height = 84 + overview.rows.length * rowH + 32;
-  const content = `<div class="card"><div class="header">${shopIcon()}<div><div class="kicker">商店 · 轮换与已购总览</div><div class="title">商店总览</div></div><div class="header-meta"><strong>「商店 序号」看详情</strong><span>「哪里买 物品名」反查</span></div></div>${rows}<div class="footer"><span>货单：官方导出数据 · 已购：本机快照</span><span>${escapeHtml(new Date(fetchedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))}</span></div></div>`;
-  return { html: documentShell(content, height), width: 600, height, key: `shop-overview-${String(fetchedAt).slice(0, 16)}` };
+  const actions = renderNextActions([{ command: '商店 1' }, { command: '购买 <物品>' }]);
+  const height = 84 + overview.rows.length * rowH + 32 + NEXT_ACTIONS_HEIGHT;
+  const content = `<div class="card"><div class="header">${shopIcon()}<div><div class="kicker">商店 · 轮换与已购总览</div><div class="title">商店总览</div></div><div class="header-meta"><strong>「商店 序号」看详情</strong><span>「购买 物品名」反查</span></div></div>${rows}${actions}<div class="footer"><span>货单：官方导出数据 · 已购：本机快照</span><span>${escapeHtml(new Date(fetchedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))}</span></div></div>`;
+  return { html: documentShell(content, height), width: 600, height, key: `shop-overview2-${String(fetchedAt).slice(0, 16)}` };
 }
 
 // ==== ② 单商人详情卡 ====
@@ -118,13 +120,14 @@ export function buildVendorDetailCard(detail, fetchedAt = new Date().toISOString
   const infoLines = [meta.location ? `位置：${meta.location}` : '', meta.currency ? `货币：${meta.currency}` : ''].filter(Boolean);
   const infoH = infoLines.length ? infoLines.length * 24 + 16 : 0;
   const boughtH = boughtBits.length ? 30 : 0;
-  const height = 84 + infoH + boughtH + sections.length * 30 + rowCount * 38 + 32 + 12;
+  const actions = renderNextActions([{ command: '购买 <物品>' }, { command: '商店' }]);
+  const height = 84 + infoH + boughtH + sections.length * 30 + rowCount * 38 + 32 + 12 + NEXT_ACTIONS_HEIGHT;
   const content = `<div class="card"><div class="header">${shopIcon()}<div><div class="kicker">商店 · ${escapeHtml(meta.faction || '商人详情')}</div><div class="title">${escapeHtml(detail.zhName)}</div></div><div class="header-meta">${detail.kind === 'rotating' ? `<span class="pill" style="color:${C.purple}">随机轮换</span>` : detail.kind === 'cyclic' ? `<span class="pill" style="color:${C.cyan}">周期轮换</span>` : `<span class="pill" style="color:${C.dim}">固定货单</span>`}</div></div>
     ${infoLines.length ? `<div style="padding:8px 16px;border-bottom:1px solid #3d454f">${infoLines.map((line) => `<div style="height:24px;display:flex;align-items:center;font-size:12px;color:${C.sub};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(line)}</div>`).join('')}</div>` : ''}
     ${boughtBits.length ? `<div style="height:30px;display:flex;align-items:center;padding:0 16px;font-size:13px;font-weight:800;color:${C.green};border-bottom:1px solid #3d454f">${escapeHtml(boughtBits.join(' · '))}</div>` : ''}
-    ${rowsHtml}
+    ${rowsHtml}${actions}
     <div class="footer" style="margin-top:12px"><span>货单：官方导出数据 · 已购：本机快照</span><span>${escapeHtml(new Date(fetchedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))}</span></div></div>`;
-  return { html: documentShell(content, height), width: 600, height, key: `shop-detail4-${detail.key.split('/').pop()}-${anyIcon ? 'i' : 'x'}-${String(fetchedAt).slice(0, 16)}` };
+  return { html: documentShell(content, height), width: 600, height, key: `shop-detail5-${detail.key.split('/').pop()}-${anyIcon ? 'i' : 'x'}-${String(fetchedAt).slice(0, 16)}` };
 }
 
 // ==== ③ 瓦奇娅 / 达尔沃专属详情（结构不同单独画） ====
@@ -177,10 +180,11 @@ export function buildWhereToBuyCard(result, fetchedAt = new Date().toISOString()
         <span class="pill" style="color:${hit.availability === '常驻' ? C.green : hit.kind === 'cyclic' ? C.cyan : C.purple};font-size:10px;height:19px">${escapeHtml(hit.availability)}</span></div>
       <div style="margin-top:4px;font-size:12px;color:${C.dim};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(hit.vendorZh)}${hit.location ? ` · ${escapeHtml(hit.location)}` : ''}${escapeHtml(syndicateNote(hit.syndicate))}</div></div>
     <div style="text-align:right;font-size:13px">${priceHtml(hit.prices, 13)}</div></div>`).join('');
-  const height = 84 + Math.max(result.hits.length, 1) * rowH + 32;
+  const actions = renderNextActions(result.nextActions);
+  const height = 84 + Math.max(result.hits.length, 1) * rowH + 32 + (actions ? NEXT_ACTIONS_HEIGHT : 0);
   const empty = `<div style="height:${rowH}px;display:flex;align-items:center;justify-content:center;color:${C.dim};font-size:14px">没有商人出售「${escapeHtml(result.query)}」——可能来自掉落/合成，试试「遗物 ${escapeHtml(result.query)}」</div>`;
-  const content = `<div class="card"><div class="header">${shopIcon()}<div><div class="kicker">商店 · 哪里买</div><div class="title">${escapeHtml(result.query)}</div></div><div class="header-meta"><strong>${result.total || 0} 个货源</strong><span>${result.total > result.hits.length ? `显示前 ${result.hits.length}` : '全部显示'}</span></div></div>${rows || empty}<div class="footer"><span>货单：官方导出数据 · 常驻优先排序</span><span>${escapeHtml(new Date(fetchedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))}</span></div></div>`;
-  return { html: documentShell(content, height), width: 600, height, key: `shop-where4-${result.query}-${anyIcon ? 'i' : 'x'}-${String(fetchedAt).slice(0, 16)}` };
+  const content = `<div class="card"><div class="header">${shopIcon()}<div><div class="kicker">商店 · 购买渠道</div><div class="title">${escapeHtml(result.query)}</div></div><div class="header-meta"><strong>${result.total || 0} 个货源</strong><span>${result.total > result.hits.length ? `显示前 ${result.hits.length}` : '全部显示'}</span></div></div>${rows || empty}${actions}<div class="footer"><span>货单：官方导出数据 · 常驻优先排序</span><span>${escapeHtml(new Date(fetchedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))}</span></div></div>`;
+  return { html: documentShell(content, height), width: 600, height, key: `shop-where5-${result.query}-${anyIcon ? 'i' : 'x'}-${String(fetchedAt).slice(0, 16)}` };
 }
 
 // ==== ⑥ 本周好货卡（周一随周报推送；数据=buildWeeklyDeals） ====

@@ -584,7 +584,7 @@ async function manageCommand(message, context, statePath) {
           if (!resolved) {
             reply = '商店数据源暂时拉不到，请稍后重试。';
           } else if (resolved.kind === 'evergreen') {
-            reply = `「${resolved.hit.itemName}」是${resolved.hit.vendorZh}的常驻商品，随时可买，不需要订阅；发「哪里买 ${normalize(spec.filter)}」看详情。`;
+            reply = `「${resolved.hit.itemName}」是${resolved.hit.vendorZh}的常驻商品，随时可买，不需要订阅；发「购买 ${normalize(spec.filter)}」看详情。`;
           } else if (resolved.kind === 'every-cycle') {
             reply = `「${resolved.hit.itemName}」在${resolved.hit.vendorZh}每期都会上架（限购随轮换重置），不需要蹲；发「商店 ${resolved.hit.vendorZh.split('·')[0].replace(/\(.*\)/u, '').trim()}」看本期货单。`;
           } else if (resolved.kind === 'rotating-only') {

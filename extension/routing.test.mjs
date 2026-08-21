@@ -17,7 +17,7 @@ test('plugin entry imports every routing helper it calls', async () => {
 
 test('strict documented commands stay on the deterministic fast path', () => {
   for (const input of [
-    'wm 高压电流', '遗物 Axi A22', '哪里刷 Caliban p', 'Caliban p哪里刷', '普通裂缝', '赏金 尖刃弹头', '哪里买 诡文枭主',
+    'wm 高压电流', '遗物 Axi A22', '获取 Caliban p', '普通裂缝', '赏金 尖刃弹头', '购买 诡文枭主',
     '我的库存 延几草', '我的遗物 A22', '我的紫卡 伯斯顿', '周报', '完成 深层科研',
     '仲裁', '警报', '入侵', '活动', '虚空商人', '突击', '钢铁侵袭',
   ]) assert.equal(isShortcut(input), true, input);
@@ -29,7 +29,8 @@ test('natural language and contextual follow-ups reach the model tool router', (
     '我有多少延几草、瑶丛',
     '我有这些遗物吗',
     '毒囊双枪灵化需要什么材料，去哪里拿',
-    '诡文枭主在哪里买',
+    '诡文枭主在哪里买', '哪里买 诡文枭主',
+    'Caliban p哪里刷', '哪里刷 Caliban p', '怎么刷 Caliban p', '获取路线 Caliban p',
     '这周还有哪些没做',
     '帮我订阅一下尖刃弹头赏金',
     '奸商这周有什么值得买的',

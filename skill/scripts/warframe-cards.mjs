@@ -4,6 +4,7 @@ import { access, mkdir, mkdtemp, readdir, rm, stat, unlink, writeFile } from 'no
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { NEXT_ACTIONS_HEIGHT, renderNextActions } from './card-actions.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -179,12 +180,13 @@ export function buildFissureQueryCard(data) {
   if (data.normal?.length) sections.push({ label: '普通', color: '#56616d', rows: data.normal, total: data.normalTotal ?? data.normal.length });
   if (data.hard?.length) sections.push({ label: '钢铁', color: '#536f8f', rows: data.hard, total: data.hardTotal ?? data.hard.length });
   const rowsCount = sections.reduce((sum, section) => sum + section.rows.length, 0);
-  const height = 84 + sections.length * 30 + rowsCount * 62 + 32;
+  const actions = renderNextActions(data.nextActions);
+  const height = 84 + sections.length * 30 + rowsCount * 62 + 32 + (actions ? NEXT_ACTIONS_HEIGHT : 0);
   const body = sections.map((section) => `<div class="section"><span class="section-badge" style="background:${section.color}">${section.label}</span>${section.label === '钢铁' ? '钢铁之路裂缝' : '普通虚空裂缝'}<small>${section.total} 条</small></div>${section.rows.map((row) => fissureRow(row, data)).join('')}`).join('');
   const shown = rowsCount;
   const total = sections.reduce((sum, section) => sum + section.total, 0);
-  const content = `<div class="card"><div class="header">${headerIcon('fissure')}<div><div class="kicker">虚空裂缝 · 全任务雷达</div><div class="title">${escapeHtml(data.title || '当前虚空裂缝')}</div></div><div class="header-meta"><strong>${data.personalized ? `库存推荐 · ${escapeHtml(data.recommendationModeZh || '白金')}` : '公开任务'}</strong><span>${escapeHtml(localTime(data.fetchedAt))}</span></div></div>${body}<div class="footer"><span>普通/钢铁分区 · 速刷/舒适/长线/额外收益标签${data.personalized ? ' · 每条裂缝推荐一枚库存遗物 · 估值=可靠成交中位' : ''}</span><span>显示 ${shown}/${total}</span></div></div>`;
-  const keySeed = `fissure|v6|${data.key || 'all'}|${data.personalized ? data.recommendationModeZh || 'personal' : 'public'}|${sections.flatMap((section) => section.rows).map((row) => `${row.id}:${row.recommendation?.relic?.base || ''}`).join('|')}`;
+  const content = `<div class="card"><div class="header">${headerIcon('fissure')}<div><div class="kicker">虚空裂缝 · 全任务雷达</div><div class="title">${escapeHtml(data.title || '当前虚空裂缝')}</div></div><div class="header-meta"><strong>${data.personalized ? `库存推荐 · ${escapeHtml(data.recommendationModeZh || '白金')}` : '公开任务'}</strong><span>${escapeHtml(localTime(data.fetchedAt))}</span></div></div>${body}${actions}<div class="footer"><span>普通/钢铁分区 · 速刷/舒适/长线/额外收益标签${data.personalized ? ' · 每条裂缝推荐一枚库存遗物 · 估值=可靠成交中位' : ''}</span><span>显示 ${shown}/${total}</span></div></div>`;
+  const keySeed = `fissure|v7|${data.key || 'all'}|${data.personalized ? data.recommendationModeZh || 'personal' : 'public'}|${sections.flatMap((section) => section.rows).map((row) => `${row.id}:${row.recommendation?.relic?.base || ''}`).join('|')}`;
   return { html: documentShell(content, height, 800), width: 800, height, key: `fissure-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 

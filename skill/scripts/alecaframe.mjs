@@ -995,7 +995,7 @@ export async function runAlecaMessage(message, options = {}) {
     try { mediaUrl = await renderWarframeCard(card, options.cardDir || process.env.WARFRAME_CARD_DIR); } catch { mediaUrl = null; }
     return {
       handled: true, ok: true, command: 'shop', query: parsed.query, data, mediaUrl,
-      followupText: mediaUrl && !parsed.query ? '发「商店 序号」（如 商店 1）或「商店 商人名」看完整货单；「哪里买 物品名」反查货源。' : null,
+      followupText: mediaUrl && !parsed.query ? '发「商店 序号」（如 商店 1）或「商店 商人名」看完整货单；「购买 物品名」反查货源。' : null,
       text,
     };
   }

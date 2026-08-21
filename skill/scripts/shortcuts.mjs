@@ -10,6 +10,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { buildFissureQueryCard, compressCardPng, currency, pruneOldCards, renderWarframeCard, RELIC_ICON_DATA } from './warframe-cards.mjs';
+import { NEXT_ACTIONS_HEIGHT, renderNextActions } from './card-actions.mjs';
 import { appraiseRefinements, classifyFissure } from './recommend.mjs';
 import { buildRelicFarmPlan } from './relic-farm.mjs';
 import { resilientJsonRequest } from './http-resilience.mjs';
@@ -1074,7 +1075,7 @@ function formatRelicFarm(result) {
     if (result.error === 'ambiguous_target') {
       return `“${result.query}”对应多个 Prime 部件，请说具体一点：\n${(result.choices || []).map((choice) => `- ${choice}`).join('\n')}`;
     }
-    return `没有找到“${result.query}”对应的 Prime 部件遗物。请使用具体部件名，例如：哪里刷 悟空Prime系统蓝图。`;
+    return `没有找到“${result.query}”对应的 Prime 部件遗物。请使用具体部件名，例如：获取 悟空Prime系统蓝图。`;
   }
   if (result.setMode) {
     const lines = [`【${result.set.zhName || result.set.name}｜整套获取路线】`];
@@ -1087,7 +1088,7 @@ function formatRelicFarm(result) {
       lines.push(`- ${name}：${row.relic.zhName || localizeRelicName(row.relic.name)}${owned}｜建议${row.refinement.zh} ${row.refinement.chance}%`);
       lines.push(source ? `  ${source.availabilityZh}｜${source.place}｜联合 ${source.combinedChance}%` : '  没有当前可验证的常规掉点');
     }
-    lines.push('', '每个部件先选一条最优路线；发送“哪里刷 <具体部件>”可看该部件全部候选。');
+    lines.push('', '每个部件先选一条最优路线；发送“获取 <具体部件>”可看该部件全部候选。');
     return lines.join('\n');
   }
   const lines = [`【${result.target.zhName || result.target.name}｜获取路线】`];
@@ -1201,11 +1202,12 @@ function buildMarketCard(data) {
     : '<span>散件均无在线报价</span>';
   const partsBlock = setParts.length ? `<div class="market-parts-head"><span>散件单价</span><span class="market-parts-summary">${partsSummary}</span></div>${setParts.map((part) => `<div class="market-part-row"><span class="market-part-name">${escapeHtml(part.zhName)}${(part.quantity || 1) > 1 ? ` ×${part.quantity}` : ''}</span><span class="market-part-price">${part.lowestSell == null ? '<span style="color:#9aa3ad">无卖单</span>' : `<span class="market-price-value" style="width:${partPriceWidth}">${currency('plat', part.lowestSell, { size: 12, color: '#e8d58c', weight: 800 })}</span>`}</span></div>`).join('')}` : '';
   const partsH = setParts.length ? 27 + setParts.length * 30 : 0;
-  const height = headH + partsH + 30 + sellCount * 37 + 28 + buyCount * 37 + 32;
+  const actions = renderNextActions(data.nextActions);
+  const height = headH + partsH + 30 + sellCount * 37 + 28 + buyCount * 37 + 32 + (actions ? NEXT_ACTIONS_HEIGHT : 0);
   // chips 收进 flex 流且固定右上（垂直居中时多行词条会撞框，2026-08-06 赋能·速攻实锤）
-  const content = `<div class="card"><div class="head" style="height:${headH}px;display:flex;gap:14px;align-items:center">${iconHtml}<div style="min-width:0;flex:1"><div class="eyebrow">星际战甲市场 · 跨平台交易</div><div class="title" style="font-size:${titleSize}px">${escapeHtml(item.zhName)}</div>${effectsHtml}</div><div class="chips" style="position:static;flex:0 0 auto;align-self:flex-start;margin-top:16px"><div class="chip"><small>杜卡德</small>${item.ducats == null ? '—' : currency('ducat', item.ducats, { size: 12, color: '#f3d188', weight: 700 })}</div><div class="chip"><small>交易税</small>${item.tradingTax == null ? '—' : currency('credit', item.tradingTax, { size: 12, color: '#f3d188', weight: 700 })}</div></div></div>${partsBlock}<table><colgroup>${columns}</colgroup><thead class="market-head"><tr><th class="seller-col">卖家</th><th class="rep-col">信誉</th><th class="qty-col">数量</th>${rankHeader}<th class="price-col">价格</th></tr></thead><tbody>${sellerRows || emptySellRow}<tr class="section"><td class="seller-col">买家</td><td class="rep-col">信誉</td><td class="qty-col">数量</td>${ranked ? '<td class="qty-col">等级</td>' : ''}<td class="price-col">价格</td></tr>${buyerRows || emptyBuyRow}</tbody></table><div class="foot"><span>${footLeft}</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
+  const content = `<div class="card"><div class="head" style="height:${headH}px;display:flex;gap:14px;align-items:center">${iconHtml}<div style="min-width:0;flex:1"><div class="eyebrow">星际战甲市场 · 跨平台交易</div><div class="title" style="font-size:${titleSize}px">${escapeHtml(item.zhName)}</div>${effectsHtml}</div><div class="chips" style="position:static;flex:0 0 auto;align-self:flex-start;margin-top:16px"><div class="chip"><small>杜卡德</small>${item.ducats == null ? '—' : currency('ducat', item.ducats, { size: 12, color: '#f3d188', weight: 700 })}</div><div class="chip"><small>交易税</small>${item.tradingTax == null ? '—' : currency('credit', item.tradingTax, { size: 12, color: '#f3d188', weight: 700 })}</div></div></div>${partsBlock}<table><colgroup>${columns}</colgroup><thead class="market-head"><tr><th class="seller-col">卖家</th><th class="rep-col">信誉</th><th class="qty-col">数量</th>${rankHeader}<th class="price-col">价格</th></tr></thead><tbody>${sellerRows || emptySellRow}<tr class="section"><td class="seller-col">买家</td><td class="rep-col">信誉</td><td class="qty-col">数量</td>${ranked ? '<td class="qty-col">等级</td>' : ''}<td class="price-col">价格</td></tr>${buyerRows || emptyBuyRow}</tbody></table>${actions}<div class="foot"><span>${footLeft}</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
   // key 带 v9 + 图/词条/行数/散件特征：模板改版必须打散渲染缓存，否则吃陈旧图
-  return { html: cardDocument(content, height), width: 600, height, key: `market-v10-${item.slug}-${stats ? 's' : 'ns'}-${item.iconDataUri ? 'i' : 'x'}${effectLines.length}e${effRows}-r${sellCount}${buyCount}-sp${setParts.length}.${priced.length}` };
+  return { html: cardDocument(content, height), width: 600, height, key: `market-v11-${item.slug}-${stats ? 's' : 'ns'}-${item.iconDataUri ? 'i' : 'x'}${effectLines.length}e${effRows}-r${sellCount}${buyCount}-sp${setParts.length}.${priced.length}` };
 }
 
 function buildRelicCard(data) {
@@ -1234,16 +1236,17 @@ function buildRelicCard(data) {
     ? sources.map((source) => `<tr class="reward" style="height:38px"><td></td><td class="reward-name" colspan="2" style="height:38px;font-size:14px;font-weight:600;color:#cfd6dc">${escapeHtml(source.place)}</td><td class="eff" colspan="2" style="height:38px">${escapeHtml(Math.round(source.chance * 10) / 10)}%</td></tr>`).join('')
     : `<tr class="reward" style="height:38px"><td></td><td colspan="4" style="height:38px;font-size:13px;color:#9aa3ad">${relic.vaulted ? '已入库：无常规掉点，靠开袋复刻、瓦奇娅或玩家交易获取' : '当前掉落表查无常规掉点'}</td></tr>`;
   const sourceBlock = `<tr class="section"><td colspan="5">掉落来源${sources.length ? ' · 概率最高前 ' + sources.length : ''}</td></tr>${sourceRows}`;
-  const height = 468 + (refine ? 28 + refine.tiers.length * 47 : 0) + 28 + Math.max(sources.length, 1) * 39;
+  const actions = renderNextActions(data.nextActions);
+  const height = 468 + (refine ? 28 + refine.tiers.length * 47 : 0) + 28 + Math.max(sources.length, 1) * 39 + (actions ? NEXT_ACTIONS_HEIGHT : 0);
   // 标题头纪元图标：英文遗物名首段即 tier 键（Lith S3），无素材退无图
   const headTier = String(relic.name || '').match(/^(Lith|Meso|Neo|Axi|Requiem|Omnia)/iu)?.[1];
   const headTierKey = headTier ? headTier[0].toUpperCase() + headTier.slice(1).toLowerCase() : '';
   const headIcon = RELIC_ICON_DATA[headTierKey]
     ? `<img src="${RELIC_ICON_DATA[headTierKey]}" width="46" height="46" style="flex:0 0 auto;object-fit:contain">`
     : '';
-  const content = `<div class="card"><div class="relic-head" style="display:flex;align-items:center;gap:14px">${headIcon}<div style="min-width:0"><div class="relic-title">${relic.vaulted ? '已入库遗物' : '未入库遗物'}</div><div class="relic-code">${escapeHtml(relic.zhName)}</div></div><div class="relic-note">估值 = 今日/90日成交中位<br>效率 = 杜卡德 ÷ 白金（越高越适合换杜）</div></div><table><colgroup><col style="width:10%"><col style="width:48%"><col style="width:16%"><col style="width:13%"><col style="width:13%"></colgroup><thead class="relic-table-head"><tr><th></th><th class="reward-col">奖励</th><th>估值</th><th>杜卡德</th><th>效率</th></tr></thead><tbody>${rows}${refineBlock}${sourceBlock}</tbody></table><div class="foot"><span>遗物资料＋星际战甲市场；发「遗物 编号 单人」换单人口径</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
+  const content = `<div class="card"><div class="relic-head" style="display:flex;align-items:center;gap:14px">${headIcon}<div style="min-width:0"><div class="relic-title">${relic.vaulted ? '已入库遗物' : '未入库遗物'}</div><div class="relic-code">${escapeHtml(relic.zhName)}</div></div><div class="relic-note">估值 = 今日/90日成交中位<br>效率 = 杜卡德 ÷ 白金（越高越适合换杜）</div></div><table><colgroup><col style="width:10%"><col style="width:48%"><col style="width:16%"><col style="width:13%"><col style="width:13%"></colgroup><thead class="relic-table-head"><tr><th></th><th class="reward-col">奖励</th><th>估值</th><th>杜卡德</th><th>效率</th></tr></thead><tbody>${rows}${refineBlock}${sourceBlock}</tbody></table>${actions}<div class="foot"><span>遗物资料＋星际战甲市场；发「遗物 编号 单人」换单人口径</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
   const quoteKey = relic.rewards.map((reward) => `${reward.slug || reward.name}:${reward.platinum ?? ''}:${reward.marketBasis || ''}:${reward.dailyVolume ?? ''}`).join('|');
-  return { html: cardDocument(content, height), width: 600, height, key: `relic9-${relic.name}-s${data.squad ?? 4}-i${relic.rewards.filter((reward) => reward.iconDataUri).length}-d${sources.length}-${createHash('sha1').update(quoteKey).digest('hex').slice(0, 8)}` };
+  return { html: cardDocument(content, height), width: 600, height, key: `relic10-${relic.name}-s${data.squad ?? 4}-i${relic.rewards.filter((reward) => reward.iconDataUri).length}-d${sources.length}-${createHash('sha1').update(quoteKey).digest('hex').slice(0, 8)}` };
 }
 
 function localizeRelicName(name) {
@@ -1275,13 +1278,14 @@ function buildRelicReverseCard(data) {
       : '';
     return `<tr class="reverse" style="height:${rowH}px"><td class="vault-state ${item.vaulted ? 'vaulted' : 'unvaulted'}" style="height:${rowH}px">${item.vaulted ? '已入库' : '未入库'}</td><td class="reverse-relic" style="height:${rowH}px"><span style="display:flex;align-items:center;gap:6px;padding-left:28px">${icon}<span>${escapeHtml(localizeRelicName(item.name))}</span></span></td><td class="reverse-hit" style="height:${rowH}px"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(rewards)}</div>${sourceLine}</td></tr>`;
   }).join('');
-  const height = 156 + visible.length * rowH;
+  const actions = renderNextActions(data.nextActions);
+  const height = 156 + visible.length * rowH + (actions ? NEXT_ACTIONS_HEIGHT : 0);
   // 头部物品图：查询物的 wm 缩略图（renderCard 里解析），无图降级纯文字头
   const headIcon = data.headIconDataUri
     ? `<img src="${data.headIconDataUri}" width="46" height="46" style="flex:0 0 auto;object-fit:contain">`
     : '';
-  const content = `<div class="card"><div class="relic-head" style="display:flex;align-items:center;gap:14px">${headIcon}<div style="min-width:0"><div class="relic-title">反向遗物查询</div><div class="relic-code">${escapeHtml(data.query)}</div></div><div class="relic-note">${escapeHtml(data.total)} 个相关遗物<br>未入库 ${unvaultedCount} · 已入库 ${vaultedCount}</div></div><table><colgroup><col style="width:18%"><col style="width:28%"><col style="width:54%"></colgroup><thead class="reverse-head"><tr><th class="state-col">状态</th><th class="relic-col">遗物</th><th class="hit-col">命中奖励</th></tr></thead><tbody>${rows}</tbody></table><div class="foot"><span>遗物反向索引${anySource ? ' · 掉点=概率最高来源' : ''}</span><span>${visible.length < data.total ? `显示 ${visible.length}/${data.total}` : escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
-  return { html: cardDocument(content, height), width: 600, height, key: `relic-reverse7-${data.query}-${visible.length}-${data.headIconDataUri ? 'i' : 'x'}-${anySource ? 's' : 'n'}` };
+  const content = `<div class="card"><div class="relic-head" style="display:flex;align-items:center;gap:14px">${headIcon}<div style="min-width:0"><div class="relic-title">反向遗物查询</div><div class="relic-code">${escapeHtml(data.query)}</div></div><div class="relic-note">${escapeHtml(data.total)} 个相关遗物<br>未入库 ${unvaultedCount} · 已入库 ${vaultedCount}</div></div><table><colgroup><col style="width:18%"><col style="width:28%"><col style="width:54%"></colgroup><thead class="reverse-head"><tr><th class="state-col">状态</th><th class="relic-col">遗物</th><th class="hit-col">命中奖励</th></tr></thead><tbody>${rows}</tbody></table>${actions}<div class="foot"><span>遗物反向索引${anySource ? ' · 掉点=概率最高来源' : ''}</span><span>${visible.length < data.total ? `显示 ${visible.length}/${data.total}` : escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
+  return { html: cardDocument(content, height), width: 600, height, key: `relic-reverse8-${data.query}-${visible.length}-${data.headIconDataUri ? 'i' : 'x'}-${anySource ? 's' : 'n'}` };
 }
 
 export function buildRelicFarmCard(data) {
@@ -1302,13 +1306,14 @@ export function buildRelicFarmCard(data) {
     }).join('') : `<div style="color:#8f9aa6">${row.relic.vanguard ? '先锋遗物 · 瓦奇娅限时阿耶兑换，当前未开放' : row.relic.vaulted ? '没有常规掉点；检查库存、复刻或交易' : '当前掉落表查无可靠来源'}</div>`;
     return `<div style="min-height:108px;padding:14px 24px;border-bottom:1px solid rgba(164,116,54,.38);display:grid;grid-template-columns:40px 230px 1fr;gap:14px;align-items:start"><div style="font-size:24px;color:#b6c3d3;font-weight:800">${index + 1}</div><div><div style="display:flex;align-items:center;gap:9px;font-size:19px;font-weight:900;color:#70e0db">${icon}${escapeHtml(row.relic.zhName || localizeRelicName(row.relic.name))}</div><div style="margin-top:7px;font-size:14px">${state}${owned ? ` · ${owned}` : ''}</div><div style="margin-top:4px;font-size:13px;color:#aeb8c3">目标${row.target.rarity === 'rare' ? '稀有' : row.target.rarity === 'uncommon' ? '罕见' : '常见'} · 建议${escapeHtml(row.refinement.zh)} ${escapeHtml(row.refinement.chance)}%</div></div><div style="font-size:14px;line-height:1.7;color:#d5dbe2">${Number(row.relic.ownedCount) > 0 ? '<div style="color:#73e4be;font-weight:800">先开现有库存</div>' : ''}${sources}</div></div>`;
   }).join('');
-  const height = 150 + Math.max(1, data.rows.length) * 108 + 46;
+  const actions = renderNextActions(data.nextActions);
+  const height = 150 + Math.max(1, data.rows.length) * 108 + 46 + (actions ? NEXT_ACTIONS_HEIGHT : 0);
   const headIcon = data.headIconDataUri
     ? `<img src="${data.headIconDataUri}" width="54" height="54" style="object-fit:contain;flex:0 0 auto">`
     : '';
   const bountyNote = data.bountyChecked ? '已核对当前开放世界悬赏' : '赏金实时校验不可用 · 未声称当前开放';
-  const content = `<div class="card"><div class="relic-head" style="height:108px;display:flex;align-items:center;gap:16px;padding-left:26px;padding-right:26px">${headIcon}<div style="min-width:0;flex:1"><div class="relic-title">Prime 部件 · 获取路线</div><div class="relic-code" style="font-size:30px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(data.target.zhName || data.target.name)}</div></div><div class="relic-note">${escapeHtml(data.total)} 枚相关遗物<br>${escapeHtml(bountyNote)}</div></div><div style="height:42px;padding:10px 24px;background:#303640;border-bottom:1px solid #59616b;font-size:14px;font-weight:800;color:#e9eef4">库存优先 → 当前可刷 → 条件/轮换来源</div>${rows}<div class="foot"><span>联合概率=遗物掉率×目标开奖率 · 不代表每分钟效率</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
-  return { html: cardDocument(content, height, 780), width: 780, height, key: `relic-farm3-${data.target.slug || data.target.name}-${data.rows.length}-${data.inventoryAvailable ? 'p' : 'x'}-${data.bountyChecked ? 'b' : 'u'}` };
+  const content = `<div class="card"><div class="relic-head" style="height:108px;display:flex;align-items:center;gap:16px;padding-left:26px;padding-right:26px">${headIcon}<div style="min-width:0;flex:1"><div class="relic-title">Prime 部件 · 获取路线</div><div class="relic-code" style="font-size:30px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(data.target.zhName || data.target.name)}</div></div><div class="relic-note">${escapeHtml(data.total)} 枚相关遗物<br>${escapeHtml(bountyNote)}</div></div><div style="height:42px;padding:10px 24px;background:#303640;border-bottom:1px solid #59616b;font-size:14px;font-weight:800;color:#e9eef4">库存优先 → 当前可刷 → 条件/轮换来源</div>${rows}${actions}<div class="foot"><span>联合概率=遗物掉率×目标开奖率 · 不代表每分钟效率</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
+  return { html: cardDocument(content, height, 780), width: 780, height, key: `relic-farm4-${data.target.slug || data.target.name}-${data.rows.length}-${data.inventoryAvailable ? 'p' : 'x'}-${data.bountyChecked ? 'b' : 'u'}` };
 }
 
 export function buildRelicFarmSetCard(data) {
@@ -1329,11 +1334,12 @@ export function buildRelicFarmSetCard(data) {
       : '';
     return `<div style="height:210px;padding:20px 26px;border-bottom:1px solid rgba(164,116,54,.38);display:grid;grid-template-columns:38px 274px 1fr;gap:16px;align-items:start"><div style="font-size:25px;color:#b6c3d3;font-weight:800">${index + 1}</div><div><div style="display:flex;align-items:center;gap:13px;min-height:64px">${componentIcon}<div style="min-width:0"><div style="font-size:21px;font-weight:900;color:#70e0db">${escapeHtml(componentName)}</div><div style="margin-top:5px;font-size:16px;font-weight:800;color:#eef2f6;white-space:nowrap">首选 ${escapeHtml(row.relic.zhName || localizeRelicName(row.relic.name))}</div></div></div><div style="margin-top:9px;font-size:14px">${row.relic.vaulted ? '<span style="color:#d7a46d">已入库</span>' : '<span style="color:#8ee3ad">未入库</span>'}${owned ? ` · ${owned}` : ''}</div><div style="margin-top:8px;font-size:13px;color:#7f8c99">共 ${escapeHtml(component.relatedRelics)} 枚相关遗物</div></div><div style="font-size:14px;line-height:1.75;color:#d5dbe2"><div style="font-size:16px;font-weight:800;color:#f0d48e">建议${escapeHtml(row.refinement.zh)} · 目标开奖率 ${escapeHtml(row.refinement.chance)}%</div>${Number(row.relic.ownedCount) > 0 ? '<div style="color:#73e4be;font-weight:800">先开现有库存，再考虑继续获取</div>' : ''}${routeText}${alternatives ? `<div style="margin-top:9px;padding-top:7px;border-top:1px solid rgba(127,140,153,.25);color:#8f9aa6">备选遗物：${escapeHtml(alternatives)}</div>` : ''}</div></div>`;
   }).join('');
-  const height = 150 + data.components.length * 210 + 46;
+  const actions = renderNextActions(data.nextActions);
+  const height = 150 + data.components.length * 210 + 46 + (actions ? NEXT_ACTIONS_HEIGHT : 0);
   const headIcon = data.headIconDataUri ? `<div style="width:132px;height:92px;border-radius:18px;background:radial-gradient(circle,rgba(231,190,106,.2),rgba(20,25,32,.15));border:1px solid rgba(240,212,142,.24);display:flex;align-items:center;justify-content:center;flex:0 0 auto"><img src="${data.headIconDataUri}" width="122" height="84" style="object-fit:contain"></div>` : '';
   const bountyNote = data.bountyChecked ? '已核对当前开放世界悬赏' : '赏金实时校验不可用';
-  const content = `<div class="card"><div class="relic-head" style="height:108px;display:flex;align-items:center;gap:20px;padding-left:24px;padding-right:28px;background:linear-gradient(118deg,#20373c 0%,#29323b 49%,#493b2d 100%)">${headIcon}<div style="min-width:0;flex:1"><div class="relic-title">Prime 套装 · 获取总览</div><div class="relic-code" style="font-size:34px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(setName)}</div></div><div class="relic-note">${escapeHtml(data.components.length)} 个部件<br>${escapeHtml(bountyNote)}</div></div><div style="height:42px;padding:0 26px;display:flex;align-items:center;background:#303640;border-bottom:1px solid #59616b;font-size:14px;font-weight:800;color:#e9eef4">每个部件：库存优先 → 当前最优遗物 → 两条来源与备选遗物</div>${rows}<div class="foot"><span>先锋＝瓦奇娅限时阿耶兑换 · 发送“哪里刷 具体部件”查看全部候选</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
-  return { html: cardDocument(content, height, 900), width: 900, height, key: `relic-farm-set8-${data.set.slug || data.set.name}-${data.components.length}-${data.inventoryAvailable ? 'p' : 'x'}-${data.bountyChecked ? 'b' : 'u'}-${data.headIconDataUri ? 'i' : 'x'}` };
+  const content = `<div class="card"><div class="relic-head" style="height:108px;display:flex;align-items:center;gap:20px;padding-left:24px;padding-right:28px;background:linear-gradient(118deg,#20373c 0%,#29323b 49%,#493b2d 100%)">${headIcon}<div style="min-width:0;flex:1"><div class="relic-title">Prime 套装 · 获取总览</div><div class="relic-code" style="font-size:34px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(setName)}</div></div><div class="relic-note">${escapeHtml(data.components.length)} 个部件<br>${escapeHtml(bountyNote)}</div></div><div style="height:42px;padding:0 26px;display:flex;align-items:center;background:#303640;border-bottom:1px solid #59616b;font-size:14px;font-weight:800;color:#e9eef4">每个部件：库存优先 → 当前最优遗物 → 两条来源与备选遗物</div>${rows}${actions}<div class="foot"><span>先锋＝瓦奇娅限时阿耶兑换 · 发送“获取 具体部件”查看全部候选</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
+  return { html: cardDocument(content, height, 900), width: 900, height, key: `relic-farm-set9-${data.set.slug || data.set.name}-${data.components.length}-${data.inventoryAvailable ? 'p' : 'x'}-${data.bountyChecked ? 'b' : 'u'}-${data.headIconDataUri ? 'i' : 'x'}` };
 }
 
 // ---- 帮助卡：静态功能总览（零网络，内容改这里即可，无需重启 Gateway） ----
@@ -1346,7 +1352,7 @@ const HELP_SECTIONS = [
   ['遗物 & 裂缝', [
     ['遗物 前x1', '正查：六奖励·价格·精炼建议'],
     ['遗物 战刃', '反查：哪些遗物出它'],
-    ['哪里刷 Prime部件', '获取路线：库存优先·当前赏金·常驻掉点'],
+    ['获取 Prime部件', '获取路线：库存优先·当前赏金·常驻掉点'],
     ['裂缝 [筛选]', '任务先行：全部普通/钢铁＋标签；私聊逐任务配库存'],
     ['开遗物 [条件] 🔒', '遗物先行：价值 TOP8；加“钢铁”只匹配钢铁裂缝'],
     ['开遗物 商品名 🔒', '估算过线候选＋可刷遗物；同步 WFInfo 当屏兜底'],
@@ -1363,7 +1369,7 @@ const HELP_SECTIONS = [
     ['商店 🔒', '九家总览＋已购标'],
     ['商店 1 / 商店 泰辛', '单家完整货单'],
     ['本周好货 🔒', '泰辛/圣言者必抢与周货＋瓦奇娅复刻；简称「好货」'],
-    ['哪里买 裂罅破解器', '全商人反查'],
+    ['购买 裂罅破解器', '全商人反查'],
     ['轮换日历 🔒', '未来 8 周：回廊·泰辛·瓦奇娅'],
   ]],
   ['周常', [
@@ -1401,10 +1407,10 @@ function formatHelp() {
   return [
     '【Warframe 助手功能总览】',
     '查价：wm 悟空p ｜ wm 赋能充沛 满级 ｜ 或直接问「悟空p多少钱」',
-    '遗物：遗物 前x1（正查）｜ 遗物 战刃（反查哪里出）｜ 哪里刷 <Prime部件>（获取路线）',
+    '遗物：遗物 前x1（正查）｜ 遗物 战刃（反查哪里出）｜ 获取 <Prime部件>（获取路线）',
     '裂缝：裂缝 [钢铁 生存 速刷 …]（主人私聊自动配库存遗物）｜ 开遗物 [商品名|未入库|已入库] [白金|杜卡德] [钢铁] [速刷|舒适|收益] [单人]（商品名模式同步 WFInfo 游戏内决策）｜ 精炼推荐 [单人]',
     '世界：仲裁 ｜ 警报 ｜ 入侵 ｜ 活动 ｜ 突击 ｜ 钢铁侵袭 ｜ 赏金 [地点|物品] ｜ 虚空商人/奸商 ｜ 奸商推荐（仅主人私聊）',
-    '商店：商店 [序号|商人名]（仅主人私聊）｜ 本周好货 ｜ 哪里买 <物品> ｜ 轮换日历（仅主人私聊）',
+    '商店：商店 [序号|商人名]（仅主人私聊）｜ 本周好货 ｜ 购买 <物品> ｜ 轮换日历（仅主人私聊）',
     '周常：周常 ｜ 完成 1 3 ｜ 撤销 2 ｜ 清空周常',
     '订阅：订阅 裂缝 钢铁 生存 ｜ 订阅 仲裁/警报/入侵/活动/虚空商人/周常/掉落 ｜ 我的订阅 ｜ 暂停/恢复/取消订阅 <编号>',
     '账号（仅主人私聊）：我的账号 ｜ 我的库存 X ｜ 杜卡德 [600|清仓] [保留N|保留N套]（默认按成品拥有状态智能保留）｜ 我的遗物 前N11 ｜ 我的赋能 充沛 ｜ 账号周常',
@@ -1767,7 +1773,7 @@ export function parseNaturalWorldQuestion(message) {
   const whereBuy = text.match(/^(.{1,20}?)(?:是|在|去)?(?:哪里|哪儿|哪)(?:能|可以)?(?:买|换|兑换)/u);
   if (whereBuy) {
     const item = String(whereBuy[1] || '').replace(/[啊呀呢了吗么?？!！。.~～\s]+$/u, '').trim();
-    if (item && item.length <= 16) return { kind: 'where-to-buy', command: `哪里买 ${item}`, personal: false };
+    if (item && item.length <= 16) return { kind: 'where-to-buy', command: `购买 ${item}`, personal: false };
   }
 
   // 获取路线：「X哪里刷/怎么获得X」；与只列相关遗物的「哪里出」资料查询分开。
@@ -1775,7 +1781,7 @@ export function parseNaturalWorldQuestion(message) {
     || text.match(/^(?:怎么|如何)(?:刷|获得|拿)(.{1,20}?)$/u);
   if (whereFarm) {
     const item = String(whereFarm[1] || '').replace(/[啊呀呢了吗么?？!！。.~～\s]+$/u, '').trim();
-    if (item && item.length <= 16) return { kind: 'relic-farm', command: `哪里刷 ${item}`, personal: false };
+    if (item && item.length <= 16) return { kind: 'relic-farm', command: `获取 ${item}`, personal: false };
   }
 
   // 遗物反查：「X哪里出」「哪个遗物出X」；物品名解析失败由调用方静默放行
@@ -1792,13 +1798,11 @@ export function parseNaturalWorldQuestion(message) {
 export function parseShortcutMessage(message) {
   const text = normalizeUnicode(message);
   if (/^\/?(?:帮助|help|菜单|功能|功能列表|命令列表|使用说明|说明书|怎么用)$/iu.test(text)) return { command: 'help', query: '' };
-  // 哪里刷：Prime 部件行动路线；前缀、后缀和「怎么刷」均进入同一确定性命令。
-  const whereFarm = text.match(/^\/?(?:哪里刷|怎么刷|获取路线)\s*(.*)$/u)
-    || text.match(/^\/?(.+?)(?:在|去)?哪(?:里|儿)?刷[？?！!。.\s]*$/u)
-    || text.match(/^\/?(.+?)怎么刷[？?！!。.\s]*$/u);
+  // 正式短命令只保留「获取」；哪里刷/怎么刷/获取路线等口语表达交给模型路由。
+  const whereFarm = text.match(/^\/?获取(?:\s+|$)(.*)$/u);
   if (whereFarm) return { command: 'relic-farm', query: (whereFarm[1] || '').trim() };
-  // 哪里买：全商人反查（非个人命令，货单是公开数据）；「X哪里买」句式也接
-  const whereBuy = text.match(/^\/?哪里买(?:\s+|$)(.*)$/u) || text.match(/^\/?(.+?)(?:在|去)?哪(?:里|儿)?买[？?！!。.\s]*$/u);
+  // 正式短命令只保留「购买」；哪里买/在哪换等口语表达交给模型路由。
+  const whereBuy = text.match(/^\/?购买(?:\s+|$)(.*)$/u);
   if (whereBuy) return { command: 'where-to-buy', query: (whereBuy[1] || '').trim() };
   // 星球悬赏：无参=总览；带地名=单区详情；其余当物品反查
   const bounty = text.match(/^\/?(?:悬赏|赏金)(?:\s+|$)(.*)$/u);
@@ -1817,6 +1821,63 @@ export function parseShortcutMessage(message) {
   return null;
 }
 
+export function buildShortcutNextActions(data, parsed = {}) {
+  if (!data?.ok) return [];
+  const query = String(parsed.query || data.query || '').trim();
+  if (data.kind === 'market') {
+    const name = data.item?.zhName || query;
+    return /Prime|圣装|Prime\s*一套/iu.test(`${data.item?.name || ''} ${name}`)
+      ? [{ command: `获取 ${name.replace(/\s*(?:一套|套装|Set)$/iu, '')}`, label: '查看获取路线' }]
+      : [];
+  }
+  if (data.kind === 'relic-farm') {
+    const name = data.setMode ? (data.set?.zhName || data.set?.name || query) : (data.target?.zhName || data.target?.name || query);
+    return [{ command: `wm ${name}${data.setMode ? ' 一套' : ''}`, label: '查看市场价格' }, { command: `遗物 ${query}`, label: '查看相关遗物' }];
+  }
+  if (data.kind === 'relic') {
+    if (data.mode === 'reverse') return [{ command: `获取 ${query}`, label: '规划获取路线' }];
+    return [{ command: '裂缝', label: '查看当前裂缝' }];
+  }
+  if (data.kind === 'fissure') return [{ command: '开遗物', label: '按库存推荐遗物' }];
+  if (data.kind === 'where-to-buy') {
+    const actions = [{ command: `wm ${query}`, label: '查看玩家市场' }];
+    const vendor = data.hits?.[0]?.vendorZh;
+    if (vendor) actions.push({ command: `商店 ${vendor}`, label: '查看商人货单' });
+    return actions;
+  }
+  return [];
+}
+
+export function buildShortcutContextEnvelope(data, parsed = {}) {
+  if (!data?.ok) return null;
+  const query = String(parsed.query || data.query || '').trim();
+  let entity = null;
+  let summary = '';
+  if (data.kind === 'market') {
+    entity = { type: 'market-item', displayName: data.item?.zhName || query, canonicalName: data.item?.name || data.item?.slug || query };
+    summary = `最低在线卖价 ${data.sell?.[0]?.platinum ?? '暂无'} 白金；最高收购价 ${data.buy?.[0]?.platinum ?? '暂无'} 白金。`;
+  } else if (data.kind === 'relic-farm') {
+    const target = data.setMode ? data.set : data.target;
+    entity = { type: data.setMode ? 'prime-set' : 'prime-part', displayName: target?.zhName || target?.name || query, canonicalName: target?.name || query };
+    const routes = data.setMode ? data.components?.map((item) => item.route).filter(Boolean) : data.rows;
+    const vaultedOnly = routes?.length > 0 && routes.every((route) => route.relic?.vaulted);
+    summary = vaultedOnly ? '当前候选遗物均已入库，下一步可转向玩家市场。' : '已生成库存优先的遗物获取路线。';
+  } else if (data.kind === 'relic') {
+    entity = data.mode === 'forward'
+      ? { type: 'relic', displayName: data.relic?.zhName || data.relic?.name, canonicalName: data.relic?.name }
+      : { type: 'relic-reward', displayName: query, canonicalName: query };
+    summary = data.mode === 'forward' ? `已列出遗物奖励与精炼收益；${data.relic?.vaulted ? '该遗物已入库。' : '该遗物仍可获取。'}` : `找到 ${data.total || data.matches?.length || 0} 枚相关遗物。`;
+  } else if (data.kind === 'where-to-buy') {
+    entity = { type: 'shop-item', displayName: query, canonicalName: query };
+    summary = data.hits?.length ? `找到 ${data.total || data.hits.length} 个商人货源，首选 ${data.hits[0].vendorZh}。` : '没有找到商人货源。';
+  } else if (data.kind === 'fissure') {
+    entity = { type: 'fissure-query', displayName: data.title || '当前虚空裂缝', canonicalName: query || '当前虚空裂缝' };
+    summary = `当前匹配 ${data.total || 0} 条裂缝。`;
+  }
+  if (!entity?.displayName && !entity?.canonicalName) return null;
+  return { ok: true, kind: data.kind, query, scope: data.personalized ? 'personal' : 'public', summary, entities: [entity], nextActions: data.nextActions || [], fetchedAt: data.fetchedAt };
+}
+
 export async function runShortcut(message, options = {}) {
   const parsed = parseShortcutMessage(message);
   if (!parsed) return { handled: false };
@@ -1827,18 +1888,20 @@ export async function runShortcut(message, options = {}) {
     return { handled: true, ok: true, command: 'help', query: '', data, mediaUrl, followupText: null, text: formatHelp() };
   }
   if (parsed.command === 'where-to-buy') {
-    if (!parsed.query) return { handled: true, ok: false, command: 'where-to-buy', text: '用法：哪里买 <物品>，例如 哪里买 武器特殊功能槽连接器' };
+    if (!parsed.query) return { handled: true, ok: false, command: 'where-to-buy', text: '用法：购买 <物品>，例如 购买 武器特殊功能槽连接器' };
     const { loadShopContext, whereToBuy, attachRowIcons } = await import('./vendor-shop.mjs');
     const { buildWhereToBuyCard } = await import('./vendor-shop-card.mjs');
     const { renderWarframeCard } = await import('./warframe-cards.mjs');
     const context = await loadShopContext();
-    const data = whereToBuy(parsed.query, context);
+    const data = { ...whereToBuy(parsed.query, context), ok: true, kind: 'where-to-buy', fetchedAt: new Date().toISOString() };
+    data.nextActions = buildShortcutNextActions(data, parsed);
     try { await attachRowIcons(data.hits); } catch { /* 无图降级 */ }
     let mediaUrl = null;
-    try { mediaUrl = await renderWarframeCard(buildWhereToBuyCard(data), options.cardDir || process.env.WARFRAME_CARD_DIR); } catch { mediaUrl = null; }
+    try { mediaUrl = await renderWarframeCard(buildWhereToBuyCard(data, data.fetchedAt), options.cardDir || process.env.WARFRAME_CARD_DIR); } catch { mediaUrl = null; }
     const lines = data.hits.slice(0, 6).map((hit) => `${hit.itemName}：${hit.vendorZh}（${hit.availability}）`);
     return {
       handled: true, ok: true, command: 'where-to-buy', query: parsed.query, data, mediaUrl,
+      contextEnvelope: buildShortcutContextEnvelope(data, parsed),
       followupText: mediaUrl && data.hits.length ? '价格为商店原价；限购与轮换以游戏内为准。' : null,
       text: data.hits.length ? `「${parsed.query}」货源：\n${lines.join('\n')}` : `没有商人出售「${parsed.query}」，可能来自掉落/合成；可试「遗物 ${parsed.query}」反查。`,
     };
@@ -1927,7 +1990,7 @@ export async function runShortcut(message, options = {}) {
     const text = parsed.command === 'market'
       ? '用法：wm <物品>，例如 wm 悟空p'
       : parsed.command === 'relic-farm'
-        ? '用法：哪里刷 <Prime部件>，例如 哪里刷 悟空Prime系统蓝图'
+        ? '用法：获取 <Prime部件>，例如 获取 悟空Prime系统蓝图'
       : '用法：遗物 <纪元编号或物品>，例如 遗物 前x1、遗物 战刃';
     return { handled: true, ok: false, command: parsed.command, text };
   }
@@ -1937,6 +2000,7 @@ export async function runShortcut(message, options = {}) {
     : parsed.command === 'fissure' ? await queryFissures(parsed.query, platform)
       : parsed.command === 'relic-farm' ? await queryRelicFarm(parsed.query, platform, crossplay, options)
       : await queryRelic(parsed.query, platform, crossplay);
+  data.nextActions = buildShortcutNextActions(data, parsed);
   let mediaUrl = null;
   try {
     mediaUrl = await renderCard(data, options.cardDir || process.env.WARFRAME_CARD_DIR);
@@ -1949,6 +2013,7 @@ export async function runShortcut(message, options = {}) {
     command: parsed.command,
     query: parsed.query,
     data,
+    contextEnvelope: buildShortcutContextEnvelope(data, parsed),
     mediaUrl,
     followupText: mediaUrl ? compactFollowup(data) : null,
     text: parsed.command === 'market' ? formatMarket(data)

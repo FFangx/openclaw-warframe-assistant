@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildRelicFarmPlan, classifyRelicSources } from './relic-farm.mjs';
-import { buildRelicFarmCard, buildRelicFarmSetCard, parseNaturalWorldQuestion, parseShortcutMessage } from './shortcuts.mjs';
+import { buildRelicFarmCard, buildRelicFarmSetCard, buildShortcutContextEnvelope, buildShortcutNextActions, parseNaturalWorldQuestion, parseShortcutMessage } from './shortcuts.mjs';
 
 const target = { name: 'Synthetic Prime Systems Blueprint', zhName: '合成 Prime 系统蓝图', slug: 'synthetic_prime_systems_blueprint', chance: 2, rarity: 'rare' };
 const matches = [
@@ -10,13 +10,30 @@ const matches = [
   { name: 'Axi S3', zhName: '后纪 S3', vaulted: true, rewards: [target] },
 ];
 
-test('哪里刷短命令与自然说法进入获取路线，不再落普通遗物反查', () => {
-  assert.deepEqual(parseShortcutMessage('哪里刷 悟空Prime系统蓝图'), { command: 'relic-farm', query: '悟空Prime系统蓝图' });
-  assert.deepEqual(parseShortcutMessage('哪里刷悟空Prime系统蓝图'), { command: 'relic-farm', query: '悟空Prime系统蓝图' });
-  assert.deepEqual(parseShortcutMessage('悟空Prime系统蓝图哪里刷'), { command: 'relic-farm', query: '悟空Prime系统蓝图' });
-  assert.deepEqual(parseShortcutMessage('怎么刷 悟空Prime系统蓝图'), { command: 'relic-farm', query: '悟空Prime系统蓝图' });
-  assert.deepEqual(parseNaturalWorldQuestion('悟空系统在哪里获得'), { kind: 'relic-farm', command: '哪里刷 悟空系统', personal: false });
+test('正式获取短命令走确定性路线，口语获取问法只由自然语言路由改写', () => {
+  assert.deepEqual(parseShortcutMessage('获取 悟空Prime系统蓝图'), { command: 'relic-farm', query: '悟空Prime系统蓝图' });
+  assert.equal(parseShortcutMessage('哪里刷 悟空Prime系统蓝图'), null);
+  assert.equal(parseShortcutMessage('悟空Prime系统蓝图哪里刷'), null);
+  assert.equal(parseShortcutMessage('怎么刷 悟空Prime系统蓝图'), null);
+  assert.deepEqual(parseNaturalWorldQuestion('悟空系统在哪里获得'), { kind: 'relic-farm', command: '获取 悟空系统', personal: false });
   assert.deepEqual(parseNaturalWorldQuestion('悟空系统哪里出'), { kind: 'relic-reverse', command: '遗物 悟空系统', personal: false });
+});
+
+test('获取结果生成可复用的下一步动作与安全上下文', () => {
+  const data = buildRelicFarmPlan({ query: '合成p', matches, sourceMap: {}, bountyChecked: true });
+  data.nextActions = buildShortcutNextActions(data, { query: '合成p' });
+  const envelope = buildShortcutContextEnvelope(data, { query: '合成p' });
+  assert.match(data.nextActions[0].command, /^wm /u);
+  assert.equal(envelope.entities[0].type, 'prime-part');
+  assert.equal('rows' in envelope, false);
+  const card = buildRelicFarmCard(data);
+  assert.match(card.html, /下一步/u);
+  assert.match(card.html, /wm /u);
+});
+
+test('Market Prime 整套提示回到正式获取命令且不携带 Set 后缀', () => {
+  const actions = buildShortcutNextActions({ ok: true, kind: 'market', item: { name: 'Revenant Prime Set', zhName: 'Revenant Prime Set' } });
+  assert.deepEqual(actions, [{ command: '获取 Revenant Prime', label: '查看获取路线' }]);
 });
 
 test('来源分类明确区分常驻、当前赏金和静态轮换池', () => {

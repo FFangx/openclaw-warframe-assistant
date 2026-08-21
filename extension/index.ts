@@ -7,6 +7,7 @@ import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
 import { directIntelType, isArbitrationShortcut, isPersonalAccountCommand, isShortcut, isSubscriptionCommand, isWeeklyCommand } from './routing.mjs';
 import { buildEvidenceEnvelope, STATE_ASSERTION_POLICY } from './evidence.mjs';
 import { classifyNaturalWarframeQuery, DYNAMIC_QUERY_POLICY } from './intent-policy.mjs';
+import { createContextBridge } from './context-bridge.mjs';
 
 const execFileAsync = promisify(execFile);
 const pluginDir = path.dirname(fileURLToPath(import.meta.url));
@@ -22,6 +23,22 @@ const dropsState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-
 const weeklyState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-weekly.json');
 const cardDir = path.resolve(pluginDir, '..', '..', '..', '.cache', 'warframe-cards');
 const subscriptionCardDir = path.resolve(pluginDir, '..', '..', '..', 'media', 'qqbot', 'warframe-cards');
+const shortCommandContext = createContextBridge();
+
+function contextBridgeKey(event: any = {}, ctx: any = {}): string | null {
+  const session = String(ctx.sessionKey || event.sessionKey || ctx.conversationId || event.conversationId || ctx.channelId || ctx.chatId || '').trim().toLowerCase();
+  const sender = String(ctx.requesterSenderId || event.senderId || ctx.senderId || ctx.channelContext?.sender?.id || '').trim().toLowerCase();
+  const group = Boolean(event.isGroup || agentContextIsGroup(ctx));
+  if (!session || (group && !sender)) return null;
+  return `${session}|${sender || session}`;
+}
+
+function rememberShortCommandContext(event: any, ctx: any, result: any, personalAllowed = false): void {
+  const envelope = result?.contextEnvelope;
+  if (!envelope || (envelope.scope === 'personal' && !personalAllowed)) return;
+  const key = contextBridgeKey(event, ctx);
+  if (key) shortCommandContext.remember(key, envelope);
+}
 
 function qqTarget(event: { isGroup?: boolean; conversationId?: string; senderId?: string }): string | null {
   // QQ 事件里的 openid 大小写不稳定（实测同一用户出现过大写与小写），全链路统一小写
@@ -471,7 +488,7 @@ function createWarframeTool(api: any, ctx: any): any {
     label: 'Warframe Assistant',
     description: [
       '处理所有 Warframe/星际战甲事实查询与操作。凡用户在问实时状态、价格、遗物、裂缝、掉落、配方、商人、库存、紫卡、周报/周常或订阅，都应先调用本工具，不要凭模型记忆回答。',
-      'operation=command 时 query 必须是现有规范命令，例如：wm 物品、遗物 Axi A22、裂缝、赏金、仲裁、警报、入侵、活动、突击、钢铁侵袭、虚空商人、哪里买 物品、我的库存 物品、我的遗物 代号、我的紫卡 武器、周报、完成 深层科研、开遗物、精炼推荐、杜卡德推荐、奸商推荐、商店、本周好货、轮换日历。',
+      'operation=command 时 query 必须是现有规范命令，例如：wm 物品、遗物 Axi A22、获取 Prime部件、购买 物品、裂缝、赏金、仲裁、警报、入侵、活动、突击、钢铁侵袭、虚空商人、我的库存 物品、我的遗物 代号、我的紫卡 武器、周报、完成 深层科研、开遗物、精炼推荐、杜卡德推荐、奸商推荐、商店、本周好货、轮换日历。用户说“哪里刷/怎么刷/哪里买/在哪换”时，提取实体后改写为获取/购买规范命令。',
       'operation=lookup 用于不适合卡片的底层资料，query 格式只能是：worldstate 板块、vendor 商人、dict 词、drops 关键词、recipe 名字、bounties、sp-incursions、item /Lotus/...。问某武器灵化安装材料时直接用 recipe <武器名>灵化之源，不要逐步试探多个查询。',
       'operation=subscription 用于用户明确要求新增、取消、暂停、恢复或列出订阅，query 使用规范订阅命令。个人数据和写操作会由可信会话身份强制鉴权。可为一个复合问题多次调用。',
       'operation=subscription_diagnosis 用于“为什么没提醒、上次提醒后又出现过吗、多久没轮换到、是不是漏推送”等历史/故障问题；query 只传物品或订阅条件。不得用静态 drops 查询替代。',
@@ -496,6 +513,7 @@ function createWarframeTool(api: any, ctx: any): any {
         ]);
         const mediaUrl = String(result?.mediaUrl || '').trim();
         const mediaDelivered = mediaUrl ? await sendToolMedia(api, ctx, mediaUrl) : false;
+        rememberShortCommandContext({}, ctx, result, personalAllowed);
         return jsonToolResult(decorateToolResult(result, mediaDelivered, operation, query));
       }
 
@@ -554,12 +572,16 @@ export default definePluginEntry({
     api.registerTool((ctx) => createWarframeTool(api, ctx), { name: 'warframe_assistant' });
     // 对时效/订阅故障问句做每轮确定性约束。只注入“必须走哪类工具”，
     // 物品和参数仍由模型从自然语言提取，避免退化成关键词命令表。
-    api.on('before_prompt_build', async (event) => {
+    api.on('before_prompt_build', async (event, ctx) => {
+      const contexts = [];
       const intent = classifyNaturalWarframeQuery(event.prompt);
-      if (!intent.requiredOperation || !hasWarframeContext(event.prompt, event.messages || [])) return;
-      return {
-        prependContext: `[Warframe 动态查询门禁] 本轮问题属于订阅历史/漏提醒诊断。必须先调用 warframe_assistant operation=${intent.requiredOperation}，query 只传用户关注的物品或订阅条件；若还问当前轮，再追加对应 operation=command 当前查询。禁止用 lookup drops、静态 wiki 或模型记忆替代。`,
-      };
+      if (intent.requiredOperation && hasWarframeContext(event.prompt, event.messages || [])) {
+        contexts.push(`[Warframe 动态查询门禁] 本轮问题属于订阅历史/漏提醒诊断。必须先调用 warframe_assistant operation=${intent.requiredOperation}，query 只传用户关注的物品或订阅条件；若还问当前轮，再追加对应 operation=command 当前查询。禁止用 lookup drops、静态 wiki 或模型记忆替代。`);
+      }
+      const key = contextBridgeKey(event, ctx);
+      const bridged = key ? shortCommandContext.consumePrompt(key) : '';
+      if (bridged) contexts.push(bridged);
+      if (contexts.length) return { prependContext: contexts.join('\n') };
     }, { priority: 1800 });
     // 长期会话可能仍保留旧版“直接 exec 脚本”的上下文。阻止模型绕过注册工具，
     // 让它收到明确错误后改调 warframe_assistant；插件自己的 execFile 不经过此钩子。
@@ -594,6 +616,8 @@ export default definePluginEntry({
         });
         if (!reply) throw new Error('matched command produced no reply');
         await sendDirectQQReply(api, event, ctx, reply);
+        const personalAllowed = !Boolean(event.isGroup || agentContextIsGroup(ctx)) && isExactOwner(api, event.senderId || ctx.senderId);
+        rememberShortCommandContext(event, ctx, reply.raw, personalAllowed);
         api.logger.info(`Warframe short command delivered before model: ${content.trim()}`);
         return { handled: true };
       } catch (error) {
