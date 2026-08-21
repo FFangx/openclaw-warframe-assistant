@@ -299,7 +299,9 @@ test('安全库存无法补足时不会误报奸商路线划算', async () => {
   const card = buildTraderShoppingCard(result);
   assert.match(card.html, /今日成交中位/u);
   assert.match(card.html, /90天 \d+p · 日均/u);
-  assert.match(card.html, /市场行情仍可参考/u);
+  assert.match(card.html, /库存可动/u);
+  assert.match(card.html, /奸商/u);
+  assert.match(card.html, /税/u);
   assert.match(card.html, /Kronia 中继站（土星）/u);
 });
 

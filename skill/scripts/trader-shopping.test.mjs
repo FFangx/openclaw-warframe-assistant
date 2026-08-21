@@ -192,6 +192,21 @@ test('appraiseTraderGoods：挂单失败单项降级，该行无价其余照常'
   assert.equal(rows[0].marketBasis, null);
 });
 
+test('formatTraderShopping：今日无成交数据显示「今日无数据」，不用无p', () => {
+  const rows = [{
+    zhName: '测试 Prime', nameEn: 'Primed Test', uniqueName: '/x', tradable: true,
+    ducats: 300, credits: 140000, owned: false, advice: { tag: 'strong', zh: '强烈买' },
+    platinum: 45, marketBasis: 'orders', orderLow: 45, orderCount: 12, orderLowSuspicious: false,
+    todayMedian: null, todayVolume: 0, median90: 55, dailyVolume: 6, ratio: 6.67,
+    ducatOpportunityPlat: null, ducatPlanShortfall: null, tradingTax: 1000000,
+  }];
+  const text = formatTraderShopping({ arrived: true, location: 'Orcus 中继站（冥王星）', ducatBalance: 255, rows, wantDucats: 300, affordable: true });
+  assert.match(text, /今日无数据/u);
+  assert.doesNotMatch(text, /无p/u);
+  assert.match(text, /挂单低值 45p（12 单在售）/u);
+  assert.match(text, /奸商 140,000现金｜税 1,000,000/u);
+});
+
 test('buildTraderShoppingCard：挂单低值口径与异常低单标注', async () => {
   const { buildTraderShoppingCard } = await import('./warframe-cards.mjs');
   const card = buildTraderShoppingCard({

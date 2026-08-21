@@ -675,20 +675,23 @@ export function buildTraderShoppingCard(data) {
     const advice = ADVICE_STYLE[row.advice?.tag] || ADVICE_STYLE.skip;
     const name = row.zhName || (row.tradable ? row.nameEn : (row.nameEn || '未收录物品'));
     // 市场路线：决策价=当前挂单稳健低值（basis=orders）；成交中位(今日/90天)作对照行
+    const todayPart = row.todayMedian == null ? '今日无数据' : `今日中位 ${escapeHtml(row.todayMedian)}p·${escapeHtml(row.todayVolume ?? 0)}笔`;
     const priceText = !row.tradable ? '独占 · 无市场价'
       : row.platinum == null ? '暂无成交统计'
         : row.marketBasis === 'orders'
-          ? `挂单低值 ${currency('plat', row.platinum, { size: 10, weight: 800 })} · ${escapeHtml(row.orderCount ?? 0)} 单在售${row.orderLowSuspicious ? ' · 已剔除异常低单' : ''} · 今日中位 ${escapeHtml(row.todayMedian ?? '无')}p·${escapeHtml(row.todayVolume ?? 0)}笔 · 90天 ${escapeHtml(row.median90 ?? '无')}p`
+          ? `挂单低值 ${currency('plat', row.platinum, { size: 10, weight: 800 })} · ${escapeHtml(row.orderCount ?? 0)} 单在售${row.orderLowSuspicious ? ' · 已剔除异常低单' : ''} · ${todayPart} · 90天 ${escapeHtml(row.median90 ?? '无')}p`
           : row.marketBasis === 'today'
             ? `今日成交中位 ${currency('plat', row.platinum, { size: 10, weight: 800 })} · 90天 ${escapeHtml(row.median90 ?? '无')}p · 日均 ${escapeHtml(row.dailyVolume ?? 0)}笔`
-            : `90天成交中位 ${currency('plat', row.platinum, { size: 10, weight: 800 })} · 今日中位 ${escapeHtml(row.todayMedian ?? '无')}p·${escapeHtml(row.todayVolume ?? 0)}笔 · 日均 ${escapeHtml(row.dailyVolume ?? 0)}笔`;
-    const routeText = row.ducatOpportunityPlat != null
-      ? `补足 ${currency('ducat', row.ducatNeed, { size: 9, weight: 760 })}≈${currency('plat', row.ducatOpportunityPlat, { size: 9, weight: 760 })} · 奸商 ${currency('credit', row.credits, { size: 9, weight: 700 })} · 税 ${row.tradingTax != null ? currency('credit', row.tradingTax, { size: 9, weight: 700 }) : '未知'}`
-      : row.ducatPlanShortfall
-        ? `安全库存还差 ${currency('ducat', row.ducatPlanShortfall, { size: 9, weight: 760 })} · 市场行情仍可参考`
-        : row.platinum != null && row.ratio != null
-          ? `${currency('ducat', 1, { size: 9, weight: 760 })}=${currency('plat', row.ratio, { size: 9, weight: 760 })} · 奸商 ${currency('credit', row.credits, { size: 9, weight: 700 })}`
-          : '';
+            : `90天成交中位 ${currency('plat', row.platinum, { size: 10, weight: 800 })} · ${todayPart} · 日均 ${escapeHtml(row.dailyVolume ?? 0)}笔`;
+    // 所有可交易商品统一展示：补足杜卡德（或缺口）/ 奸商价 / 交易税，与推荐结论解耦
+    const tax = row.tradingTax != null ? currency('credit', row.tradingTax, { size: 9, weight: 700 }) : '未知';
+    const routeText = !row.tradable
+      ? ''
+      : row.ducatOpportunityPlat != null
+        ? `补足 ${currency('ducat', row.ducatNeed, { size: 9, weight: 760 })}≈${currency('plat', row.ducatOpportunityPlat, { size: 9, weight: 760 })} · 奸商 ${currency('credit', row.credits, { size: 9, weight: 700 })} · 税 ${tax}`
+        : row.ducatPlanShortfall != null
+          ? `还差 ${currency('ducat', row.ducatPlanShortfall, { size: 9, weight: 760 })}（库存可动 ${currency('ducat', row.ducatPlanDucats ?? 0, { size: 9, weight: 760 })}）· 奸商 ${currency('credit', row.credits, { size: 9, weight: 700 })} · 税 ${tax}`
+          : `奸商 ${currency('credit', row.credits, { size: 9, weight: 700 })} · 税 ${tax}`;
     // 插画列：有图用图，查无（Baro 饰品类未收录）留空保持对齐
     const iconCell = row.iconDataUri
       ? `<div style="width:40px;height:40px;border-radius:8px;display:grid;place-items:center;background:rgba(255,255,255,.07);overflow:hidden"><img src="${row.iconDataUri}" style="max-width:36px;max-height:36px;object-fit:contain"></div>`

@@ -287,7 +287,7 @@ export async function fetchTradeStatistics(slug, rankFilter, statisticsFetcher) 
   }
 }
 
-// —— 当前卖单（/top 原始顺序不可信，只取价格做稳健低值；失败/无效卖单回退成交统计）——
+// —— 当前卖单（全量订单端点：data 即订单数组；/top 只给每方向 5 条，不能当真实在售数）——
 // 60 秒磁盘缓存：单次奸商推荐要拉 30 件商品，重复查询避免整批重打 Market；
 // 挂单低值仍来自新鲜度 ≤60s 的快照，不影响「当前可买价」语义。
 export async function fetchMarketOrders(slug, ordersFetcher) {
@@ -297,9 +297,15 @@ export async function fetchMarketOrders(slug, ordersFetcher) {
       return { sell: Array.isArray(payload?.sell) ? payload.sell : [] };
     }
     const { staleCachedJson } = await import('./wfdata.mjs');
-    const result = await staleCachedJson(`market-orders-${slug}`, { ttlMs: ORDERS_CACHE_TTL_MS, version: 1 }, async () => {
-      const payload = await getJson(`${MARKET_BASE}/v2/orders/item/${slug}/top`, { Platform: 'pc', Crossplay: 'true', Language: 'zh-hans' });
-      return { sell: Array.isArray(payload?.data?.sell) ? payload.data.sell : [] };
+    const result = await staleCachedJson(`market-orders-${slug}`, { ttlMs: ORDERS_CACHE_TTL_MS, version: 2 }, async () => {
+      const payload = await getJson(`${MARKET_BASE}/v2/orders/item/${slug}`, { Platform: 'pc', Crossplay: 'true', Language: 'zh-hans' });
+      const all = Array.isArray(payload?.data) ? payload.data
+        : Array.isArray(payload?.payload?.orders) ? payload.payload.orders
+          : [];
+      return {
+        sell: all.filter((order) => String(order.order_type ?? order.type ?? '') === 'sell'
+          && order.visible !== false && Number(order.quantity) > 0),
+      };
     });
     // 刷新失败退出的陈旧挂单不冒充「当前」：整体放弃，走成交统计兜底
     if (result.stale) return null;
@@ -499,7 +505,9 @@ export async function traderShopping(inventory, options = {}) {
   if (Array.isArray(options.inventoryValuation) && options.inventoryValuation.length) {
     try {
       const { parseDucatSpec, buildDucatCandidates, refreshDucatPrices, optimizeDucatTarget } = await import('./ducat-planner.mjs');
-      const spec = parseDucatSpec('杜卡德');
+      // 机会成本按「激进」口径：补足杜卡德时可动用全部部件（含已入库）。
+      // 这是市场对比的假设口径，不改变「杜卡德 X」命令默认的已入库保护。
+      const spec = parseDucatSpec('杜卡德 激进');
       const ducatCandidates = await refreshDucatPrices(buildDucatCandidates(options.inventoryValuation, spec), {
         maxStatisticsQuotes: options.maxDucatStatisticsQuotes ?? options.maxLiveDucatQuotes ?? 24,
         ...(options.ducatStatisticsFetcher ? { statisticsFetcher: options.ducatStatisticsFetcher } : {}),
@@ -623,18 +631,27 @@ export function formatTraderShopping(result) {
       : row.marketBasis === 'today' ? `今日成交中位 ${row.platinum}p`
         : row.marketBasis === '90days' ? `90天成交中位 ${row.platinum}p`
           : `市场参考 ${row.platinum}p`;
+    // 今日无成交数据时不显示「无p」，改为显式「今日无数据」；0 笔只在有中位数时随行展示
+    const todayPart = row.todayMedian == null ? '今日无数据' : `今日中位 ${row.todayMedian}p·${row.todayVolume ?? 0}笔`;
     const price = row.tradable
       ? row.platinum != null
-        ? `${basis}${row.marketStatsStale ? '（缓存）' : ''}｜今日中位 ${row.todayMedian ?? '无'}p·${row.todayVolume ?? 0}笔 · 90天 ${row.median90 ?? '无'}p·日均${row.dailyVolume ?? 0}笔`
+        ? `${basis}${row.marketStatsStale ? '（缓存）' : ''}｜${todayPart} · 90天 ${row.median90 ?? '无'}p·日均${row.dailyVolume ?? 0}笔`
         : '暂无成交统计'
       : '独占无市场价';
     const ratio = row.ratio != null ? `｜1杜=${row.ratio}p` : '';
-    const route = row.ducatOpportunityPlat != null
-      ? `｜补足${row.ducatNeed}杜机会成本${row.ducatOpportunityPlat}p｜交易税${row.tradingTax?.toLocaleString('zh-CN') ?? '未知'}现金`
-      : row.ducatPlanShortfall ? `｜安全库存还差${row.ducatPlanShortfall}杜` : '';
-    lines.push(`${row.advice.zh}｜${name}｜${row.ducats}杜+${row.credits.toLocaleString('zh-CN')}现金｜${price}${route}${ratio}${row.owned ? '｜已有' : ''}`);
+    // 所有可交易商品统一展示：补足杜卡德（或缺口）/ 奸商价 / 交易税，无论推荐与否
+    const tax = row.tradingTax == null ? '未知' : row.tradingTax.toLocaleString('zh-CN');
+    const credits = row.credits.toLocaleString('zh-CN');
+    const route = !row.tradable
+      ? ''
+      : row.ducatOpportunityPlat != null
+        ? `｜补足${row.ducatNeed}杜≈${row.ducatOpportunityPlat}p｜奸商 ${credits}现金｜税 ${tax}`
+        : row.ducatPlanShortfall != null
+          ? `｜还差${row.ducatPlanShortfall}杜（库存可动${row.ducatPlanDucats ?? 0}杜）｜奸商 ${credits}现金｜税 ${tax}`
+          : `｜奸商 ${credits}现金｜税 ${tax}`;
+    lines.push(`${row.advice.zh}｜${name}｜${row.ducats}杜+${credits}现金｜${price}${route}${ratio}${row.owned ? '｜已有' : ''}`);
   }
   if (result.rows.length > 16) lines.push(`其余 ${result.rows.length - 16} 件已在卡片中省略，优先保留会影响购买决策的项目。`);
-  lines.push(`经济性推荐合计 ${result.wantDucats} 杜卡德${result.affordable ? '，余额够用' : `，还差 ${result.ducatShortfall} 杜卡德，可发「杜卡德 ${result.ducatShortfall}」生成兑换方案`}。市场路线优先当前挂单低值（剔除异常低单），无卖单回退今日/90 天成交中位；仅供参考。`);
+  lines.push(`经济性推荐合计 ${result.wantDucats} 杜卡德${result.affordable ? '，余额够用' : `，还差 ${result.ducatShortfall} 杜卡德，可发「杜卡德 ${result.ducatShortfall}」生成兑换方案`}。市场路线优先当前挂单低值（剔除异常低单），无卖单回退今日/90 天成交中位；补足杜卡德按激进口径（含已入库部件）估算；仅供参考。`);
   return lines.join('\n');
 }
