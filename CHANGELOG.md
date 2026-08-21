@@ -15,6 +15,7 @@
 
 ### 修复
 
+- 周常科研自动核销开始核对 AlecaFrame 的 `EntratiVaultCountResetDate` 周重置边界；字段已推进到下一周界时，即使本周研究点与上周相同也能正确核销，过期或错位字段继续保守拒绝。
 - 官方源预翻译的混写奖励名（如「异融 Alad V 导航坐标」）不再因残留官方保留的拉丁专名（Alad V/Forma）落「未收录奖励」，也不进 AI inbox；纯英文名照旧排队查证。
 - 入侵奖励兜底链补上希芙蓝图：DE 世界状态把该配方写成 `GrineerCombatKnifeSortieBlueprint`，别名归一新增 `sheev sortie blueprint → sheev blueprint`，学习词典种子补「希芙蓝图」；火卫一 Gulliver 入侵不再落「未收录奖励」。
 

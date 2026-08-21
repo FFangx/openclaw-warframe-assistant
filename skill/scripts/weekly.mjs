@@ -394,15 +394,26 @@ async function fetchWorldState(seed = null) {
 }
 
 // —— 自动打卡：AlecaFrame 快照 → 本周已完成项（快照过加载点才更新，最终一致而非实时）——
-const msOf = (value) => Number(value?.$date?.$numberLong ?? NaN);
+const msOf = (value) => {
+  const raw = value?.$date?.$numberLong ?? value?.$date ?? value;
+  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : NaN;
+  if (/^-?\d+$/u.test(String(raw ?? ''))) {
+    const numeric = Number(raw);
+    return Number.isFinite(numeric) ? numeric : NaN;
+  }
+  const parsed = Date.parse(String(raw ?? ''));
+  return Number.isFinite(parsed) ? parsed : NaN;
+};
 
 // —— 科研分数周对齐（2026-08-18 实锤，修复跨周误核销）——
 // 快照的 ConquestCacheScoreMission 是「客户端缓存的周总分」：周一重置后若玩家本周尚未
 // 进入科研/打完任务，字段原样携带上周分数，仅凭 syncedAt ≥ 本周一无法区分「本周打过」与
 // 「上周遗留」（实机：周一晚快照仍显示上周 21 分）。因此每次渲染把 (kind, weekStart,
-// score[, tokens]) 记入状态 conquestSamples（同周去重取最新），本周自动核销要求「本周得分
-// 证据」：分数与上一周记录不同 / 本周电波征服挑战完成 / HEX 奖励令牌与上周不同。
-// 无证据只显示诚实进度，绝不把上周分数核销成本周完成。
+// score[, tokens]) 记入状态 conquestSamples（同周去重取最新）。科研/衰退室共用的
+// EntratiVaultCountResetDate 若已被服务端推进到精确的下一周界，可直接证明这些分数字段已经
+// 完成本周重置；字段缺失、过期或周界错位时，继续要求「本周得分证据」：分数与上一周记录
+// 不同 / 本周电波征服挑战完成 / HEX 奖励令牌与上周不同。无证据只显示诚实进度，绝不把
+// 上周分数核销成本周完成。
 function lastPreWeekConquestSample(samples, kind, now = Date.now()) {
   const currentWeek = weekStart(new Date(now));
   return (samples || [])
@@ -411,8 +422,18 @@ function lastPreWeekConquestSample(samples, kind, now = Date.now()) {
     .at(-1) || null;
 }
 
-function conquestWeekEvidence(inventory, kind, history, nightwaveConquestDone) {
+function conquestResetAligned(inventory, now = Date.now()) {
+  const resetMs = msOf(inventory?.EntratiVaultCountResetDate);
+  const expectedResetMs = Date.parse(nextReset(new Date(now)));
+  return Number.isFinite(resetMs)
+    && resetMs > now
+    && Number.isFinite(expectedResetMs)
+    && resetMs === expectedResetMs;
+}
+
+function conquestWeekEvidence(inventory, kind, history, nightwaveConquestDone, now = Date.now()) {
   if (nightwaveConquestDone) return 'nightwave';
+  if (conquestResetAligned(inventory, now)) return 'reset-boundary';
   if (!history) return null;
   const score = Math.max(0, Number(inventory?.[`${kind}ConquestCacheScoreMission`]) || 0);
   if (score !== Number(history.score)) return 'score-change';
@@ -504,7 +525,7 @@ function evaluateAutoCheck(inventory, worldState, now = Date.now(), challengeReq
   const nwConquestDone = nightwaveConquestDone(inventory, worldState, challengeRequired);
   for (const [kind, taskId] of [['EntratiLab', 'deep-archimedea'], ['EchoesHex', 'temporal-archimedea']]) {
     const history = lastPreWeekConquestSample(options?.conquestSamples, kind, now);
-    const evidence = conquestWeekEvidence(inventory, kind, history, nwConquestDone);
+    const evidence = conquestWeekEvidence(inventory, kind, history, nwConquestDone, now);
     const research = archimedeaResearchProgress(inventory, kind, now, syncedAt, { evidence, priorScore: history?.score ?? null });
     if (!research) continue;
     progress[taskId] = research.text;

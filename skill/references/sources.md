@@ -15,6 +15,7 @@
 - 世界状态：`GET https://api.warframestat.us/{platform}`；科研轮换可用子端点 `GET /{platform}/archimedeas` 做字段级补取
 - 科研词缀中文：`oracle.browse.wf/dicts/en.json` × `zh.json`（227 键，其中 `/Lotus/Language/Conquest/` 200 键）。两份索引：英文显示名 → 候选（warframestat 路径用，按说明原文/数字消歧）；语言键尾段（剥 `Condition_/PersonalMod_/MissionVariant_[Lab|Hex]Conquest_` 前缀后）→ 候选（官方备用源只有路径尾段时直查，按 LAB/HEX 前缀消歧重名，如 Reinforcements＝LAB 协调阵线/HEX 支援）。名称与 `_Desc` 官方简中说明同源返回；缓存 24 小时
 - 科研轮换风险词缀：官方 worldState 的 `difficulties[].risks` 是数组，普通/精英难度逐项拆分（精英独有风险标 `isHard`），不再把数组逗号合并成一个查无的词缀键
+- 科研个人周归属：AlecaFrame 库存快照的 `EntratiVaultCountResetDate` 是科研与衰退室共用的周重置边界；公开库存结构与本机 AlecaFrame 2.6.90 均确认该字段存在。只有它位于当前时刻之后且精确等于下一次周一 00:00 UTC，才证明两类 `ConquestCacheScoreMission` 已经过本周重置；缺失、过期、错位或解析失败时不得用同分自动核销，继续走跨周分数/HEX 令牌/电波挑战的保守证据链
 - 灵化武器等短文本：`browse.wf/warframe-public-export-plus/dict.en.json` × `dict.zh.json` 完整反向索引；缓存 7 天
 - 1999 挑战：`ExportChallenges.json` 提供语言键与 `requiredCount`，中文标题/说明从 Public Export 词典读取并替换 `|COUNT|`
 - 午夜电波挑战：主源有标题时使用 `ExportChallenges.json × dict.en/dict.zh`；DE 官方备用世界状态只有 `/Seasons/Weekly|WeeklyHard/<key>` 路径尾段时，直接按同路径从 AlecaFrame `lang.json` 读取官方简中名称。该路径级兜底覆盖刚换季、Public Export 挑战清单尚未收录的新 key

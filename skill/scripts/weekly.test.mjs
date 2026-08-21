@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { archimedeaResearchProgress, calendarChallengeLine, calendarRewardZh, calendarUpgradeZh, evaluateAutoCheck, hasCompleteArchimedeas, localizeArchimedeaModifier, nightwaveChallengeZh, weekStart } from './weekly.mjs';
+import { archimedeaResearchProgress, calendarChallengeLine, calendarRewardZh, calendarUpgradeZh, evaluateAutoCheck, hasCompleteArchimedeas, localizeArchimedeaModifier, nextReset, nightwaveChallengeZh, weekStart } from './weekly.mjs';
 import { labsSection } from './weekly-mega-card.mjs';
 
 const calendarDays = [
@@ -54,9 +54,10 @@ test('1999 日历轮次不一致时拒绝使用陈旧快照', () => {
   assert.equal(result.auto['calendar-1999'], undefined);
 });
 
-function conquestFixture({ now = Date.UTC(2026, 7, 12, 4), score = 21, tokens = null } = {}) {
+function conquestFixture({ now = Date.UTC(2026, 7, 12, 4), score = 21, tokens = null, resetAt = null } = {}) {
   const inventory = { EntratiLabConquestUnlocked: 1, EntratiLabConquestCacheScoreMission: score };
   if (tokens) inventory.EchoesHexConquestBonusTokensGiven = tokens;
+  if (resetAt != null) inventory.EntratiVaultCountResetDate = { $date: { $numberLong: String(resetAt) } };
   const previousWeek = weekStart(new Date(now - 7 * 86400000));
   const syncedAt = new Date(now - 60_000).toISOString();
   return {
@@ -80,6 +81,33 @@ test('深层科研分数与上周相同时不核销（快照携带上周遗留�
   const result = evaluateAutoCheck(inventory, null, now, null, syncedAt, { conquestSamples: samples({ score: 21 }) });
   assert.equal(result.auto['deep-archimedea'], undefined);
   assert.match(result.progress['deep-archimedea'], /尚未确认本周完成/u);
+});
+
+test('科研重置日期已推进到下一周界时，同分也能证明属于本周', () => {
+  const now = Date.UTC(2026, 7, 12, 4);
+  const resetAt = Date.parse(nextReset(new Date(now)));
+  const { syncedAt, inventory, samples } = conquestFixture({ now, score: 21, resetAt });
+  const result = evaluateAutoCheck(inventory, null, now, null, syncedAt, { conquestSamples: samples({ score: 21 }) });
+  assert.equal(result.auto['deep-archimedea'], true);
+  assert.match(result.progress['deep-archimedea'], /三关已完成/u);
+});
+
+test('科研重置日期已推进到下一周界时，无历史样本也能确认本周分数', () => {
+  const now = Date.UTC(2026, 7, 12, 4);
+  const resetAt = Date.parse(nextReset(new Date(now)));
+  const { syncedAt, inventory } = conquestFixture({ now, score: 21, resetAt });
+  const result = evaluateAutoCheck(inventory, null, now, null, syncedAt, { conquestSamples: [] });
+  assert.equal(result.auto['deep-archimedea'], true);
+});
+
+test('科研重置日期过期或未对齐下一周界时不采信同分', () => {
+  const now = Date.UTC(2026, 7, 12, 4);
+  for (const resetAt of [now - 1, now + 2 * 86400000]) {
+    const { syncedAt, inventory, samples } = conquestFixture({ now, score: 21, resetAt });
+    const result = evaluateAutoCheck(inventory, null, now, null, syncedAt, { conquestSamples: samples({ score: 21 }) });
+    assert.equal(result.auto['deep-archimedea'], undefined);
+    assert.match(result.progress['deep-archimedea'], /尚未确认本周完成/u);
+  }
 });
 
 test('深层科研没有历史样本时不核销，只显示诚实进度', () => {
