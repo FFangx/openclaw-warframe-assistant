@@ -13,6 +13,7 @@
 //
 // 退出码：0=核心功能可用（公开查询+卡片渲染），1=核心功能有缺件
 
+import { createHash } from 'node:crypto';
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -160,6 +161,31 @@ let cliOk = false;
 try { await access(cliPath); cliOk = true; } catch { /* 缺 CLI */ }
 record('集成', 'OpenClaw CLI', cliOk ? 'ok' : 'warn', cliOk ? cliPath : '未找到；订阅 cron 自动管理不可用（查询功能不受影响），可设 OPENCLAW_CLI_PATH');
 
+const expectedWfInfo = {
+  id: 'wfinfo-openclaw-companion',
+  version: '9.8.2.1',
+  executableSha256: '1dd603501e8d1f2b44d8aa7818b55bbe1aac127e9f90c40571bbf0bf6f56aa7c',
+};
+const wfInfoDir = process.env.WFINFO_INSTALL_DIR || path.join(
+  process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+  'OpenClaw',
+  'WFInfo',
+);
+let wfInfoOk = false;
+try {
+  const marker = JSON.parse(await readFile(path.join(wfInfoDir, '.openclaw-wfinfo-companion.json'), 'utf8'));
+  const executable = await readFile(path.join(wfInfoDir, 'WFInfo.exe'));
+  const executableSha256 = createHash('sha256').update(executable).digest('hex');
+  wfInfoOk = marker.id === expectedWfInfo.id
+    && marker.version === expectedWfInfo.version
+    && executableSha256 === expectedWfInfo.executableSha256;
+  record('集成', 'WFInfo OpenClaw 配套版', wfInfoOk ? 'ok' : 'warn', wfInfoOk
+    ? `${marker.version} · ${wfInfoDir}`
+    : `版本或文件不匹配；在源码目录运行 .\\install-wfinfo.ps1 修复（当前目录：${wfInfoDir}）`);
+} catch {
+  record('集成', 'WFInfo OpenClaw 配套版', 'warn', `未安装；游戏内开奖决策不可用。运行 .\\install.ps1 -WithWFInfo（默认：${wfInfoDir}）`);
+}
+
 // ---------- 功能矩阵 ----------
 const coreOk = nodeMajor >= 20 && cacheOk && cardOk && browserOk;
 const dictOk = dictKeys > 1000;
@@ -170,6 +196,7 @@ const matrix = [
   ['裂缝/精炼推荐', coreOk && dictOk ? '✅' : coreOk ? '⚠️ 需词典（本地或在线兜底任一）' : '❌'],
   ['配方/词典查询', dictOk ? '✅' : '❌ 需词典'],
   ['个人功能（库存/掉落/紫卡/周报打卡/奸商购物）', snapshotOk ? '✅' : '❌ 需 AlecaFrame 快照'],
+  ['游戏内开奖决策（WFInfo 配套版）', wfInfoOk ? '✅' : '⚠️ 需托管安装 WFInfo 配套版'],
   ['订阅推送（cron）', cliOk ? '✅' : '⚠️ 需 OpenClaw CLI'],
   ['卡片渲染', browserOk ? (sharp ? '✅（含压缩）' : '⚠️ 无压缩') : '❌ 需 Chrome/Edge'],
 ];

@@ -5,7 +5,9 @@ param(
   [switch]$AgentsOnly,
   [switch]$RemoveAgents,
   [switch]$SkipPreflight,
-  [switch]$SkipCron
+  [switch]$SkipCron,
+  [switch]$WithWFInfo,
+  [string]$WFInfoInstallDir = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,6 +16,7 @@ Set-StrictMode -Version Latest
 if (-not $Workspace) { throw 'Cannot resolve OpenClaw workspace. Pass -Workspace explicitly.' }
 if ($SkipAgents -and ($AgentsOnly -or $RemoveAgents)) { throw '-SkipAgents cannot be combined with -AgentsOnly or -RemoveAgents.' }
 if ($AgentsOnly -and $RemoveAgents) { throw '-AgentsOnly cannot be combined with -RemoveAgents.' }
+if ($AgentsOnly -and $WithWFInfo) { throw '-AgentsOnly cannot be combined with -WithWFInfo.' }
 
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $workspacePath = [IO.Path]::GetFullPath($Workspace)
@@ -414,5 +417,11 @@ if (-not $AgentsOnly) {
 }
 
 if (-not $SkipAgents) { Merge-AgentsBlock }
+if ($WithWFInfo) {
+  $wfInfoArgs = @()
+  if ($WFInfoInstallDir) { $wfInfoArgs += @('-InstallDir', $WFInfoInstallDir) }
+  if ($WhatIfPreference) { $wfInfoArgs += '-WhatIf' }
+  & (Join-Path $repoRoot 'install-wfinfo.ps1') @wfInfoArgs
+}
 if ($WhatIfPreference) { Write-Host 'Preview complete. No files were changed.' }
 else { Write-Host 'Install complete. Run: openclaw.cmd gateway restart' }

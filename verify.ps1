@@ -99,6 +99,9 @@ Invoke-Checked 'release changelog contract tests' {
 Invoke-Checked 'reward-zh daily task contract tests' {
   & (Join-Path $repoRoot 'tests\reward-zh-cron-contract.test.ps1')
 }
+Invoke-Checked 'WFInfo companion installer contract tests' {
+  & (Join-Path $repoRoot 'tests\wfinfo-companion-installer.test.ps1')
+}
 
 if (-not $SourceOnly) {
   if (-not $Workspace) { $failures.Add('runtime verification: workspace cannot be resolved') }

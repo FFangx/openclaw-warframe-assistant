@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "wfinfo-openclaw-companion",
+  "version": "9.8.2.1",
+  "releaseTag": "openclaw-v9.8.2.1",
+  "repository": "FFangx/WFinfo",
+  "downloadUrl": "https://github.com/FFangx/WFinfo/releases/download/openclaw-v9.8.2.1/WFInfo.zip",
+  "packageSha256": "1aa92cf9651146e8f5a4ad68132a3ce469de60feb54181027a6d6e7f37f9b779",
+  "executable": "WFInfo.exe",
+  "executableSha256": "1dd603501e8d1f2b44d8aa7818b55bbe1aac127e9f90c40571bbf0bf6f56aa7c",
+  "fileVersion": "9.8.2.1",
+  "requiredFiles": [
+    "WFInfo.exe",
+    "LICENSE.txt",
+    "OPENCLAW-NOTICE.txt",
+    "MODIFICATIONS.md",
+    "THIRD-PARTY-NOTICES.txt",
+    "licenses/ProDotNetZip-LICENSE.txt",
+    "licenses/WebView2-LICENSE.txt"
+  ]
+}

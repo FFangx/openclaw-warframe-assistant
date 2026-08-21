@@ -54,7 +54,7 @@
 - **杜卡德规划**（需 [AlecaFrame](https://alecaframe.com)）：`杜卡德 600` 按可靠的今日/90 日成交中位寻找白金损失最低的组合，并标日均量；不以最低卖单估值。默认按成品拥有状态智能保留，`保留N/保留N套` 可显式覆盖
 - **奸商路线比较**：Prime 部件机会成本＋奸商现金，对比 0 级市场价＋准确交易税，告诉你该换还是直接买
 - **个人数据**（需 [AlecaFrame](https://alecaframe.com)）：`开遗物`按遗物价值推 TOP8，加`钢铁`只匹配钢铁裂缝；`开遗物 商品名`先按奸商商品保本线筛选，再列“立即可开＋最多三种建议获取”，不假定野队四人开同一遗物。另有库存估值、掉落监测、紫卡估价、精炼/奸商购物推荐、商店已购对账、本周好货；非 `wm` 估值统一优先采用可靠今日成交中位，样本不足回退 90 日中位
-- **WFInfo 游戏内决策（可选）**：指定商品的`开遗物`把目标、保本线和同口径奖励估值同步到修改版 WFInfo；开奖后按实际四项奖励标出“保留白金 / 兑换杜卡德”，无需切回 QQ。旧命令`开遗物 杜卡德 商品名`继续兼容；策略缺价时 WFInfo 自动使用同目录全 Prime 估值索引（`prime-reward-index.mjs` 预热，24h 刷新）补缺，索引无效时仍安全停判
+- **WFInfo 游戏内决策（可选）**：指定商品的`开遗物`把目标、保本线和同口径奖励估值同步到 WFInfo OpenClaw 配套版；开奖后按实际四项奖励标出“保留白金 / 兑换杜卡德”，无需切回 QQ。用 `install.ps1 -WithWFInfo` 安装固定且经双哈希校验的独立 Apache-2.0 组件。旧命令`开遗物 杜卡德 商品名`继续兼容；策略缺价时 WFInfo 自动使用同目录全 Prime 估值索引（`prime-reward-index.mjs` 预热，24h 刷新）补缺，索引无效时仍安全停判
 - **自然语言与衔接**：「悟空p多少钱」「哪里刷夜灵p」「这周还剩啥没做」——AI 负责意图路由和一两句点评，数字全部来自脚本；短命令卡会保留短时脱敏实体上下文，因此下一句“这个甲多少钱”能直接续查行情
 
 卡片底部会按当前结果给出最多两条“下一步”命令，例如获取路线发现遗物均已入库时提示`wm 夜灵p`，Market 整套卡则提示`获取 夜灵p`。
@@ -92,6 +92,9 @@ flowchart LR
 # ExecutionPolicy Bypass 只作用于本次进程，不修改系统全局策略
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
+# 同时安装经固定版本和 SHA-256 校验的 WFInfo 配套版（启用游戏内开奖决策）
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -WithWFInfo
+
 # 装好后自检环境，输出功能矩阵
 node "$env:USERPROFILE\.openclaw\workspace\skills\warframe-assistant\scripts\doctor.mjs"
 
@@ -103,7 +106,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\verify.ps1
 
 ## 发布
 
-版本唯一来源是仓库根目录的 `VERSION`（当前 `1.0.0`）。GitHub Actions 在每次 push/PR/tag 时运行 `verify.ps1 -SourceOnly`（源码测试 + 安装器生命周期）。正式发布走 `release.ps1`：它校验干净工作树、`main` 与远端一致、源码验证通过、tag 不存在，然后把 `CHANGELOG.md` 的 `[Unreleased]` 章节落成版本章节并打 `vX.Y.Z` 标签：
+版本唯一来源是仓库根目录的 `VERSION`（当前 `1.1.0`）。GitHub Actions 在每次 push/PR/tag 时运行 `verify.ps1 -SourceOnly`（源码测试 + 安装器生命周期）。正式发布走 `release.ps1`：它校验干净工作树、`main` 与远端一致、源码验证通过、tag 不存在，然后把 `CHANGELOG.md` 的 `[Unreleased]` 章节落成版本章节并打 `vX.Y.Z` 标签：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\release.ps1 -Version 1.1.0   # 预览用 -DryRun，推送加 -Push

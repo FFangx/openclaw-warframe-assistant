@@ -23,12 +23,21 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
 `ExecutionPolicy Bypass` 只对这一次 PowerShell 进程生效，不会修改系统全局执行策略。脚本默认安装到 `%USERPROFILE%\.openclaw\workspace`；自定义工作区可在末尾追加 `-Workspace "D:\你的\workspace"`。
 
-脚本会完成四件事：
+如果要启用游戏内开奖决策，一次安装 OpenClaw 助手和固定版本的 WFInfo 配套版：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -WithWFInfo
+```
+
+WFInfo 默认安装到 `%LOCALAPPDATA%\OpenClaw\WFInfo`；可用 `-WFInfoInstallDir "D:\Apps\WFInfo"` 指定目录。安装器只下载清单固定的 `FFangx/WFinfo` 发布包，并同时校验压缩包和 `WFInfo.exe` 的 SHA-256。升级前请退出正在运行的 WFInfo；旧目录会保留为同级 `WFInfo.backup-时间`，安装器不会自动启动程序。
+
+脚本会完成这些事：
 
 1. 先运行当前源码的脚本测试与插件合同测试；失败时不改运行时
 2. 将 `skill/` 与 `extension/` 通过 staging 同步到运行时，并逐文件校验 SHA-256
 3. 将 `config/AGENTS.warframe.md` 的受控安全片段追加到工作区 `AGENTS.md` 末尾；再次运行会原地更新，不会重复追加
 4. 按 `config/cron/reward-zh-ai.job.json` 幂等安装/修复每日「奖励译名 AI 查证」agent 任务（declarationKey `warframe-assistant:reward-zh-ai:default`；缺则创建、字段漂移则修复、不动既有投递目标；工作区旁没有 `openclaw.json` 或加 `-SkipCron` 时跳过，测试工作区不会触碰真实 cron）
+5. 仅在指定 `-WithWFInfo` 时安装或校验 WFInfo 配套版；它是单独的 Apache-2.0 组件，不并入本项目 MIT 源码
 
 修改 `AGENTS.md` 前会保留 `AGENTS.md.warframe-assistant.bak`。只更新安全片段可加 `-AgentsOnly`；完全不改 `AGENTS.md` 可加 `-SkipAgents`；删除该受控片段可运行 `-RemoveAgents`。脚本不会覆盖片段以外的个人规则。
 
@@ -78,7 +87,7 @@ node scripts/prefetch-icons.mjs   # 预热全量物品小图（~64MB），掉落
 
 装 AlecaFrame：官网安装 → 先启动它再进游戏 → 过一次加载点（进任务/中继站）→ 生成 `%LOCALAPPDATA%\AlecaFrame\lastData.dat`。
 
-可选安装本项目配套的 WFInfo 修改版。在 WFInfo 设置中把“开奖决策”切到“奸商目标”；主人私聊发送 `开遗物 商品名`（旧写法`开遗物 杜卡德 商品名`同样可用）后，助手会原子写入 `%APPDATA%\WFInfo\ducat_strategy.json`。OpenClaw 先列达到商品保本线的“立即可开＋建议获取”遗物；WFInfo 识别实际四项奖励后，使用同一批今日/90 天成交中位计算并在游戏覆盖层标出选择。策略过期、缺失或任一奖励没有可靠估值时只展示普通信息，不强行推荐。另可用 `node skill/scripts/prime-reward-index.mjs`（部署后为 `scripts/prime-reward-index.mjs`，默认输出 `%APPDATA%\WFInfo\prime_reward_prices.json`、24h 有效期）预热全 Prime 奖励估值索引：策略缺价时 WFInfo 从该索引补缺（策略内价格始终优先），索引过期/损坏/无效时 WFInfo 仍按缺价安全停判，刷新失败不会覆盖上一份索引。
+配套 WFInfo 推荐用第一节的 `-WithWFInfo` 安装；也可单独运行 `.\install-wfinfo.ps1`。在 WFInfo 设置中把“开奖决策”切到“奸商目标”；主人私聊发送 `开遗物 商品名`（旧写法`开遗物 杜卡德 商品名`同样可用）后，助手会原子写入 `%APPDATA%\WFInfo\ducat_strategy.json`。OpenClaw 先列达到商品保本线的“立即可开＋建议获取”遗物；WFInfo 识别实际四项奖励后，使用同一批今日/90 天成交中位计算并在游戏覆盖层标出选择。策略过期、缺失或任一奖励没有可靠估值时只展示普通信息，不强行推荐。另可用 `node skill/scripts/prime-reward-index.mjs`（部署后为 `scripts/prime-reward-index.mjs`，默认输出 `%APPDATA%\WFInfo\prime_reward_prices.json`、24h 有效期）预热全 Prime 奖励估值索引：策略缺价时 WFInfo 从该索引补缺（策略内价格始终优先），索引过期/损坏/无效时 WFInfo 仍按缺价安全停判，刷新失败不会覆盖上一份索引。
 
 ## 4. 自检
 
@@ -86,7 +95,7 @@ node scripts/prefetch-icons.mjs   # 预热全量物品小图（~64MB），掉落
 node skills/warframe-assistant/scripts/doctor.mjs
 ```
 
-逐项检查 Node/目录可写/浏览器/7 个数据源连通/AlecaFrame/OpenClaw CLI，末尾输出**功能矩阵**。❌ 项按提示补齐；⚠️ 项代表降级可用。
+逐项检查 Node/目录可写/浏览器/7 个数据源连通/AlecaFrame/OpenClaw CLI/WFInfo 配套版文件与版本，末尾输出**功能矩阵**。❌ 项按提示补齐；⚠️ 项代表降级可用。
 
 需要验证“当前源码就是正在运行的版本”时，在仓库根目录执行：
 

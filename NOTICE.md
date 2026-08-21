@@ -36,6 +36,10 @@ DE 的粉丝内容政策：https://www.warframe.com/community/fankit
 AlecaFrame 是第三方 Overwolf 应用（https://alecaframe.com）。本项目只读其落盘的本机数据文件，
 不读取其 warframe.market 登录令牌、不修改其任何文件、不上传原始快照。AlecaFrame 名称归其作者所有。
 
+## WFInfo 配套版
+
+`install-wfinfo.ps1` 可从 `FFangx/WFinfo` 的固定发布下载经 OpenClaw 适配的 WFInfo。该程序是独立安装、独立发布的 Apache License 2.0 组件，不属于本仓库 MIT 授权范围，也未把 WFInfo 源码或二进制并入本仓库。发布包内保留 `LICENSE.txt`、修改说明和第三方许可证；对应源码与发布见 https://github.com/FFangx/WFinfo 。
+
 ## 移除请求
 
 任何权利人认为本项目的使用不当，请提 issue，将及时移除对应内容。

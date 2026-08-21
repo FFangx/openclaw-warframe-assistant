@@ -17,6 +17,7 @@
 - 科研词缀、1999 日历奖励与增益名称自动解析（官方语言键尾段索引 + 社区状态表兜底、7 天缓存），不再要求逐周手改 `weekly-static.json`。
 - 数据源漂移监控（`drift-report.mjs`，只读诊断）：午夜电波挑战 requiredCount/译名/关键字段缺失、科研词缀与 1999 日历增益占位、商店装配内部名泄漏、DE 官方 worldState 结构漂移与端点健康熔断聚合，全部输出统计＋可审计键样本，零凭据、零联网、零写入；`node scripts/drift-report.mjs health` 单次读取 `endpoint-health.v1.json` 输出脱敏聚合（次数/类别/最近时间/退避状态），`doctor.mjs` 端点健康区同步显示聚合行。
 - Prime 奖励估值索引生成器（`prime-reward-index.mjs`，独立安全 CLI）：从全量遗物奖励表（现有正式 Relics.json 数据链，本地只读、缺失走 CDN 兜底）中筛出英文规范名含独立单词 Prime 的可交易奖励（明确排除 Forma/Requiem 等），与现有可靠成交统计（今日/90 日成交中位＋日均量，Prime MOD 用 rank 0 口径）预热成 WFInfo 同目录标准索引 `%APPDATA%\WFInfo\prime_reward_prices.json`（schemaVersion=1，含 generatedAt/expiresAt、覆盖统计与按 OCR 英文规范名索引的 platinum/basis/dailyVolume，只有可靠成交统计、platinum > 0 且基准为今日/90 日才入）。默认 24h TTL、并发 ≤4、同目录临时文件完整写入后单次原子 rename 替换（目标替换失败绝不触碰现有文件，旧文件路径与字节原样保留）；新鲜缓存零联网复用，generatedAt 明显晚于当前时间（>5 分钟）拒绝复用，过期/损坏/刷新失败诚实上报且绝不覆盖上一份文件；CLI 支持 `--output/--ttl-hours/--concurrency/--limit/--force`。
+- WFInfo 配套版受管安装：`install.ps1 -WithWFInfo`（或独立 `install-wfinfo.ps1`）固定下载 `openclaw-v9.8.2.1`，校验发布包与可执行文件双 SHA-256，验证必需许可证/说明文件，幂等安装并在升级时保留可恢复备份；`doctor.mjs` 只读检查配套版本和文件哈希。WFInfo 仍是独立发布的 Apache-2.0 组件，不并入本仓库 MIT 源码。
 
 ### 变更
 
@@ -39,6 +40,7 @@
 
 - 每日「奖励译名 AI 查证」任务具备可部署合同：`config/cron/reward-zh-ai.job.json`（declarationKey `warframe-assistant:reward-zh-ai:default`，每日 24h、isolated agent 会话）成为该任务的唯一源码来源；`install.ps1` 幂等创建/修复（保留既有投递目标，测试工作区或 `-SkipCron` 时跳过，不触碰真实 cron），`verify.ps1` 源码层校验合同（`tests/reward-zh-cron-contract.test.ps1`）、运行时层只读校验任务存在/启用/每日/isolated。
 - WFInfo 配套合同：奸商目标模式在策略缺价时读取同目录标准 `prime_reward_prices.json` 兜底（策略内价格始终优先；索引 schema/时间/字段严格校验，缺失、损坏、过期、generatedAt 明显晚于当前时间（>5 分钟）或全部条目无效时整体忽略，条目级无效价格（platinum 非有限正数、basis 非今日/90 日口径、成交量非有限或为负）逐项跳过、旧别名 90d/90-day 规范化为 90days，并维持原有缺价安全停判；索引有效期不超出策略有效期）。
+- WFInfo 托管安装器合同测试覆盖固定发布清单、离线安装、许可证随包、幂等重装、错误哈希拒绝且不破坏现有安装、验证后升级与旧版本备份。
 
 ### 测试
 
