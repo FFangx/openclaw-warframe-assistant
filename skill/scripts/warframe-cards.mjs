@@ -430,17 +430,24 @@ export function buildDucatPlanCard(data) {
   const allRows = Array.isArray(data.rows) ? data.rows : [];
   const rows = allRows.slice(0, 15);
   const rowH = 72;
-  const height = 90 + 32 + Math.max(rows.length, 1) * rowH + 36;
+  const protectedRows = Array.isArray(data.protectedParts) ? data.protectedParts.slice(0, 6) : [];
+  const protectedH = protectedRows.length ? 30 + protectedRows.length * 44 + 6 : 0;
+  const height = 90 + 32 + Math.max(rows.length, 1) * rowH + 36 + protectedH;
   const modeTitle = data.mode === 'target' ? `目标 ${escapeHtml(data.target)} 杜卡德`
     : data.mode === 'clearance' ? '安全清仓方案' : '优先兑换推荐';
-  const smartReserve = !data.reserveExplicit && data.reserveSets == null;
-  const reserveMeta = `<span>${smartReserve ? '智能保留' : escapeHtml(data.reserveLabel)}</span>`;
+  const extra = !data.reserveExplicit && data.reserveSets == null;
+  const aggressive = Boolean(data.aggressive);
+  const kicker = aggressive ? '个人库存 · 激进模式' : extra ? '个人库存 · 已入库保留' : '个人库存 · 安全模式';
+  const reserveMeta = `<span>${escapeHtml(data.reserveLabel)}</span>`;
   const headerMeta = data.mode === 'target'
     ? `<strong>${currency('ducat', data.target, { size: 14 })} 目标</strong>${reserveMeta}`
     : `<strong>${currency('ducat', data.totalDucats, { size: 14 })} 可兑换</strong>${reserveMeta}`;
   const sectionText = data.complete
     ? `本次 ${currency('ducat', data.totalDucats, { size: 12 })} · 白金机会成本约 ${currency('plat', data.totalPlat, { size: 12, color: '#75dcca' })}`
     : `可靠估值候选可换 ${currency('ducat', data.totalDucats, { size: 12 })} · <strong style="color:#e0513c">还差 ${currency('ducat', data.shortfall, { size: 12, color: '#e0513c', weight: 850 })}</strong>`;
+  const vaultBadge = (row) => row.vaulted == null
+    ? ''
+    : ` <span style="display:inline-block;margin-left:4px;padding:1px 5px;border:1px solid ${row.vaulted ? 'rgba(215,164,109,.42)' : 'rgba(142,227,173,.42)'};border-radius:4px;background:${row.vaulted ? 'rgba(215,164,109,.12)' : 'rgba(142,227,173,.12)'};color:${row.vaulted ? '#d7a46d' : '#8ee3ad'};font-weight:800">${row.vaulted ? '已入库' : '未入库'}</span>`;
   const body = rows.length ? rows.map((row, index) => {
     const iconCell = row.iconDataUri
       ? `<div style="width:40px;height:40px;border-radius:8px;display:grid;place-items:center;background:rgba(255,255,255,.07);overflow:hidden"><img src="${row.iconDataUri}" style="max-width:36px;max-height:36px;object-fit:contain"></div>`
@@ -458,19 +465,33 @@ export function buildDucatPlanCard(data) {
       : '';
     return `<div style="position:relative;z-index:1;height:${rowH}px;display:grid;grid-template-columns:46px minmax(0,1fr) 72px 126px;align-items:center;padding:0 16px;border-bottom:1px solid rgba(176,123,55,.40);background:${index % 2 ? 'rgba(255,255,255,.035)' : 'rgba(255,255,255,.014)'}">
       ${iconCell}
-      <div style="min-width:0;padding-left:8px"><div style="font-size:14px;font-weight:830;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(row.name)}</div><div style="margin-top:3px;font-size:10px;color:#8995a1;white-space:nowrap">库存 ×${escapeHtml(row.owned)} · 保留 ×${escapeHtml(row.reserve)}${reserveBadge}</div><div style="margin-top:3px;font-size:9px;color:#7f8b97;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${basis}${row.marketStatsStale ? '（缓存）' : ''} ${median} · ${dailyVolume}</div></div>
+      <div style="min-width:0;padding-left:8px"><div style="font-size:14px;font-weight:830;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(row.name)}${vaultBadge(row)}${reserveBadge}</div><div style="margin-top:3px;font-size:10px;color:#8995a1;white-space:nowrap">库存 ×${escapeHtml(row.owned)} · 保留 ×${escapeHtml(row.reserve)}</div><div style="margin-top:3px;font-size:9px;color:#7f8b97;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${basis}${row.marketStatsStale ? '（缓存）' : ''} ${median} · ${dailyVolume}</div></div>
       <div style="text-align:center"><div style="font-size:10px;color:#8995a1">兑换</div><div style="margin-top:3px;color:#75dcca;font-size:17px;font-weight:900;font-variant-numeric:tabular-nums">×${escapeHtml(row.exchangeQty)}</div></div>
       <div style="padding-left:8px"><div style="font-size:15px">${currency('ducat', `+${row.totalDucats}`, { size: 14 })}</div><div style="margin-top:3px;font-size:11px">${currency('plat', `−${row.totalPlat}`, { size: 11, color: '#a9d7e4', weight: 760 })}<span style="margin-left:4px;color:#6f7b86">机会成本</span></div></div>
     </div>`;
   }).join('') : '<div style="position:relative;z-index:1;height:62px;display:grid;place-items:center;color:#8995a1;font-size:13px">没有符合保留规则、且带可靠行情的多余 Prime 部件</div>';
+  // 已入库保留区：默认模式下不进入兑换候选的不可再生部件
+  const protectedBody = protectedRows.length
+    ? `<div class="section"><span class="section-badge">${escapeHtml(protectedRows.length)}/${escapeHtml(data.protectedParts.length)} 件</span>已入库保留 · 无法常规刷取<small>换后只能靠市场/复刻补，默认不动</small></div>${protectedRows.map((part) => {
+      const value = part.unitPlat != null
+        ? `${currency('plat', part.unitPlat, { size: 10, color: '#d7a46d', weight: 760 })} 机会成本`
+        : '<span style="color:#8f9aa6">估值未取</span>';
+      return `<div style="position:relative;z-index:1;height:44px;display:grid;grid-template-columns:minmax(0,1fr) 84px 90px;align-items:center;padding:0 16px;border-bottom:1px solid rgba(215,164,109,.28);background:rgba(215,164,109,.05);padding-left:16px">
+        <div style="min-width:0;padding-left:8px"><div style="font-size:13px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(part.name)}</div><div style="margin-top:2px;font-size:9px;color:#8995a1">库存 ×${escapeHtml(part.count)} · 不可再生</div></div>
+        <div style="font-size:12px;text-align:right;color:#f0d48e;font-weight:800">+${escapeHtml(part.ducatsEach)} 杜</div>
+        <div style="text-align:right;font-size:10px">${value}</div>
+      </div>`;
+    }).join('')}`
+    : '';
   const shown = rows.length;
-  const content = `<div class="card"><div class="header" style="height:90px">${glyphOrIcon(data.glyphDataUri, 'baro')}<div style="min-width:0"><div class="kicker">个人库存 · 安全模式</div><div class="title" style="font-size:23px">${modeTitle}</div></div><div class="header-meta">${headerMeta}</div></div>
-    <div class="section"><span class="section-badge">${escapeHtml(shown)} 项</span>${sectionText}<small>机会成本=可靠成交中位</small></div>
+  const content = `<div class="card"><div class="header" style="height:90px">${glyphOrIcon(data.glyphDataUri, 'baro')}<div style="min-width:0"><div class="kicker">${kicker}</div><div class="title" style="font-size:23px">${modeTitle}</div></div><div class="header-meta">${headerMeta}</div></div>
+    <div class="section"><span class="section-badge">${escapeHtml(shown)} 项</span>${sectionText}<small>机会成本=可靠成交中位；未入库部件默认全量参与</small></div>
     ${body}
-    <div class="footer" style="height:36px;font-size:9px"><span>命令：杜卡德 600｜杜卡德 清仓｜杜卡德 清仓 保留1</span><span>${allRows.length > shown ? `显示 ${shown}/${allRows.length}` : escapeHtml(localTime(data.syncedAt || data.fetchedAt))}</span></div></div>`;
+    ${protectedBody}
+    <div class="footer" style="height:36px;font-size:9px"><span>命令：杜卡德 600｜杜卡德 600 激进｜杜卡德 600 保留1</span><span>${allRows.length > shown ? `显示 ${shown}/${allRows.length}` : escapeHtml(localTime(data.syncedAt || data.fetchedAt))}</span></div></div>`;
   // 名称来自会独立更新的 Aleca 游戏目录。缓存键必须包含名称，否则目录纠正译名后
   // 仍会复用同一物品路径对应的旧图片，造成“数量/图标正确、名称串到旧物品”的假象。
-  const keySeed = `ducat-plan-v8|${data.mode}|${data.target}|${data.reserveLabel}|${data.syncedAt}|${allRows.map((row) => `${row.uniqueName}:${row.name}:${row.englishName || ''}:${row.exchangeQty}:${row.unitPlat}:${row.reserve}:${row.reserveState || ''}`).join('|')}`;
+  const keySeed = `ducat-plan-v9|${data.mode}|${data.target}|${data.reserveLabel}|${data.syncedAt}|${allRows.map((row) => `${row.uniqueName}:${row.name}:${row.englishName || ''}:${row.exchangeQty}:${row.unitPlat}:${row.reserve}:${row.vaulted ?? ''}`).join('|')}|prot=${(protectedRows || []).map((part) => `${part.uniqueName}:${part.count}:${part.unitPlat ?? ''}`).join('|')}`;
   return { html: documentShell(content, height), width: 600, height, key: `ducat-plan-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 

@@ -537,6 +537,51 @@ export function annotateParentOwnership(entries, inventory) {
   }));
 }
 
+// —— 部件 → 已入库判定：所有含该部件的遗物均已入库 → 部件不可再生（无法常规刷取）。
+// 数据源：本机 AlecaFrame Relics.json（与遗物反查同一张表），一次构建索引全部部件复用；
+// 索引构建失败或查无该部件 → vaulted=null（保守按可刷处理，不误拦新物品）。
+let partVaultIndexPromise = null;
+function partVaultIndex(alecaDir) {
+  if (!partVaultIndexPromise) {
+    partVaultIndexPromise = (async () => {
+      try {
+        const { loadLocalRelicDb } = await import('./recommend.mjs');
+        const { rewardsByBase, relicsByBase } = await loadLocalRelicDb(alecaDir);
+        const index = new Map();
+        const put = (key, vaulted) => {
+          const normalized = compact(String(key || ''));
+          if (!normalized) return;
+          const current = index.get(normalized) || { total: 0, vaulted: 0 };
+          current.total += 1;
+          if (vaulted) current.vaulted += 1;
+          index.set(normalized, current);
+        };
+        for (const [base, rewards] of rewardsByBase) {
+          const vaulted = Boolean(relicsByBase.get(base)?.vaulted);
+          for (const reward of rewards) {
+            put(reward.name, vaulted);
+            if (reward.slug) put(String(reward.slug).replace(/_/gu, ' '), vaulted);
+          }
+        }
+        return index;
+      } catch {
+        return null;
+      }
+    })();
+  }
+  return partVaultIndexPromise;
+}
+
+export async function annotatePartVaultStatus(entries, alecaDir) {
+  const index = await partVaultIndex(alecaDir);
+  if (!index) return (entries || []).map((entry) => ({ ...entry, vaulted: null }));
+  return (entries || []).map((entry) => {
+    if (entry.catKey !== 'part') return { ...entry, vaulted: null };
+    const hit = index.get(compact(String(entry.englishName || '')));
+    return { ...entry, vaulted: hit ? (hit.vaulted === hit.total) : null };
+  });
+}
+
 // 行显示名：等级/精炼度并入名字（用户定：等级也要显示）
 function valuationRowName(entry) {
   if (entry.rank > 0) return `${entry.name} ${entry.rank}级`;
@@ -1003,7 +1048,11 @@ export async function runAlecaMessage(message, options = {}) {
   if (parsed.command === 'ducat-plan') {
     const { parseDucatSpec, buildDucatPlan, formatDucatPlan } = await import('./ducat-planner.mjs');
     const spec = parseDucatSpec(parsed.query);
-    const entries = await assembleInventoryValuation(snapshot, { categoryKeys: 'part' });
+    // 部件级「已入库」判定：所有含该部件的遗物均已入库 → 默认保留（不可再生）
+    const entries = await annotatePartVaultStatus(
+      await assembleInventoryValuation(snapshot, { categoryKeys: 'part' }),
+      snapshot.alecaDir,
+    );
     const data = await buildDucatPlan(entries, spec, { syncedAt: snapshot.syncedAt, ...(options.ducatOptions || {}) });
     // 行内物品图沿用库存卡三层链；只给实际方案行拉图，避免清仓扫描打爆素材源
     try {

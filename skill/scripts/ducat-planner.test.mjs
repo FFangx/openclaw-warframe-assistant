@@ -45,29 +45,42 @@ test('Prime 战甲三类部件统一使用游戏内通用原图', () => {
 test('短命令解析目标、清仓与按套保留', () => {
   assert.deepEqual(parseDucatSpec('杜卡德 600 保留1'), {
     query: '600 保留1', mode: 'target', target: 600, clearance: false,
-    reserveCount: 1, reserveSets: null, reserveExplicit: true,
+    reserveCount: 1, reserveSets: null, reserveExplicit: true, aggressive: false,
   });
   assert.equal(parseDucatSpec('杜卡德 清仓').mode, 'clearance');
   assert.equal(parseDucatSpec('杜卡德 清仓').reserveExplicit, false);
+  assert.equal(parseDucatSpec('杜卡德 清仓').aggressive, false);
   assert.equal(parseDucatSpec('杜卡德兑换 清仓 保留2套').reserveSets, 2);
+  const aggressive = parseDucatSpec('杜卡德 600 激进');
+  assert.equal(aggressive.reserveExplicit, true);
+  assert.equal(aggressive.aggressive, true);
+  assert.equal(aggressive.reserveCount, 0);
+  assert.equal(parseDucatSpec('杜卡德 600 激进').target, 600);
 });
 
-test('默认按成品拥有状态智能保留，显式保留参数优先覆盖', () => {
-  const smart = parseDucatSpec('杜卡德 清仓');
+test('默认保留已入库（不可再生），未入库全量参与；显式保留/激进优先覆盖', () => {
+  const smart = parseDucatSpec('杜卡德 600');
   const candidates = buildDucatCandidates([
-    part({ name: '已有', count: 1, parentOwned: true }),
-    part({ name: '未有', count: 3, setRequired: 2, parentOwned: false }),
-    part({ name: '未知', count: 3, setRequired: 2, parentOwned: null }),
+    part({ name: '已入库件', count: 3, vaulted: true, setRequired: 2 }),
+    part({ name: '未入库件', count: 3, vaulted: false, setRequired: 2 }),
+    part({ name: '状态未知件', count: 3, vaulted: null }),
   ], smart);
   const byName = new Map(candidates.map((entry) => [entry.name, entry]));
-  assert.deepEqual([byName.get('已有').reserve, byName.get('已有').available, byName.get('已有').reserveReason, byName.get('已有').reserveState], [0, 1, '已持有', 'owned']);
-  assert.deepEqual([byName.get('未有').reserve, byName.get('未有').available, byName.get('未有').reserveReason, byName.get('未有').reserveState], [2, 1, '未持有', 'unowned']);
-  assert.deepEqual([byName.get('未知').reserve, byName.get('未知').available, byName.get('未知').reserveReason, byName.get('未知').reserveState], [2, 1, '待确认', 'unknown']);
+  // 已入库 → 全部保留 → available=0 → 不进候选
+  assert.equal(candidates.some((entry) => entry.name === '已入库件'), false);
+  assert.deepEqual([byName.get('未入库件').reserve, byName.get('未入库件').available, byName.get('未入库件').reserveReason, byName.get('未入库件').reserveState], [0, 3, null, null]);
+  assert.deepEqual([byName.get('状态未知件').reserve, byName.get('状态未知件').available], [0, 3]);
 
-  const [forced] = buildDucatCandidates([part({ count: 2, parentOwned: true })], parseDucatSpec('杜卡德 保留1'));
+  // 显式保留1：已入库也只留 1 个（数量保留语义，vault 不再默认保护）
+  const [forced] = buildDucatCandidates([part({ count: 2, vaulted: true })], parseDucatSpec('杜卡德 保留1'));
   assert.equal(forced.reserve, 1);
+  assert.equal(forced.available, 1);
   assert.equal(forced.reserveReason, null);
-  assert.equal(forced.reserveState, null);
+
+  // 激进：已入库也参与、每种保留 0
+  const [aggressive] = buildDucatCandidates([part({ count: 2, vaulted: true })], parseDucatSpec('杜卡德 600 激进'));
+  assert.equal(aggressive.reserve, 0);
+  assert.equal(aggressive.available, 2);
 });
 
 test('本机装备栏为 Prime 部件标注对应成品拥有状态', () => {
@@ -150,7 +163,8 @@ const traderFixture = (inventoryCount = 10, traderInventory = defaultTraderInven
   // 无有效卖单 → 回退成交统计，保持既有断言；挂单低值口径由 trader-shopping.test.mjs 单独覆盖
   ordersFetcher: async () => ({ sell: [] }),
   detailFetcher: async () => ({ data: { tradingTax: 1_000_000 } }),
-  inventoryValuation: [part({ count: inventoryCount })],
+  // 未入库（可刷）：默认全部参与，安全库存=库存全额
+  inventoryValuation: [part({ count: inventoryCount, vaulted: false })],
   ducatCatalog: {
     cheapprimepartblueprint: { slug: 'cheap_prime_part_blueprint', zhName: '廉价 Prime 部件蓝图' },
   },
@@ -169,7 +183,7 @@ test('奸商联动两侧均使用成交中位价、准确交易税和安全库�
   assert.equal(row.platSaving, 10);
   assert.equal(row.creditSaving, 800_000);
   assert.equal(row.advice.tag, 'strong');
-  assert.equal(result.safeDucatAvailable, 405);
+  assert.equal(result.safeDucatAvailable, 450);
   assert.equal(result.ducatShortfall, 195);
 });
 
@@ -281,10 +295,73 @@ test('杜卡德卡片名称变化时不会复用旧图片缓存', () => {
 test('安全库存无法补足时不会误报奸商路线划算', async () => {
   const result = await traderFixture(2);
   assert.equal(result.rows[0].advice.tag, 'need');
-  assert.equal(result.rows[0].ducatPlanShortfall, 150);
+  assert.equal(result.rows[0].ducatPlanShortfall, 105);
   const card = buildTraderShoppingCard(result);
   assert.match(card.html, /今日成交中位/u);
   assert.match(card.html, /90天 \d+p · 日均/u);
   assert.match(card.html, /市场行情仍可参考/u);
   assert.match(card.html, /Kronia 中继站（土星）/u);
+});
+
+test('默认模式把已入库部件移入保护区，不进入候选与目标优化', async () => {
+  const entries = [
+    part({ name: 'Valkyr Prime 机体蓝图', count: 1, vaulted: true, unit: 35, ducats: 100 }),
+    part({ name: '古早 Prime 蓝图', count: 10, vaulted: false, unit: 3, ducats: 45 }),
+  ];
+  const plan = await buildDucatPlan(entries, parseDucatSpec('杜卡德 清仓'), {
+    catalog: {
+      cheapprimepartblueprint: { slug: 'cheap_prime_part_blueprint', zhName: '古早 Prime 蓝图' },
+      valkyrprimechassisblueprint: { slug: 'valkyr_prime_chassis_blueprint', zhName: 'Valkyr Prime 机体蓝图' },
+    },
+    statisticsFetcher: async () => ({ payload: { statistics_closed: {
+      '48hours': [{ datetime: new Date().toISOString(), median: 3, volume: 8 }],
+      '90days': [{ datetime: '2026-08-06T00:00:00.000Z', median: 4, volume: 900 }],
+    } } }),
+  });
+  assert.equal(plan.rows.some((row) => row.name === 'Valkyr Prime 机体蓝图'), false);
+  assert.equal(plan.rows[0].name, '古早 Prime 蓝图');
+  assert.equal(plan.protectedParts.length, 1);
+  assert.equal(plan.protectedParts[0].name, 'Valkyr Prime 机体蓝图');
+  assert.equal(plan.protectedParts[0].unitPlat, 35);
+  assert.equal(plan.reserveLabel, '已入库保留');
+});
+
+test('激进模式把已入库也纳入候选', async () => {
+  const entries = [part({ name: 'Valkyr Prime 机体蓝图', count: 1, vaulted: true, unit: 35, ducats: 100 })];
+  const candidates = buildDucatCandidates(entries, parseDucatSpec('杜卡德 600 激进'));
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].reserve, 0);
+  assert.equal(candidates[0].vaulted, true);
+});
+
+test('formatDucatPlan：已入库保留区与空候选提示', async () => {
+  const { formatDucatPlan } = await import('./ducat-planner.mjs');
+  const text = formatDucatPlan({
+    mode: 'clearance', reserveLabel: '已入库保留', rows: [], protectedParts: [
+      { name: 'Valkyr Prime 机体蓝图', count: 1, ducatsEach: 100, unitPlat: 35 },
+    ],
+  });
+  assert.match(text, /另有 1 件已入库部件默认保留/u);
+  assert.match(text, /Valkyr Prime 机体蓝图/u);
+  assert.match(text, /杜卡德 600 激进/u);
+});
+
+test('杜卡德卡片：vault 徽标与已入库保留区', () => {
+  const row = {
+    uniqueName: '/Lotus/Types/Recipes/WarframeRecipes/ValkyrPrimeChassisBlueprint',
+    name: 'Valkyr Prime 机体蓝图', englishName: 'Valkyr Prime Chassis Blueprint',
+    owned: 1, reserve: 0, exchangeQty: 1, ducatsEach: 100, totalDucats: 100, totalPlat: 35,
+    unitPlat: 35, marketBasis: 'today', dailyVolume: 10, vaulted: true,
+  };
+  const card = buildDucatPlanCard({
+    mode: 'clearance', reserveLabel: '已入库保留', reserveExplicit: false, aggressive: false,
+    reserveSets: null, complete: true, totalDucats: 100, totalPlat: 35,
+    syncedAt: '2026-08-07T23:05:34.000Z', rows: [row],
+    protectedParts: [{ uniqueName: '/x/Prot', name: '战狼 Prime 蓝图', count: 1, ducatsEach: 45, unitPlat: 8 }],
+  });
+  assert.match(card.html, /已入库/u);
+  assert.match(card.html, /未入库/u);
+  assert.match(card.html, /已入库保留/u);
+  assert.match(card.html, /战狼 Prime 蓝图/u);
+  assert.match(card.html, /杜卡德 600 激进/u);
 });

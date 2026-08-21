@@ -40,38 +40,40 @@ export function parseDucatSpec(message) {
   const query = (match[1] || '').trim();
   const setReserveMatch = query.match(/保留\s*(\d+)\s*套/u);
   const itemReserveMatch = query.match(/保留\s*(\d+)(?!\s*套)/u);
+  // 激进 = 已入库也纳入候选（等价保留0）；用户显式选择
+  const aggressiveMatch = query.match(/激进|含已入库|全换/u);
   const withoutReserve = query
     .replace(/保留\s*\d+\s*套/gu, ' ')
-    .replace(/保留\s*\d+/gu, ' ');
+    .replace(/保留\s*\d+/gu, ' ')
+    .replace(/激进|含已入库|全换/gu, ' ');
   const targetMatch = withoutReserve.match(/(?:^|\s)(\d[\d,]*)\s*(?:杜|杜卡德)?(?:\s|$)/u);
   const target = targetMatch ? Number(targetMatch[1].replace(/,/gu, '')) : 0;
   const clearance = /清仓/u.test(query);
-  const reserveExplicit = Boolean(setReserveMatch || itemReserveMatch);
+  const reserveExplicit = Boolean(setReserveMatch || itemReserveMatch || aggressiveMatch);
   return {
     query,
     mode: target > 0 ? 'target' : clearance ? 'clearance' : 'recommend',
     target: Number.isFinite(target) && target > 0 ? Math.floor(target) : 0,
     clearance,
-    reserveCount: itemReserveMatch ? Math.max(0, Number(itemReserveMatch[1]) || 0) : 1,
+    reserveCount: aggressiveMatch ? 0 : (itemReserveMatch ? Math.max(0, Number(itemReserveMatch[1]) || 0) : 1),
     reserveSets: setReserveMatch ? Math.max(0, Number(setReserveMatch[1]) || 0) : null,
     reserveExplicit,
+    aggressive: Boolean(aggressiveMatch),
   };
 }
 
 function reserveFor(entry, spec) {
   if (spec.reserveSets != null) return Math.max(0, spec.reserveSets * Math.max(1, Number(entry.setRequired) || 1));
   if (spec.reserveExplicit) return Math.max(0, spec.reserveCount);
-  // 默认智能保留：当前已经拥有对应成品时，最后一件多余蓝图/部件也可换杜；
-  // 未拥有或快照无法确认时按配方保留一套，双持部件会正确保留 2 件。
-  if (entry.parentOwned === true) return 0;
-  return Math.max(1, Number(entry.setRequired) || 1);
+  // 默认（无显式保留）：已入库部件不可再生（无法常规刷取）→ 全部保留；
+  // 未入库/状态未知 → 全部参与，杜卡德/白金 从高到低排序。
+  return entry.vaulted === true ? Number(entry.count) : 0;
 }
 
 function reserveReason(entry, spec) {
   if (spec.reserveSets != null || spec.reserveExplicit) return null;
-  if (entry.parentOwned === true) return { state: 'owned', label: '已持有' };
-  if (entry.parentOwned === false) return { state: 'unowned', label: '未持有' };
-  return { state: 'unknown', label: '待确认' };
+  if (entry.vaulted === true) return { state: 'vaulted', label: '已入库' };
+  return null;
 }
 
 export function buildDucatCandidates(entries, spec) {
@@ -246,8 +248,24 @@ export async function buildDucatPlan(entries, spec, options = {}) {
     };
   }
   const reserveLabel = parsed.reserveSets != null ? `保留 ${parsed.reserveSets} 套`
-    : parsed.reserveExplicit ? `每种保留 ${parsed.reserveCount} 个`
-      : '智能保留';
+    : parsed.reserveExplicit ? (parsed.aggressive ? '激进 · 含已入库' : `每种保留 ${parsed.reserveCount} 个`)
+      : '已入库保留';
+  // 默认模式把已入库部件整体移到「已入库保留」区：不纳入候选、不归入自动方案
+  const protectedParts = parsed.reserveExplicit || parsed.reserveSets != null
+    ? []
+    : (entries || [])
+      .filter((entry) => entry.catKey === 'part' && entry.vaulted === true
+        && Number(entry.ducats) > 0 && Number(entry.count) > 0)
+      .map((entry) => ({
+        uniqueName: entry.uniqueName,
+        name: entry.name,
+        englishName: entry.englishName || null,
+        count: Number(entry.count),
+        ducatsEach: Number(entry.ducats),
+        unitPlat: Number.isFinite(Number(entry.unit)) && Number(entry.unit) > 0 ? round1(entry.unit) : null,
+        marketBasis: entry.marketBasis || null,
+        dailyVolume: entry.dailyVolume ?? null,
+      }));
   return {
     kind: 'ducat-plan',
     ok: true,
@@ -257,7 +275,9 @@ export async function buildDucatPlan(entries, spec, options = {}) {
     reserveCount: parsed.reserveCount,
     reserveSets: parsed.reserveSets,
     reserveExplicit: parsed.reserveExplicit,
+    aggressive: Boolean(parsed.aggressive),
     reserveLabel,
+    protectedParts,
     candidates: candidates.length,
     availableDucats,
     complete: result.complete,
@@ -271,12 +291,27 @@ export async function buildDucatPlan(entries, spec, options = {}) {
 }
 
 export function formatDucatPlan(data) {
-  if (!data.rows.length) return `当前没有符合“${data.reserveLabel}”条件、且带可靠行情的多余 Prime 部件。`;
+  const protectedParts = Array.isArray(data.protectedParts) ? data.protectedParts : [];
+  if (!data.rows.length) {
+    const noted = protectedParts.length
+      ? `；另有 ${protectedParts.length} 件已入库部件默认保留（${protectedParts.slice(0, 3).map((part) => part.name).join('、')}${protectedParts.length > 3 ? '…' : ''}），发「杜卡德 600 激进」可纳入候选`
+      : '';
+    return `当前没有符合“${data.reserveLabel}”条件、且带可靠行情的多余 Prime 部件${noted}。`;
+  }
   const title = data.mode === 'target' ? `目标 ${data.target} 杜卡德` : data.mode === 'clearance' ? '安全清仓' : '兑换推荐';
   const lines = [`【杜卡德兑换方案】${title}｜${data.reserveLabel}`];
   for (const row of data.rows.slice(0, 15)) {
+    const vaultTag = row.vaulted == null ? '' : `（${row.vaulted ? '已入库' : '未入库'}）`;
     const market = `${row.priceSource} ${row.unitPlat}p · 日均 ${row.dailyVolume ?? '—'} 件`;
-    lines.push(`${row.name}｜库存 ${row.owned} 留 ${row.reserve} 换 ${row.exchangeQty}｜+${row.totalDucats}杜｜约损失 ${row.totalPlat}p｜${market}`);
+    lines.push(`${row.name}${vaultTag}｜库存 ${row.owned} 留 ${row.reserve} 换 ${row.exchangeQty}｜+${row.totalDucats}杜｜约损失 ${row.totalPlat}p｜${market}`);
+  }
+  if (protectedParts.length) {
+    lines.push('已入库默认保留（无法常规刷取，换后只能靠市场/复刻补）：');
+    for (const part of protectedParts.slice(0, 6)) {
+      lines.push(`- ${part.name}｜库存 ×${part.count}｜+${part.ducatsEach}杜${part.unitPlat != null ? `｜机会成本 ${part.unitPlat}p` : '｜估值未取'}`);
+    }
+    if (protectedParts.length > 6) lines.push(`  其余 ${protectedParts.length - 6} 件同属已入库保留`);
+    lines.push('发「杜卡德 600 激进」或「杜卡德 600 保留0」可把它们也纳入候选。');
   }
   lines.push(`合计 +${data.totalDucats} 杜卡德，预计白金机会成本 ${data.totalPlat}p。`);
   if (!data.complete) lines.push(`可靠成交统计覆盖的候选不足，距离目标还差 ${data.shortfall} 杜卡德。`);
