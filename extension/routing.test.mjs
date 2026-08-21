@@ -3,6 +3,19 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { isShortcut, isSubscriptionCommand } from './routing.mjs';
 
+async function readInstalledOrSourceSkill() {
+  const candidates = [
+    new URL('../skill/SKILL.md', import.meta.url),
+    new URL('../../../skills/warframe-assistant/SKILL.md', import.meta.url),
+  ];
+  for (const candidate of candidates) {
+    try { return await readFile(candidate, 'utf8'); } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
+  throw new Error('SKILL.md was not found in the source or managed-runtime layout');
+}
+
 test('plugin entry imports every routing helper it calls', async () => {
   const [entry, routing] = await Promise.all([
     readFile(new URL('./index.ts', import.meta.url), 'utf8'),
@@ -58,7 +71,7 @@ test('口语获取问法不得被快捷入口截获：四个语族均放行给�
 test('SKILL.md 与插件工具说明把口语获取问法规范到正式短命令', async () => {
   const [entry, skill] = await Promise.all([
     readFile(new URL('./index.ts', import.meta.url), 'utf8'),
-    readFile(new URL('../skill/SKILL.md', import.meta.url), 'utf8'),
+    readInstalledOrSourceSkill(),
   ]);
   // SKILL.md：口语问法必须作为自然语言理解，规范为获取/购买，不得由快捷入口截获
   assert.match(skill, /获取`、`购买`是正式短命令/u);
