@@ -221,26 +221,35 @@ Assert-Throws '[Unreleased] not at the top is rejected' {
 '@) -ReleaseVersion '1.1.0' -Date '2026-08-28'
 } 'must start'
 
-# --- real repo state: current VERSION + CHANGELOG.md must convert cleanly ---
+# --- real repo state: accept a valid pending release or an already stamped release ---
 $realVersion = ([IO.File]::ReadAllText((Join-Path $repoRoot 'VERSION'), [Text.Encoding]::UTF8)).Trim()
 $realChangelog = [IO.File]::ReadAllText((Join-Path $repoRoot 'CHANGELOG.md'), [Text.Encoding]::UTF8)
-$realConverted = $null
-$realError = ''
-try {
-  $realConverted = ConvertTo-ReleasedChangelog -Text $realChangelog -ReleaseVersion $realVersion -Date '2026-08-28'
-} catch { $realError = $_.Exception.Message }
-Assert-True 'real repo files: current VERSION + CHANGELOG convert cleanly' ($null -ne $realConverted) $realError
-if ($null -ne $realConverted) {
-  $realResultLines = $realConverted -split "`n"
-  Assert-True 'real repo files: released section appears exactly once' (@($realResultLines -eq "## [$realVersion] - 2026-08-28").Count -eq 1)
-  Assert-True 'real repo files: exactly one [Unreleased] placeholder remains' (@($realResultLines -eq '## [Unreleased]').Count -eq 1)
-  Assert-True 'real repo files: [Unreleased] stays the top section' ($realConverted.IndexOf('## [Unreleased]') -lt $realConverted.IndexOf("## [$realVersion] - 2026-08-28"))
-  $realDupes = @($realResultLines | ForEach-Object {
-    $m = [regex]::Match($_, '^## \[([^\]]+)\]')
-    if ($m.Success) { $m.Groups[1].Value }
-  } | Where-Object { $_ -ne 'Unreleased' -and $_ -match '^\d+\.\d+\.\d+$' } | Group-Object | Where-Object { $_.Count -gt 1 })
-  Assert-True 'real repo files: conversion yields no duplicate semver headings' ($realDupes.Count -eq 0)
+$realLines = $realChangelog.Replace("`r`n", "`n") -split "`n"
+$escapedRealVersion = [regex]::Escape($realVersion)
+$realPending = @($realLines -eq "## [$realVersion]")
+$realReleased = @($realLines | Where-Object { $_ -match "^## \[$escapedRealVersion\] - \d{4}-\d{2}-\d{2}$" })
+Assert-True 'real repo files: current version is pending or released exactly once' (($realPending.Count + $realReleased.Count) -eq 1)
+
+$realResultLines = $realLines
+if ($realPending.Count -eq 1) {
+  $realConverted = $null
+  $realError = ''
+  try {
+    $realConverted = ConvertTo-ReleasedChangelog -Text $realChangelog -ReleaseVersion $realVersion -Date '2026-08-28'
+  } catch { $realError = $_.Exception.Message }
+  Assert-True 'real repo files: pending state converts cleanly' ($null -ne $realConverted) $realError
+  if ($null -ne $realConverted) { $realResultLines = $realConverted -split "`n" }
+} else {
+  Assert-True 'real repo files: released state carries an ISO date' ($realReleased.Count -eq 1)
 }
+Assert-True 'real repo files: exactly one [Unreleased] placeholder remains' (@($realResultLines -eq '## [Unreleased]').Count -eq 1)
+$firstRealHeader = @($realResultLines | Where-Object { $_ -match '^## ' } | Select-Object -First 1)
+Assert-True 'real repo files: [Unreleased] stays the top section' ($firstRealHeader.Count -eq 1 -and $firstRealHeader[0] -eq '## [Unreleased]')
+$realDupes = @($realResultLines | ForEach-Object {
+  $m = [regex]::Match($_, '^## \[([^\]]+)\]')
+  if ($m.Success) { $m.Groups[1].Value }
+} | Where-Object { $_ -ne 'Unreleased' -and $_ -match '^\d+\.\d+\.\d+$' } | Group-Object | Where-Object { $_.Count -gt 1 })
+Assert-True 'real repo files: no duplicate semver headings' ($realDupes.Count -eq 0)
 
 Write-Host "`nrelease-changelog contract tests: $($script:pass) passed, $($script:fail) failed"
 if ($script:fail -gt 0) { exit 1 }

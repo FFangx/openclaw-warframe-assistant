@@ -148,12 +148,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\verify.ps1
 
 ## 发布
 
-版本唯一来源是仓库根目录的 `VERSION`（当前 `1.1.1`）。GitHub Actions 在每次 push/PR/tag 时于 **Node 20 与 24** 两个版本上运行
+版本唯一来源是仓库根目录的 `VERSION`（当前 `1.1.2`）。GitHub Actions 在每次 push/PR/tag 时于 **Node 20 与 24** 两个版本上运行
 `verify.ps1 -SourceOnly`（源码测试 + 安装器生命周期 + 全部合同测试），并校验 `skill/package-lock.json` 可复现；
 第三方 action 固定完整 commit SHA、`checkout` 关闭凭据持久化、权限保持最小只读。正式发布走 `release.ps1`：它校验干净工作树、`main` 与远端一致、源码验证通过、tag 不存在，然后把 `CHANGELOG.md` 的 `[Unreleased]` 章节落成版本章节并打 `vX.Y.Z` 标签：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\release.ps1 -Version 1.1.1   # 预览用 -DryRun，推送加 -Push
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\release.ps1 -Version 1.1.2   # 预览用 -DryRun，推送加 -Push
 ```
 
 ## 三条实话（装之前必读）
