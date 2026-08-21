@@ -83,6 +83,32 @@ flowchart LR
 
 ## 快速开始
 
+### 交给 AI 安装（推荐）
+
+把下面整段复制给能够操作本机终端的 AI 编程助手（Codex、Claude Code 等）。它可以直接完成安装或升级；QQ 官方机器人仍需你自行申请。
+
+```text
+请帮我在这台 Windows 电脑上安装或升级 OpenClaw Warframe 助手：
+https://github.com/FFangx/openclaw-warframe-assistant
+
+你获准执行完成本次安装所需的本机检查、下载、文件同步、验证和 OpenClaw Gateway 重启。请按以下边界操作：
+
+1. 先读取仓库的 README.md、INSTALL.md、SECURITY.md 和 config/AGENTS.warframe.md，再开始修改。
+2. 检查 Windows、Git、Node.js 20+、OpenClaw、Chrome/Edge 和现有 OpenClaw 工作区。缺少前置软件、需要管理员权限或需要修改系统级设置时，先告诉我影响并征得同意。
+3. 仓库不存在时从上述官方地址克隆；已经存在时先检查工作树，保留我的所有改动，不得 reset、强制覆盖或删除。若本地改动妨碍升级，停下来说明。
+4. 默认只安装 OpenClaw 助手。只有我明确同意时才给 install.ps1 加 -WithWFInfo；WFInfo 是独立的 Apache-2.0 配套组件，不得把它并入本仓库。
+5. 使用仓库提供的 install.ps1，不要手工复制受管文件，也不要使用 -SkipPreflight、-SkipAgents 或 -SkipCron 绕过默认安全步骤。优先使用 PowerShell 7（pwsh）；若本机没有，再按 INSTALL.md 的兼容命令执行。
+6. 保留现有 openclaw.json、AGENTS.md、自定义插件、cron、订阅、状态、缓存和个人文件。不得读取、上传或回显 API Key、QQ/OpenID、Market Token、AlecaFrame 原始快照等敏感数据；缺少 ownerOpenId 时只说明应由我在本机填写的位置，不得猜测。
+7. 安装后运行 doctor.mjs 和 verify.ps1。全部通过后再重启 Gateway，并只读确认插件已加载、Gateway 仅按现有配置监听。不得发送真实 QQ 消息，不得操作游戏、交易、聊天或账号资产。
+8. 最后用简短中文报告：安装版本与提交、实际安装路径、是否安装 WFInfo、doctor/verify/Gateway 结果、仍需我手动完成的配置；报告中不得包含凭据或个人标识。
+
+遇到文档与实际环境不一致、验证失败或任何可能破坏现有数据的情况，请停止并说明，不要用跳过检查或删除数据的方式硬装。
+```
+
+如果你确定需要游戏内开奖决策，可在提示词末尾补一句：`我明确同意同时安装 WFInfo 配套版。`
+
+### 手动安装
+
 先克隆仓库（或直接下载 ZIP）：
 
 ```powershell
