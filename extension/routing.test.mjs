@@ -17,7 +17,7 @@ test('plugin entry imports every routing helper it calls', async () => {
 
 test('strict documented commands stay on the deterministic fast path', () => {
   for (const input of [
-    'wm 高压电流', '遗物 Axi A22', '普通裂缝', '赏金 尖刃弹头', '哪里买 诡文枭主',
+    'wm 高压电流', '遗物 Axi A22', '哪里刷 Caliban p', 'Caliban p哪里刷', '普通裂缝', '赏金 尖刃弹头', '哪里买 诡文枭主',
     '我的库存 延几草', '我的遗物 A22', '我的紫卡 伯斯顿', '周报', '完成 深层科研',
     '仲裁', '警报', '入侵', '活动', '虚空商人', '突击', '钢铁侵袭',
   ]) assert.equal(isShortcut(input), true, input);

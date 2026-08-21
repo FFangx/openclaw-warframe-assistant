@@ -287,7 +287,7 @@ async function accountSummary(snapshot) {
   return { data, text: formatAccount(data) };
 }
 
-async function loadRelics(snapshot) {
+export async function loadRelics(snapshot) {
   const [catalog, localize] = await Promise.all([
     readCatalogJson(snapshot.alecaDir, 'Relics.json').then((items) => (Array.isArray(items) ? items : [])),
     loadLanguage(snapshot.alecaDir),

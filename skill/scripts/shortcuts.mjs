@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { buildFissureQueryCard, compressCardPng, currency, pruneOldCards, renderWarframeCard, RELIC_ICON_DATA } from './warframe-cards.mjs';
 import { appraiseRefinements, classifyFissure } from './recommend.mjs';
+import { buildRelicFarmPlan } from './relic-farm.mjs';
 import { resilientJsonRequest } from './http-resilience.mjs';
 import { readAlecaJson, stripDataUriReplacer } from './wfdata.mjs';
 import { loadWorldState } from './worldstate-source.mjs';
@@ -54,7 +55,7 @@ const ERA_ALIASES = [
 
 const ERA_ZH = {
   Lith: '古纪', Meso: '前纪', Neo: '中纪', Axi: '后纪',
-  Requiem: '安魂', Omnia: '全能',
+  Requiem: '安魂', Omnia: '全能', Vanguard: '先锋',
 };
 
 const NON_MARKET_REWARD_ZH = {
@@ -748,13 +749,22 @@ async function queryRelicReverse(rawQuery, platform, crossplay) {
       return fields.some((field) => field.includes(q) || q.includes(field));
     });
     if (!rewardMatches.length) continue;
+    const baseName = String(relic.name).replace(/\sIntact$/iu, '');
     matches.push({
-      name: String(relic.name).replace(/\sIntact$/iu, ''),
+      name: baseName,
+      zhName: localizeRelicName(baseName),
       vaulted: Boolean(relic.vaulted),
       rewards: rewardMatches.map((reward) => {
         const slug = reward.item?.warframeMarket?.urlName;
         const marketItem = slug ? marketBySlug.get(slug) : null;
-        return { name: reward.item?.name, zhName: marketItem?.zhName || localizeRelicRewardName(reward.item?.name), slug };
+        const englishName = reward.item?.name;
+        return {
+          name: englishName,
+          zhName: marketItem?.zhName || localizeRelicRewardName(englishName),
+          slug,
+          chance: Number(reward.chance) || 0,
+          rarity: rarityFromChance(reward.chance),
+        };
       }),
     });
   }
@@ -789,6 +799,56 @@ async function queryRelic(rawQuery, platform = DEFAULT_PLATFORM, crossplay = DEF
   return parsed
     ? queryRelicForward(parsed, platform, crossplay, squad)
     : queryRelicReverse(cleaned || rawQuery, platform, crossplay);
+}
+
+async function queryRelicFarm(rawQuery, platform = DEFAULT_PLATFORM, crossplay = DEFAULT_CROSSPLAY, options = {}) {
+  const reverse = await queryRelicReverse(rawQuery, platform, crossplay);
+  if (!reverse.matches.length) return { ok: false, kind: 'relic-farm', error: 'not_found', query: rawQuery, fetchedAt: reverse.fetchedAt };
+  let sourceMap = options.relicSourceMap;
+  if (!sourceMap) {
+    try {
+      const { getRelicSources } = await import('./wfdata.mjs');
+      sourceMap = await getRelicSources();
+    } catch { sourceMap = {}; }
+  }
+
+  let bountyData = options.bountyData;
+  let bountyChecked = options.bountyChecked === true;
+  if (bountyData === undefined) {
+    try {
+      const { fetchBounties } = await import('./bounties.mjs');
+      bountyData = await fetchBounties(options.bountyFetchOptions || {});
+      bountyChecked = true;
+    } catch {
+      bountyData = null;
+    }
+  }
+  const bountyHitsByRelic = {};
+  if (bountyData) {
+    const { whereBountyReward } = await import('./bounties.mjs');
+    for (const relic of reverse.matches) {
+      bountyHitsByRelic[relic.name] = whereBountyReward(`${relic.name} Relic`, bountyData).hits
+        .map((hit) => ({ ...hit, expiry: bountyData.expiry || null }));
+    }
+  }
+
+  let ownedRelics = options.ownedRelics ?? null;
+  if (ownedRelics === null && process.env.WARFRAME_PERSONAL_OK === '1') {
+    try {
+      const { readSnapshot, loadRelics } = await import('./alecaframe.mjs');
+      const snapshot = await readSnapshot();
+      ownedRelics = await loadRelics(snapshot);
+    } catch { ownedRelics = null; }
+  }
+  return buildRelicFarmPlan({
+    query: rawQuery,
+    matches: reverse.matches,
+    sourceMap: sourceMap || {},
+    bountyHitsByRelic,
+    bountyChecked,
+    ownedRelics,
+    fetchedAt: new Date().toISOString(),
+  });
 }
 
 function parseFissureFilters(rawQuery) {
@@ -1009,6 +1069,42 @@ function formatRelic(result) {
   return lines.join('\n');
 }
 
+function formatRelicFarm(result) {
+  if (!result.ok) {
+    if (result.error === 'ambiguous_target') {
+      return `“${result.query}”对应多个 Prime 部件，请说具体一点：\n${(result.choices || []).map((choice) => `- ${choice}`).join('\n')}`;
+    }
+    return `没有找到“${result.query}”对应的 Prime 部件遗物。请使用具体部件名，例如：哪里刷 悟空Prime系统蓝图。`;
+  }
+  if (result.setMode) {
+    const lines = [`【${result.set.zhName || result.set.name}｜整套获取路线】`];
+    for (const component of result.components) {
+      const row = component.route;
+      if (!row) continue;
+      const name = String(component.target.zhName || component.target.name).replace(`${result.set.zhName || result.set.name} `, '');
+      const owned = row.relic.ownedCount == null ? '' : `｜库存 ${row.relic.ownedCount}`;
+      const source = row.sources[0];
+      lines.push(`- ${name}：${row.relic.zhName || localizeRelicName(row.relic.name)}${owned}｜建议${row.refinement.zh} ${row.refinement.chance}%`);
+      lines.push(source ? `  ${source.availabilityZh}｜${source.place}｜联合 ${source.combinedChance}%` : '  没有当前可验证的常规掉点');
+    }
+    lines.push('', '每个部件先选一条最优路线；发送“哪里刷 <具体部件>”可看该部件全部候选。');
+    return lines.join('\n');
+  }
+  const lines = [`【${result.target.zhName || result.target.name}｜获取路线】`];
+  for (const row of result.rows) {
+    const owned = row.relic.ownedCount == null ? '' : row.relic.ownedCount > 0 ? `｜库存 ${row.relic.ownedCount}` : '｜库存 0';
+    lines.push(`- ${row.relic.zhName || localizeRelicName(row.relic.name)}${owned}｜${row.relic.vaulted ? '已入库' : '未入库'}｜${row.refinement.zh} ${row.refinement.chance}%`);
+    if (Number(row.relic.ownedCount) > 0) lines.push('  先开现有库存，再决定是否继续刷。');
+    if (!row.sources.length) lines.push(`  ${row.relic.vanguard ? '先锋遗物：瓦奇娅限时阿耶兑换，当前未开放' : row.relic.vaulted ? '没有常规掉点' : '当前掉落表查无可靠来源'}`);
+    for (const source of row.sources) {
+      lines.push(`  ${source.availabilityZh}｜${source.place}｜遗物 ${source.chance}%｜联合 ${source.combinedChance}%`);
+    }
+  }
+  lines.push('', '联合概率＝单次来源结算获得遗物 × 该精炼档开出目标；不是每分钟效率。');
+  if (!result.bountyChecked) lines.push('当前赏金校验不可用；悬赏来源仅按静态掉落表标记，未声称本轮正在开放。');
+  return lines.join('\n');
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/gu, '&amp;')
@@ -1151,7 +1247,7 @@ function buildRelicCard(data) {
 }
 
 function localizeRelicName(name) {
-  const match = String(name || '').match(/^(Lith|Meso|Neo|Axi|Requiem|Omnia)\s+(.+)$/iu);
+  const match = String(name || '').match(/^(Lith|Meso|Neo|Axi|Requiem|Omnia|Vanguard)\s+(.+)$/iu);
   if (!match) return String(name || '未知遗物');
   const era = match[1][0].toUpperCase() + match[1].slice(1).toLowerCase();
   return `${ERA_ZH[era] || era} ${match[2].toUpperCase()}`;
@@ -1188,6 +1284,58 @@ function buildRelicReverseCard(data) {
   return { html: cardDocument(content, height), width: 600, height, key: `relic-reverse7-${data.query}-${visible.length}-${data.headIconDataUri ? 'i' : 'x'}-${anySource ? 's' : 'n'}` };
 }
 
+export function buildRelicFarmCard(data) {
+  if (data.setMode) return buildRelicFarmSetCard(data);
+  const rows = data.rows.map((row, index) => {
+    const tier = String(row.relic.name || '').match(/^(Lith|Meso|Neo|Axi|Requiem|Omnia|Vanguard)/iu)?.[1];
+    const tierKey = tier ? tier[0].toUpperCase() + tier.slice(1).toLowerCase() : '';
+    const icon = RELIC_ICON_DATA[tierKey]
+      ? `<img src="${RELIC_ICON_DATA[tierKey]}" width="30" height="30" style="object-fit:contain;flex:0 0 auto">`
+      : '<span style="width:30px;flex:0 0 30px"></span>';
+    const owned = row.relic.ownedCount == null ? '' : row.relic.ownedCount > 0
+      ? `<span style="color:#73e4be">库存 ×${escapeHtml(row.relic.ownedCount)}</span>`
+      : '<span style="color:#84909b">库存 0</span>';
+    const state = row.relic.vaulted ? '<span style="color:#d7a46d">已入库</span>' : '<span style="color:#8ee3ad">未入库</span>';
+    const sources = row.sources.length ? row.sources.map((source) => {
+      const color = source.availability === 'current' ? '#73e4be' : source.availability === 'always' ? '#9ed7ff' : '#d7b67a';
+      return `<div style="display:flex;gap:7px;align-items:baseline;white-space:nowrap;overflow:hidden"><span style="color:${color};font-weight:800;flex:0 0 auto">${escapeHtml(source.availabilityZh)}</span><span style="overflow:hidden;text-overflow:ellipsis">${escapeHtml(source.place)}</span><span style="color:#f0d48e;flex:0 0 auto">${escapeHtml(source.chance)}%</span><span style="color:#98a6b4;flex:0 0 auto">联合 ${escapeHtml(source.combinedChance)}%</span></div>`;
+    }).join('') : `<div style="color:#8f9aa6">${row.relic.vanguard ? '先锋遗物 · 瓦奇娅限时阿耶兑换，当前未开放' : row.relic.vaulted ? '没有常规掉点；检查库存、复刻或交易' : '当前掉落表查无可靠来源'}</div>`;
+    return `<div style="min-height:108px;padding:14px 24px;border-bottom:1px solid rgba(164,116,54,.38);display:grid;grid-template-columns:40px 230px 1fr;gap:14px;align-items:start"><div style="font-size:24px;color:#b6c3d3;font-weight:800">${index + 1}</div><div><div style="display:flex;align-items:center;gap:9px;font-size:19px;font-weight:900;color:#70e0db">${icon}${escapeHtml(row.relic.zhName || localizeRelicName(row.relic.name))}</div><div style="margin-top:7px;font-size:14px">${state}${owned ? ` · ${owned}` : ''}</div><div style="margin-top:4px;font-size:13px;color:#aeb8c3">目标${row.target.rarity === 'rare' ? '稀有' : row.target.rarity === 'uncommon' ? '罕见' : '常见'} · 建议${escapeHtml(row.refinement.zh)} ${escapeHtml(row.refinement.chance)}%</div></div><div style="font-size:14px;line-height:1.7;color:#d5dbe2">${Number(row.relic.ownedCount) > 0 ? '<div style="color:#73e4be;font-weight:800">先开现有库存</div>' : ''}${sources}</div></div>`;
+  }).join('');
+  const height = 150 + Math.max(1, data.rows.length) * 108 + 46;
+  const headIcon = data.headIconDataUri
+    ? `<img src="${data.headIconDataUri}" width="54" height="54" style="object-fit:contain;flex:0 0 auto">`
+    : '';
+  const bountyNote = data.bountyChecked ? '已核对当前开放世界悬赏' : '赏金实时校验不可用 · 未声称当前开放';
+  const content = `<div class="card"><div class="relic-head" style="height:108px;display:flex;align-items:center;gap:16px;padding-left:26px;padding-right:26px">${headIcon}<div style="min-width:0;flex:1"><div class="relic-title">Prime 部件 · 获取路线</div><div class="relic-code" style="font-size:30px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(data.target.zhName || data.target.name)}</div></div><div class="relic-note">${escapeHtml(data.total)} 枚相关遗物<br>${escapeHtml(bountyNote)}</div></div><div style="height:42px;padding:10px 24px;background:#303640;border-bottom:1px solid #59616b;font-size:14px;font-weight:800;color:#e9eef4">库存优先 → 当前可刷 → 条件/轮换来源</div>${rows}<div class="foot"><span>联合概率=遗物掉率×目标开奖率 · 不代表每分钟效率</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
+  return { html: cardDocument(content, height, 780), width: 780, height, key: `relic-farm3-${data.target.slug || data.target.name}-${data.rows.length}-${data.inventoryAvailable ? 'p' : 'x'}-${data.bountyChecked ? 'b' : 'u'}` };
+}
+
+export function buildRelicFarmSetCard(data) {
+  const setName = data.set.zhName || data.set.name;
+  const rows = data.components.map((component, index) => {
+    const row = component.route;
+    if (!row) return '';
+    const componentName = String(component.target.zhName || component.target.name).replace(`${setName} `, '').replace(/\s+/gu, ' ');
+    const owned = row.relic.ownedCount == null ? '' : row.relic.ownedCount > 0
+      ? `<span style="color:#73e4be">库存 ×${escapeHtml(row.relic.ownedCount)}</span>`
+      : '<span style="color:#84909b">库存 0</span>';
+    const routeText = row.sources.length
+      ? row.sources.map((source) => `<div style="display:grid;grid-template-columns:90px minmax(0,1fr) 180px;gap:8px"><span style="color:${source.availability === 'current' ? '#73e4be' : '#9ed7ff'};font-weight:800">${escapeHtml(source.availabilityZh)}</span><span>${escapeHtml(source.place)}</span><span style="color:#aeb8c3">遗物 ${escapeHtml(source.chance)}% · 联合 ${escapeHtml(source.combinedChance)}%</span></div>`).join('')
+      : `<div style="color:#8f9aa6">${row.relic.vanguard ? '先锋遗物 · 瓦奇娅限时阿耶兑换，当前未开放' : row.relic.vaulted ? '没有常规掉点；检查库存、复刻或交易' : '当前掉落表查无可靠来源'}</div>`;
+    const alternatives = (component.alternatives || []).map((entry) => `${entry.relic.zhName || localizeRelicName(entry.relic.name)}${Number(entry.relic.ownedCount) > 0 ? `（库存×${entry.relic.ownedCount}）` : entry.relic.vaulted ? '（已入库）' : ''}`).join('　');
+    const componentIcon = component.iconDataUri
+      ? `<div style="width:64px;height:64px;border-radius:14px;background:radial-gradient(circle,rgba(88,213,204,.17),rgba(20,25,32,.3));border:1px solid rgba(112,224,219,.22);display:flex;align-items:center;justify-content:center;flex:0 0 auto"><img src="${component.iconDataUri}" width="56" height="56" style="object-fit:contain"></div>`
+      : '';
+    return `<div style="height:210px;padding:20px 26px;border-bottom:1px solid rgba(164,116,54,.38);display:grid;grid-template-columns:38px 274px 1fr;gap:16px;align-items:start"><div style="font-size:25px;color:#b6c3d3;font-weight:800">${index + 1}</div><div><div style="display:flex;align-items:center;gap:13px;min-height:64px">${componentIcon}<div style="min-width:0"><div style="font-size:21px;font-weight:900;color:#70e0db">${escapeHtml(componentName)}</div><div style="margin-top:5px;font-size:16px;font-weight:800;color:#eef2f6;white-space:nowrap">首选 ${escapeHtml(row.relic.zhName || localizeRelicName(row.relic.name))}</div></div></div><div style="margin-top:9px;font-size:14px">${row.relic.vaulted ? '<span style="color:#d7a46d">已入库</span>' : '<span style="color:#8ee3ad">未入库</span>'}${owned ? ` · ${owned}` : ''}</div><div style="margin-top:8px;font-size:13px;color:#7f8c99">共 ${escapeHtml(component.relatedRelics)} 枚相关遗物</div></div><div style="font-size:14px;line-height:1.75;color:#d5dbe2"><div style="font-size:16px;font-weight:800;color:#f0d48e">建议${escapeHtml(row.refinement.zh)} · 目标开奖率 ${escapeHtml(row.refinement.chance)}%</div>${Number(row.relic.ownedCount) > 0 ? '<div style="color:#73e4be;font-weight:800">先开现有库存，再考虑继续获取</div>' : ''}${routeText}${alternatives ? `<div style="margin-top:9px;padding-top:7px;border-top:1px solid rgba(127,140,153,.25);color:#8f9aa6">备选遗物：${escapeHtml(alternatives)}</div>` : ''}</div></div>`;
+  }).join('');
+  const height = 150 + data.components.length * 210 + 46;
+  const headIcon = data.headIconDataUri ? `<div style="width:132px;height:92px;border-radius:18px;background:radial-gradient(circle,rgba(231,190,106,.2),rgba(20,25,32,.15));border:1px solid rgba(240,212,142,.24);display:flex;align-items:center;justify-content:center;flex:0 0 auto"><img src="${data.headIconDataUri}" width="122" height="84" style="object-fit:contain"></div>` : '';
+  const bountyNote = data.bountyChecked ? '已核对当前开放世界悬赏' : '赏金实时校验不可用';
+  const content = `<div class="card"><div class="relic-head" style="height:108px;display:flex;align-items:center;gap:20px;padding-left:24px;padding-right:28px;background:linear-gradient(118deg,#20373c 0%,#29323b 49%,#493b2d 100%)">${headIcon}<div style="min-width:0;flex:1"><div class="relic-title">Prime 套装 · 获取总览</div><div class="relic-code" style="font-size:34px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(setName)}</div></div><div class="relic-note">${escapeHtml(data.components.length)} 个部件<br>${escapeHtml(bountyNote)}</div></div><div style="height:42px;padding:0 26px;display:flex;align-items:center;background:#303640;border-bottom:1px solid #59616b;font-size:14px;font-weight:800;color:#e9eef4">每个部件：库存优先 → 当前最优遗物 → 两条来源与备选遗物</div>${rows}<div class="foot"><span>先锋＝瓦奇娅限时阿耶兑换 · 发送“哪里刷 具体部件”查看全部候选</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
+  return { html: cardDocument(content, height, 900), width: 900, height, key: `relic-farm-set8-${data.set.slug || data.set.name}-${data.components.length}-${data.inventoryAvailable ? 'p' : 'x'}-${data.bountyChecked ? 'b' : 'u'}-${data.headIconDataUri ? 'i' : 'x'}` };
+}
+
 // ---- 帮助卡：静态功能总览（零网络，内容改这里即可，无需重启 Gateway） ----
 const HELP_SECTIONS = [
   ['查价 · warframe.market', [
@@ -1198,6 +1346,7 @@ const HELP_SECTIONS = [
   ['遗物 & 裂缝', [
     ['遗物 前x1', '正查：六奖励·价格·精炼建议'],
     ['遗物 战刃', '反查：哪些遗物出它'],
+    ['哪里刷 Prime部件', '获取路线：库存优先·当前赏金·常驻掉点'],
     ['裂缝 [筛选]', '任务先行：全部普通/钢铁＋标签；私聊逐任务配库存'],
     ['开遗物 [条件] 🔒', '遗物先行：价值 TOP8；加“钢铁”只匹配钢铁裂缝'],
     ['开遗物 商品名 🔒', '估算过线候选＋可刷遗物；同步 WFInfo 当屏兜底'],
@@ -1252,14 +1401,14 @@ function formatHelp() {
   return [
     '【Warframe 助手功能总览】',
     '查价：wm 悟空p ｜ wm 赋能充沛 满级 ｜ 或直接问「悟空p多少钱」',
-    '遗物：遗物 前x1（正查）｜ 遗物 战刃（反查哪里出）',
+    '遗物：遗物 前x1（正查）｜ 遗物 战刃（反查哪里出）｜ 哪里刷 <Prime部件>（获取路线）',
     '裂缝：裂缝 [钢铁 生存 速刷 …]（主人私聊自动配库存遗物）｜ 开遗物 [商品名|未入库|已入库] [白金|杜卡德] [钢铁] [速刷|舒适|收益] [单人]（商品名模式同步 WFInfo 游戏内决策）｜ 精炼推荐 [单人]',
     '世界：仲裁 ｜ 警报 ｜ 入侵 ｜ 活动 ｜ 突击 ｜ 钢铁侵袭 ｜ 赏金 [地点|物品] ｜ 虚空商人/奸商 ｜ 奸商推荐（仅主人私聊）',
     '商店：商店 [序号|商人名]（仅主人私聊）｜ 本周好货 ｜ 哪里买 <物品> ｜ 轮换日历（仅主人私聊）',
     '周常：周常 ｜ 完成 1 3 ｜ 撤销 2 ｜ 清空周常',
     '订阅：订阅 裂缝 钢铁 生存 ｜ 订阅 仲裁/警报/入侵/活动/虚空商人/周常/掉落 ｜ 我的订阅 ｜ 暂停/恢复/取消订阅 <编号>',
     '账号（仅主人私聊）：我的账号 ｜ 我的库存 X ｜ 杜卡德 [600|清仓] [保留N|保留N套]（默认按成品拥有状态智能保留）｜ 我的遗物 前N11 ｜ 我的赋能 充沛 ｜ 账号周常',
-    '说人话也行：「奸商来了吗」「这周还剩啥没做」「战刃哪里出」「我想买电冲弹药，怎么开遗物合适」',
+    '说人话也行：「奸商来了吗」「这周还剩啥没做」「战刃哪里出」「悟空Prime系统蓝图哪里刷」',
   ].join('\n');
 }
 
@@ -1330,8 +1479,51 @@ async function renderCard(data, cardDir) {
       }
     } catch { /* 无图降级 */ }
   }
+  if (data.kind === 'relic-farm' && data.headIconDataUri === undefined) {
+    data.headIconDataUri = null;
+    if (data.setMode) try {
+      const [{ loadCatalog, defaultAlecaDir, marketSlugMap, marketDisplayImageUrl }, { imageDataUri, primeWarframePartIconDataUri }] = await Promise.all([import('./drops.mjs'), import('./wfdata.mjs')]);
+      const catalog = [...(await loadCatalog(defaultAlecaDir())).values()];
+      const catalogImage = (name, allowBlueprintFallback = false) => {
+        const normalized = String(name || '').toLowerCase().replace(/\s+/gu, ' ').trim();
+        const withoutBlueprint = normalized.replace(/\s+blueprint$/u, '');
+        const entry = catalog.find((candidate) => String(candidate.englishName || '').toLowerCase() === normalized)
+          || catalog.find((candidate) => String(candidate.englishName || '').toLowerCase() === withoutBlueprint);
+        if (!entry?.imageName || (!allowBlueprintFallback && entry.imageName === 'blueprint.png')) return null;
+        return `https://cdn.alecaframe.com/warframeData/img/${entry.imageName}`;
+      };
+      data.headIconDataUri = await imageDataUri(catalogImage(data.set?.name));
+      let entries = null;
+      if (!data.headIconDataUri) {
+        entries = [...(await marketSlugMap()).values()];
+        const setEntry = entries.find((entry) => entry.slug === `${data.set?.slug}_set`);
+        const setImageUrl = marketDisplayImageUrl(setEntry);
+        data.headIconDataUri = setImageUrl ? await imageDataUri(setImageUrl) : null;
+      }
+      await Promise.all((data.components || []).map(async (component) => {
+        if (component.iconDataUri !== undefined) return;
+        component.iconDataUri = await imageDataUri(catalogImage(component.target?.name, true));
+        if (!component.iconDataUri) {
+          entries ||= [...(await marketSlugMap()).values()];
+          const entry = entries.find((candidate) => candidate.slug === component.target?.slug);
+          const subIconUrl = entry?.subIcon ? `https://warframe.market/static/assets/${entry.subIcon}` : null;
+          component.iconDataUri = subIconUrl ? await imageDataUri(subIconUrl) : null;
+        }
+        if (!component.iconDataUri) component.iconDataUri = await primeWarframePartIconDataUri(null, component.target?.name);
+      }));
+    } catch { /* 无图降级 */ }
+    else try {
+      const [{ marketSlugMap, findMarketEntry, marketDisplayImageUrl }, { imageDataUri, primeWarframePartIconDataUri }] = await Promise.all([import('./drops.mjs'), import('./wfdata.mjs')]);
+      const imageTarget = data.target?.name || data.target?.zhName;
+      const entry = findMarketEntry(await marketSlugMap(), imageTarget);
+      const marketImageUrl = marketDisplayImageUrl(entry);
+      data.headIconDataUri = marketImageUrl ? await imageDataUri(marketImageUrl) : null;
+      if (!data.headIconDataUri) data.headIconDataUri = await primeWarframePartIconDataUri(null, imageTarget);
+    } catch { /* 无图降级 */ }
+  }
   const card = data.kind === 'market' ? buildMarketCard(data)
     : data.kind === 'help' ? buildHelpCard()
+      : data.kind === 'relic-farm' ? buildRelicFarmCard(data)
       : data.mode === 'reverse' ? buildRelicReverseCard(data) : buildRelicCard(data);
   const stem = card.key.replace(/[^a-z0-9_-]+/giu, '-').replace(/^-+|-+$/gu, '').toLowerCase().slice(0, 50) || 'card';
   const digest = createHash('sha256').update(card.key).digest('hex').slice(0, 10);
@@ -1368,6 +1560,10 @@ function compactFollowup(data) {
   if (data.kind === 'market') {
     // 只发纯 /w 模板：插件随图文字只放行 /w 开头的内容，且用户长按复制即可直接粘进游戏
     return data.contactTemplate || null;
+  }
+  if (data.kind === 'relic-farm') {
+    if (data.setMode) return `${data.set.zhName || data.set.name}｜已按四个部件分别给出库存优先的获取路线；具体部件可继续单独查询。`;
+    return `${data.target.zhName || data.target.name}｜先开库存，再按“当前赏金/常驻掉点/轮换池”选择获取路线。`;
   }
   if (data.mode === 'reverse') {
     return `“${data.query}”反向查询：共找到 ${data.total} 个相关遗物；卡片最多显示前18项。`;
@@ -1574,9 +1770,17 @@ export function parseNaturalWorldQuestion(message) {
     if (item && item.length <= 16) return { kind: 'where-to-buy', command: `哪里买 ${item}`, personal: false };
   }
 
+  // 获取路线：「X哪里刷/怎么获得X」；与只列相关遗物的「哪里出」资料查询分开。
+  const whereFarm = text.match(/^(.{1,20}?)(?:是|在|去)?(?:哪里|哪儿|哪)(?:能|可以)?(?:刷|获得|拿)/u)
+    || text.match(/^(?:怎么|如何)(?:刷|获得|拿)(.{1,20}?)$/u);
+  if (whereFarm) {
+    const item = String(whereFarm[1] || '').replace(/[啊呀呢了吗么?？!！。.~～\s]+$/u, '').trim();
+    if (item && item.length <= 16) return { kind: 'relic-farm', command: `哪里刷 ${item}`, personal: false };
+  }
+
   // 遗物反查：「X哪里出」「哪个遗物出X」；物品名解析失败由调用方静默放行
-  const whereDrop = text.match(/^(.{1,20}?)(?:是|在)?(?:哪里|哪儿|哪)(?:能|可以)?(?:出|掉|刷|获得|拿)/u)
-    || text.match(/^(?:哪里|哪儿|哪个遗物)(?:能|可以)?(?:出|掉|刷|有)(.{1,20}?)$/u);
+  const whereDrop = text.match(/^(.{1,20}?)(?:是|在)?(?:哪里|哪儿|哪)(?:能|可以)?(?:出|掉)/u)
+    || text.match(/^(?:哪里|哪儿|哪个遗物)(?:能|可以)?(?:出|掉|有)(.{1,20}?)$/u);
   if (whereDrop) {
     const item = String(whereDrop[1] || '').replace(/[啊呀呢了吗么?？!！。.~～\s]+$/u, '').trim();
     if (item && item.length <= 16) return { kind: 'relic-reverse', command: `遗物 ${item}`, personal: false };
@@ -1588,6 +1792,11 @@ export function parseNaturalWorldQuestion(message) {
 export function parseShortcutMessage(message) {
   const text = normalizeUnicode(message);
   if (/^\/?(?:帮助|help|菜单|功能|功能列表|命令列表|使用说明|说明书|怎么用)$/iu.test(text)) return { command: 'help', query: '' };
+  // 哪里刷：Prime 部件行动路线；前缀、后缀和「怎么刷」均进入同一确定性命令。
+  const whereFarm = text.match(/^\/?(?:哪里刷|怎么刷|获取路线)\s*(.*)$/u)
+    || text.match(/^\/?(.+?)(?:在|去)?哪(?:里|儿)?刷[？?！!。.\s]*$/u)
+    || text.match(/^\/?(.+?)怎么刷[？?！!。.\s]*$/u);
+  if (whereFarm) return { command: 'relic-farm', query: (whereFarm[1] || '').trim() };
   // 哪里买：全商人反查（非个人命令，货单是公开数据）；「X哪里买」句式也接
   const whereBuy = text.match(/^\/?哪里买(?:\s+|$)(.*)$/u) || text.match(/^\/?(.+?)(?:在|去)?哪(?:里|儿)?买[？?！!。.\s]*$/u);
   if (whereBuy) return { command: 'where-to-buy', query: (whereBuy[1] || '').trim() };
@@ -1717,6 +1926,8 @@ export async function runShortcut(message, options = {}) {
   if (!parsed.query && parsed.command !== 'fissure') {
     const text = parsed.command === 'market'
       ? '用法：wm <物品>，例如 wm 悟空p'
+      : parsed.command === 'relic-farm'
+        ? '用法：哪里刷 <Prime部件>，例如 哪里刷 悟空Prime系统蓝图'
       : '用法：遗物 <纪元编号或物品>，例如 遗物 前x1、遗物 战刃';
     return { handled: true, ok: false, command: parsed.command, text };
   }
@@ -1724,6 +1935,7 @@ export async function runShortcut(message, options = {}) {
   const crossplay = options.crossplay ?? DEFAULT_CROSSPLAY;
   const data = parsed.command === 'market' ? await queryMarket(parsed.query, platform, crossplay)
     : parsed.command === 'fissure' ? await queryFissures(parsed.query, platform)
+      : parsed.command === 'relic-farm' ? await queryRelicFarm(parsed.query, platform, crossplay, options)
       : await queryRelic(parsed.query, platform, crossplay);
   let mediaUrl = null;
   try {
@@ -1740,7 +1952,8 @@ export async function runShortcut(message, options = {}) {
     mediaUrl,
     followupText: mediaUrl ? compactFollowup(data) : null,
     text: parsed.command === 'market' ? formatMarket(data)
-      : parsed.command === 'fissure' ? formatFissures(data) : formatRelic(data),
+      : parsed.command === 'fissure' ? formatFissures(data)
+        : parsed.command === 'relic-farm' ? formatRelicFarm(data) : formatRelic(data),
   };
 }
 

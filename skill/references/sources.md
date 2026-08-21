@@ -55,6 +55,8 @@ Language: zh-hans
 
 - 指定遗物：`GET https://api.warframestat.us/items/search/{English relic code}`，选取精炼等级 `Intact`
 - 反向搜索：WFCD `warframe-items` 的 `data/json/Relics.json`，仅选取 `Intact` 后按奖励的 Market slug 去重
+- `哪里刷 <Prime部件>`复用反向搜索结果，并以 WFCD 静态遗物掉点作为常驻/条件/悬赏轮换来源；当前开放世界赏金必须再由实时 worldstate 核对，核对失败时静态悬赏不得标成当前开放
+- WFCD 数据中的 `Vanguard` 按国际服中文显示为「先锋遗物」；其活动性质和瓦奇娅阿耶兑换口径以 Digital Extremes 官方 Prime 重生年末活动公告为准：https://www.warframe.com/zh-hans/news/praim-vidrodzennia-naprikinci-roku-2025
 - 遗物图标：`https://cdn.warframestat.us/img/{imageName}`
 - 中文奖励名、杜卡德与实时在线挂单由 Warframe.Market v2 补全
 - 纪元映射：古纪=Lith，前纪=Meso，中纪=Neo，后纪=Axi；不得把“前纪 X1”误写成 Lith X1

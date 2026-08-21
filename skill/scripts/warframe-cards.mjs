@@ -150,6 +150,7 @@ for (const [tier, file] of [['Lith', 'lith.png'], ['Meso', 'meso.png'], ['Neo', 
   const mime = file.endsWith('.webp') ? 'image/webp' : 'image/png';
   try { RELIC_ICON_DATA[tier] = `data:${mime};base64,${readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'relics', file)).toString('base64')}`; } catch { RELIC_ICON_DATA[tier] = null; }
 }
+try { RELIC_ICON_DATA.Vanguard = `data:image/webp;base64,${readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'currency', 'aya.webp')).toString('base64')}`; } catch { RELIC_ICON_DATA.Vanguard = null; }
 
 function fissureRow(item, data) {
   const era = ERA[item.tier] || { zh: '未知纪元', color: '#8995a1' };

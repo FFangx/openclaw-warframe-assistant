@@ -25,6 +25,7 @@ export const TEMPLATE_CATALOG = Object.freeze([
   { kind: 'help', example: '帮助', personal: false, intents: '功能/命令/怎么用/你能干什么' },
   { kind: 'market', example: 'wm 悟空p [满级|N级]', personal: false, intents: '问价/多少钱/市价' },
   { kind: 'relic', example: '遗物 前x1｜遗物 战刃', personal: false, intents: '遗物正查/某物哪里出' },
+  { kind: 'relic-farm', example: '哪里刷 Wukong Prime 系统蓝图', personal: false, intents: 'Prime 部件获取路线/先开库存还是去刷遗物' },
   { kind: 'fissure', example: '裂缝 [钢铁|普通|全能|安魂|任务词|速刷]（主人私聊自动推荐库存遗物）', personal: false, intents: '全部当前裂缝/任务标签/每条裂缝开什么' },
   { kind: 'arbitration', example: '仲裁', personal: false, intents: '当前仲裁' },
   { kind: 'alert', example: '警报', personal: false, intents: '当前警报' },
@@ -148,7 +149,7 @@ export async function dispatchCommand(message, options = {}) {
     return { handled: true, ok: true, kind: 'subscription-guide', guideOnly: true, text: `订阅命令请直接发送给机器人（如「${text}」），由快捷通道处理，我这边不代设。` };
   }
 
-  // wm / 遗物 / 裂缝 / 帮助 / 悬赏（悬赏索引在主人私聊时附声望列，env 与插件同一契约）
+  // wm / 遗物 / 哪里刷 / 裂缝 / 帮助 / 悬赏（悬赏索引在主人私聊时附声望列，env 与插件同一契约）
   if (personalAllowed) process.env.WARFRAME_PERSONAL_OK = '1';
   const { runShortcut } = await import('./shortcuts.mjs');
   const result = await runShortcut(text, { cardDir });
