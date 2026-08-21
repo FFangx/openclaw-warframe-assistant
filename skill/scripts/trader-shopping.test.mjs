@@ -207,11 +207,11 @@ test('formatTraderShopping：今日无成交数据显示「今日无数据」，
   assert.match(text, /奸商 140,000现金｜税 1,000,000/u);
 });
 
-test('buildTraderShoppingCard：挂单低值口径与异常低单标注', async () => {
+test('buildTraderShoppingCard：挂单低值口径、顶部对齐口径说明与库存可动上限', async () => {
   const { buildTraderShoppingCard } = await import('./warframe-cards.mjs');
   const card = buildTraderShoppingCard({
     arrived: true, fetchedAt: '2026-08-21T12:00:00.000Z', location: 'Orcus 中继站（冥王星）',
-    ducatBalance: 255, wantDucats: 300, affordable: true, rows: [{
+    ducatBalance: 255, wantDucats: 300, affordable: true, safeDucatAvailable: 1385, rows: [{
       zhName: '制衡 Prime', nameEn: 'Primed Equilibrium', uniqueName: '/x', iconDataUri: null, tradable: true,
       ducats: 300, credits: 220000, owned: false, advice: { tag: 'strong', zh: '强烈买' },
       platinum: 30, marketBasis: 'orders', orderLow: 30, orderCount: 6, orderLowSuspicious: true,
@@ -221,7 +221,29 @@ test('buildTraderShoppingCard：挂单低值口径与异常低单标注', async 
   });
   assert.match(card.html, /挂单低值/u);
   assert.match(card.html, /6 单在售/u);
-  assert.match(card.html, /已剔除异常低单/u);
-  assert.match(card.html, /今日中位 50p·9笔/u);
-  assert.match(card.html, /90天 55p/u);
+  // 行内不再重复标注异常低单；统一由顶部口径说明表达
+  assert.doesNotMatch(card.html, /已剔除异常低单/u);
+  assert.match(card.html, /剔除异常低单后的稳健卖单价/u);
+  // 行内对照只留 90 天锚点；今日中位只在 90 天无数据时才回行内补位
+  assert.match(card.html, /90天 55p · 日均 6笔/u);
+  assert.doesNotMatch(card.html, /今日中位 50p·9笔/u);
+  assert.match(card.html, /库存可动上限/u);
+  assert.match(card.html, /1,385/u);
+});
+
+test('buildTraderShoppingCard：90 天无数据时今日中位回行内补位', async () => {
+  const { buildTraderShoppingCard } = await import('./warframe-cards.mjs');
+  const card = buildTraderShoppingCard({
+    arrived: true, fetchedAt: '2026-08-21T12:00:00.000Z', location: 'Orcus 中继站（冥王星）',
+    ducatBalance: 255, wantDucats: 300, affordable: true, rows: [{
+      zhName: '极地弹仓 Prime', nameEn: 'Primed Ammo Case', uniqueName: '/y', tradable: true,
+      ducats: 300, credits: 210000, owned: false, advice: { tag: 'buy', zh: '顺手买' },
+      platinum: 29, marketBasis: 'orders', orderLow: 29, orderCount: 144, orderLowSuspicious: false,
+      todayMedian: 30, todayVolume: 55, median90: null, dailyVolume: 0,
+      ducatOpportunityPlat: null, ducatPlanShortfall: null, tradingTax: 1000000,
+    }],
+  });
+  assert.match(card.html, /挂单低值/u);
+  assert.match(card.html, /今日中位 30p·55笔/u);
+  assert.match(card.html, /今日\/90天成交中位仅作对照/u);
 });
