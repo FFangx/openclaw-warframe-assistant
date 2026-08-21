@@ -21,7 +21,8 @@ const OFFICIAL_WORLDSTATE_TIMEOUT_MS = 20_000;
 const OFFICIAL_TRADER_CACHE_TTL_MS = 2 * 60 * 1000;
 const CATALOG_CACHE_TTL_MS = 60 * 60 * 1000;
 const STATISTICS_CACHE_TTL_MS = 60 * 60 * 1000;
-const PRICE_CONCURRENCY = 3;
+const ORDERS_CACHE_TTL_MS = 60 * 1000;
+const PRICE_CONCURRENCY = 5;
 const TODAY_MIN_VOLUME = 5;
 const TODAY_STRONG_VOLUME = 10;
 const TODAY_MAX_MEDIAN_DEVIATION = 0.30;
@@ -287,14 +288,22 @@ export async function fetchTradeStatistics(slug, rankFilter, statisticsFetcher) 
 }
 
 // —— 当前卖单（/top 原始顺序不可信，只取价格做稳健低值；失败/无效卖单回退成交统计）——
+// 60 秒磁盘缓存：单次奸商推荐要拉 30 件商品，重复查询避免整批重打 Market；
+// 挂单低值仍来自新鲜度 ≤60s 的快照，不影响「当前可买价」语义。
 export async function fetchMarketOrders(slug, ordersFetcher) {
   try {
     if (ordersFetcher) {
       const payload = await ordersFetcher(slug);
       return { sell: Array.isArray(payload?.sell) ? payload.sell : [] };
     }
-    const payload = await getJson(`${MARKET_BASE}/v2/orders/item/${slug}/top`, { Platform: 'pc', Crossplay: 'true', Language: 'zh-hans' });
-    return { sell: Array.isArray(payload?.data?.sell) ? payload.data.sell : [] };
+    const { staleCachedJson } = await import('./wfdata.mjs');
+    const result = await staleCachedJson(`market-orders-${slug}`, { ttlMs: ORDERS_CACHE_TTL_MS, version: 1 }, async () => {
+      const payload = await getJson(`${MARKET_BASE}/v2/orders/item/${slug}/top`, { Platform: 'pc', Crossplay: 'true', Language: 'zh-hans' });
+      return { sell: Array.isArray(payload?.data?.sell) ? payload.data.sell : [] };
+    });
+    // 刷新失败退出的陈旧挂单不冒充「当前」：整体放弃，走成交统计兜底
+    if (result.stale) return null;
+    return { sell: Array.isArray(result.data?.sell) ? result.data.sell : [] };
   } catch {
     return null;
   }
@@ -410,12 +419,15 @@ export async function appraiseTraderGoods(goods, options = {}) {
     };
     // 单件行情/税/挂单失败不整条爆炸：该行无价继续展示（诚实降级），其余商品照常建议
     try {
-      const [quote, tradingTax, orders] = meta ? await Promise.all([
+      const [quote, tradingTax, rawOrders] = meta ? await Promise.all([
         fetchTradeStatistics(meta.slug, isMod, options.statisticsFetcher),
         fetchTradingTax(meta.slug, options.detailFetcher),
         fetchMarketOrders(meta.slug, options.ordersFetcher),
       ]) : [null, null, null];
-      const ref = resolveMarketReference(quote, orders);
+      const orderInfo = rawOrders
+        ? robustOrderLow(rawOrders.sell, quote?.todayMedian ?? null)
+        : { orderLow: null, orderCount: 0, orderLowSuspicious: false };
+      const ref = resolveMarketReference(quote, orderInfo);
       const row = {
         ...base,
         platinum: ref.platinum,

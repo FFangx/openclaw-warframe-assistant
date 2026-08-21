@@ -154,6 +154,44 @@ test('formatTraderShopping：未到货分支', () => {
   assert.match(text, /尚未到达/);
 });
 
+test('appraiseTraderGoods：挂单经稳健判定后作为决策价（orders 接线）', async () => {
+  const { appraiseTraderGoods } = await import('./trader-shopping.mjs');
+  const rows = await appraiseTraderGoods(
+    [{ uniqueName: '/Lotus/StoreItems/Upgrades/Mods/PrimedTest', item: 'Primed Test', ducats: 300, credits: 100 }],
+    {
+      catalog: { primedtest: { slug: 'primed_test', zh: '测试 Prime' } },
+      statisticsFetcher: async () => ({ payload: { statistics_closed: {
+        '48hours': [{ datetime: new Date().toISOString(), median: 50, volume: 8, mod_rank: 0 }],
+        '90days': [{ datetime: '2026-08-06T00:00:00.000Z', median: 50, volume: 90, mod_rank: 0 }],
+      } } }),
+      detailFetcher: async () => ({ data: { tradingTax: 1_000_000 } }),
+      // 5p 为异常低单（远低于次低 40p 且低于今日中位 50p）→ 应剔除
+      ordersFetcher: async () => ({ sell: [{ platinum: 5, quantity: 1 }, { platinum: 40, quantity: 1 }] }),
+    },
+  );
+  assert.equal(rows[0].marketBasis, 'orders');
+  assert.equal(rows[0].orderLow, 40);
+  assert.equal(rows[0].orderLowSuspicious, true);
+  assert.equal(rows[0].platinum, 40);
+  assert.equal(rows[0].todayMedian, 50);
+});
+
+test('appraiseTraderGoods：挂单失败单项降级，该行无价其余照常', async () => {
+  const { appraiseTraderGoods } = await import('./trader-shopping.mjs');
+  const rows = await appraiseTraderGoods(
+    [{ uniqueName: '/x/Mods/A', item: 'Primed Test', ducats: 300, credits: 100 }],
+    {
+      catalog: { primedtest: { slug: 'primed_test', zh: '测试 Prime' } },
+      statisticsFetcher: async () => { throw new Error('stats down'); },
+      detailFetcher: async () => { throw new Error('detail down'); },
+      ordersFetcher: async () => { throw new Error('orders down'); },
+    },
+  );
+  assert.equal(rows[0].platinum, null);
+  assert.equal(rows[0].tradable, true);
+  assert.equal(rows[0].marketBasis, null);
+});
+
 test('buildTraderShoppingCard：挂单低值口径与异常低单标注', async () => {
   const { buildTraderShoppingCard } = await import('./warframe-cards.mjs');
   const card = buildTraderShoppingCard({
