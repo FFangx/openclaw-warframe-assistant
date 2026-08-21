@@ -631,11 +631,12 @@ export function formatTraderShopping(result) {
       : row.marketBasis === 'today' ? `今日成交中位 ${row.platinum}p`
         : row.marketBasis === '90days' ? `90天成交中位 ${row.platinum}p`
           : `市场参考 ${row.platinum}p`;
-    // 今日无成交数据时不显示「无p」，改为显式「今日无数据」；0 笔只在有中位数时随行展示
+    // 今日/90 天无成交数据时显式标注，不出现「无p」
     const todayPart = row.todayMedian == null ? '今日无数据' : `今日中位 ${row.todayMedian}p·${row.todayVolume ?? 0}笔`;
+    const days90Part = row.median90 == null ? '90天无数据' : `90天 ${row.median90}p·日均${row.dailyVolume ?? 0}笔`;
     const price = row.tradable
       ? row.platinum != null
-        ? `${basis}${row.marketStatsStale ? '（缓存）' : ''}｜${todayPart} · 90天 ${row.median90 ?? '无'}p·日均${row.dailyVolume ?? 0}笔`
+        ? `${basis}${row.marketStatsStale ? '（缓存）' : ''}｜${todayPart} · ${days90Part}`
         : '暂无成交统计'
       : '独占无市场价';
     const ratio = row.ratio != null ? `｜1杜=${row.ratio}p` : '';

@@ -676,13 +676,14 @@ export function buildTraderShoppingCard(data) {
     const name = row.zhName || (row.tradable ? row.nameEn : (row.nameEn || '未收录物品'));
     // 市场路线：决策价=当前挂单稳健低值（basis=orders）；成交中位(今日/90天)作对照行
     const todayPart = row.todayMedian == null ? '今日无数据' : `今日中位 ${escapeHtml(row.todayMedian)}p·${escapeHtml(row.todayVolume ?? 0)}笔`;
+    const days90Part = row.median90 == null ? '90天无数据' : `90天 ${escapeHtml(row.median90)}p · 日均 ${escapeHtml(row.dailyVolume ?? 0)}笔`;
     const priceText = !row.tradable ? '独占 · 无市场价'
       : row.platinum == null ? '暂无成交统计'
         : row.marketBasis === 'orders'
-          ? `挂单低值 ${currency('plat', row.platinum, { size: 10, weight: 800 })} · ${escapeHtml(row.orderCount ?? 0)} 单在售${row.orderLowSuspicious ? ' · 已剔除异常低单' : ''} · ${todayPart} · 90天 ${escapeHtml(row.median90 ?? '无')}p`
+          ? `挂单低值 ${currency('plat', row.platinum, { size: 10, weight: 800 })} · ${escapeHtml(row.orderCount ?? 0)} 单在售${row.orderLowSuspicious ? ' · 已剔除异常低单' : ''} · ${todayPart} · ${days90Part}`
           : row.marketBasis === 'today'
-            ? `今日成交中位 ${currency('plat', row.platinum, { size: 10, weight: 800 })} · 90天 ${escapeHtml(row.median90 ?? '无')}p · 日均 ${escapeHtml(row.dailyVolume ?? 0)}笔`
-            : `90天成交中位 ${currency('plat', row.platinum, { size: 10, weight: 800 })} · ${todayPart} · 日均 ${escapeHtml(row.dailyVolume ?? 0)}笔`;
+            ? `今日成交中位 ${currency('plat', row.platinum, { size: 10, weight: 800 })} · ${days90Part}`
+            : `90天成交中位 ${currency('plat', row.platinum, { size: 10, weight: 800 })} · ${todayPart}`;
     // 所有可交易商品统一展示：补足杜卡德（或缺口）/ 奸商价 / 交易税，与推荐结论解耦
     const tax = row.tradingTax != null ? currency('credit', row.tradingTax, { size: 9, weight: 700 }) : '未知';
     const routeText = !row.tradable
