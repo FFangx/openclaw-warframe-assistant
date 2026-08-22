@@ -71,6 +71,35 @@ test('repeated timeouts open a short circuit and a post-cooldown success closes 
   assert.equal((await store.read())['market:orders'].openUntil, null);
 });
 
+test('404 is a deterministic negative: no retry, no circuit, later 200 succeeds', async () => {
+  let calls = 0;
+  let clock = 20_000;
+  const store = new MemoryEndpointHealthStore();
+  await assert.rejects(() => resilientJsonRequest('https://example.invalid/item/missing', {
+    endpoint: 'market:v2:detail', healthStore: store, maxAttempts: 2,
+    fetchImpl: async () => { calls++; return response(404); }, now: () => clock,
+  }), (error) => error.diagnostic.category === 'not_found' && error.diagnostic.attempts === 1);
+  assert.equal(calls, 1); // 404 不重试
+  const health = (await store.read())['market:v2:detail'];
+  assert.equal(health.consecutiveFailures, 0);
+  assert.equal(health.openUntil, null);
+  assert.equal(health.failureStatusCounts['404'], 1);
+  // 多个 404 连击也不开熔断（否则一批 Baro 404 商品会连累正常商品）
+  for (let i = 0; i < 3; i++) {
+    await assert.rejects(() => resilientJsonRequest('https://example.invalid/item/missing', {
+      endpoint: 'market:v2:detail', healthStore: store, maxAttempts: 1,
+      fetchImpl: async () => response(404), now: () => clock,
+    }));
+  }
+  assert.equal((await store.read())['market:v2:detail'].openUntil, null);
+  // 后续正常请求照常成功
+  const data = await resilientJsonRequest('https://example.invalid/item/ok', {
+    endpoint: 'market:v2:detail', healthStore: store,
+    fetchImpl: async () => response(200, { tradingTax: 1000000 }), now: () => clock,
+  });
+  assert.deepEqual(data, { tradingTax: 1000000 });
+});
+
 test('429 honors retry-after and records an endpoint-scoped diagnostic', async () => {
   let clock = 50_000;
   const store = new MemoryEndpointHealthStore();

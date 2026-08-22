@@ -280,10 +280,18 @@ export async function fetchTradeStatistics(slug, rankFilter, statisticsFetcher) 
     if (statisticsFetcher) return summarizeTradeStatistics(await statisticsFetcher(slug, rankFilter), rankFilter);
     const { staleCachedJson } = await import('./wfdata.mjs');
     const result = await staleCachedJson(`market-statistics-${slug}`, {
-      ttlMs: STATISTICS_CACHE_TTL_MS, version: 1,
-    }, () => getJson(`${MARKET_BASE}/v1/items/${slug}/statistics`, {
-      Platform: 'pc', Crossplay: 'true', Language: 'zh-hans',
-    }));
+      ttlMs: STATISTICS_CACHE_TTL_MS, version: 2,
+    }, async () => {
+      try {
+        return await getJson(`${MARKET_BASE}/v1/items/${slug}/statistics`, {
+          Platform: 'pc', Crossplay: 'true', Language: 'zh-hans',
+        });
+      } catch (error) {
+        // 确定性缺失（404）：负缓存空统计表，避免每次都重打无条目标品
+        if (error?.diagnostic?.category === 'not_found') return { payload: { statistics_closed: {} } };
+        throw error;
+      }
+    });
     const summary = summarizeTradeStatistics(result.data, rankFilter);
     return summary ? { ...summary, stale: result.stale, cachedAt: result.cachedAt } : null;
   } catch {
@@ -343,15 +351,21 @@ export async function fetchMarketOrders(slug, ordersFetcher) {
       );
     }
     const { staleCachedJson } = await import('./wfdata.mjs');
-    const result = await staleCachedJson(`market-orders-${slug}`, { ttlMs: ORDERS_CACHE_TTL_MS, version: 3 }, async () => {
-      const payload = await getJson(`${MARKET_BASE}/v2/orders/item/${slug}`, { Platform: 'pc', Crossplay: 'true', Language: 'zh-hans' });
-      const all = Array.isArray(payload?.data) ? payload.data
-        : Array.isArray(payload?.payload?.orders) ? payload.payload.orders
-          : [];
-      return summarizeOrders(
-        all.filter((order) => String(order.order_type ?? order.type ?? '') === 'sell'),
-        all.filter((order) => String(order.order_type ?? order.type ?? '') === 'buy'),
-      );
+    const result = await staleCachedJson(`market-orders-${slug}`, { ttlMs: ORDERS_CACHE_TTL_MS, version: 4 }, async () => {
+      try {
+        const payload = await getJson(`${MARKET_BASE}/v2/orders/item/${slug}`, { Platform: 'pc', Crossplay: 'true', Language: 'zh-hans' });
+        const all = Array.isArray(payload?.data) ? payload.data
+          : Array.isArray(payload?.payload?.orders) ? payload.payload.orders
+            : [];
+        return summarizeOrders(
+          all.filter((order) => String(order.order_type ?? order.type ?? '') === 'sell'),
+          all.filter((order) => String(order.order_type ?? order.type ?? '') === 'buy'),
+        );
+      } catch (error) {
+        // 确定性缺失（404）：负缓存空订单，避免每次都重打无条目标品
+        if (error?.diagnostic?.category === 'not_found') return summarizeOrders([], []);
+        throw error;
+      }
     });
     // 刷新失败退出的陈旧挂单不冒充「当前」：整体放弃，走成交统计兜底
     if (result.stale) return null;
@@ -462,12 +476,18 @@ async function fetchItemInfo(slug, detailFetcher) {
   }
   try {
     const { staleCachedJson } = await import('./wfdata.mjs');
-    const result = await staleCachedJson(`market-item-detail-${slug}`, { ttlMs: 7 * 24 * 60 * 60 * 1000, version: 2 }, async () => {
-      const payload = await getJson(`${MARKET_BASE}/v2/item/${slug}`, { Platform: 'pc', Crossplay: 'true', Language: 'zh-hans' });
-      return {
-        tradingTax: payload.data?.tradingTax ?? null,
-        description: payload.data?.i18n?.['zh-hans']?.description ?? null,
-      };
+    const result = await staleCachedJson(`market-item-detail-${slug}`, { ttlMs: 7 * 24 * 60 * 60 * 1000, version: 3 }, async () => {
+      try {
+        const payload = await getJson(`${MARKET_BASE}/v2/item/${slug}`, { Platform: 'pc', Crossplay: 'true', Language: 'zh-hans' });
+        return {
+          tradingTax: payload.data?.tradingTax ?? null,
+          description: payload.data?.i18n?.['zh-hans']?.description ?? null,
+        };
+      } catch (error) {
+        // 确定性缺失（404）：负缓存 7 天，货单里无条目标品不再每次重打
+        if (error?.diagnostic?.category === 'not_found') return { tradingTax: null, description: null };
+        throw error;
+      }
     });
     const tax = Number(result.data?.tradingTax);
     return {

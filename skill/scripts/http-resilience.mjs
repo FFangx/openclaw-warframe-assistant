@@ -151,6 +151,33 @@ export async function resilientJsonRequest(url, options = {}) {
       });
       if (!response.ok) {
         const status = response.status;
+        if (status === 404) {
+          // 确定性否定（数据缺失）：不重试、不计连续失败、不开熔断——
+          // 否则一批 Baro 货单里的 404 商品会把整个端点组短路，连累有数据的商品。
+          // 仍记累计遥测（totalFailures/404 计数），供 drift-report 诊断。
+          const notFound = {
+            consecutiveFailures: 0,
+            lastSuccessAt: previous.lastSuccessAt || null,
+            lastFailureAt: now(),
+            lastCategory: 'not_found',
+            lastStatus: 404,
+            openUntil: null, openedAt: null,
+            totalFailures: Number(previous.totalFailures || 0) + 1,
+            failureCategoryCounts: {
+              ...(previous.failureCategoryCounts || {}),
+              not_found: Number(previous.failureCategoryCounts?.not_found || 0) + 1,
+            },
+            failureStatusCounts: {
+              ...(previous.failureStatusCounts || {}),
+              '404': Number(previous.failureStatusCounts?.['404'] || 0) + 1,
+            },
+            circuitOpenCount: Number(previous.circuitOpenCount || 0),
+          };
+          await writeEndpoint(healthStore, endpoint, notFound, states);
+          throw new EndpointRequestError(`endpoint request failed: ${endpoint} (not_found)`, {
+            endpoint, category: 'not_found', retryable: false, attempts: 1, status: 404,
+          });
+        }
         const category = status === 429 ? 'rate_limited' : status >= 500 ? 'server_error' : 'http_error';
         last = { category, status, retryAfter: retryAfterMs(response), cause: null };
       } else {
@@ -172,6 +199,8 @@ export async function resilientJsonRequest(url, options = {}) {
         }
       }
     } catch (error) {
+      // 404 已在分支内写入健康并定论（not_found），直接上抛，不再按 network 循环
+      if (error instanceof EndpointRequestError) throw error;
       last = { category: categoryFor(error), status: null, retryAfter: null, cause: error };
     } finally {
       clearTimeout(timer);
