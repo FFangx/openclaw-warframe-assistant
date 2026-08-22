@@ -1,0 +1,271 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-22T01:34:03.626Z",
+  "source": "Warframe.Market /v2/item/{slug} (i18n zh-hans description + tradingTax), one-time build",
+  "items": {
+    "machete_wraith": {
+      "tax": 2000,
+      "desc": "（英文：MACHETE WRAITH）熟悉的大砍刀配上不一样的造型，马谢特砍刀亡魂以它的独特设计风格作标榜。"
+    },
+    "heavy_impact": {
+      "tax": 4000,
+      "desc": "从高处着地将会产生 6 米的范围震波，造成 300 伤害并震倒敌人。"
+    },
+    "primed_ammo_stock": {
+      "tax": 1000000,
+      "desc": "+110% 弹匣容量"
+    },
+    "primed_ammo_chain": {
+      "tax": 1000000,
+      "desc": "+165% 弹药最大值"
+    },
+    "primed_animal_instinct": {
+      "tax": 1000000,
+      "desc": "+55 米寻物雷达\n+33 米侦敌雷达"
+    },
+    "primed_bane_of_corpus": {
+      "tax": 1000000,
+      "desc": "x1.55 对 Corpus 的伤害"
+    },
+    "primed_bane_of_corrupted": {
+      "tax": 1000000,
+      "desc": "x1.55 对奥罗金的伤害"
+    },
+    "primed_bane_of_grineer": {
+      "tax": 1000000,
+      "desc": "x1.55 对 Grineer 的伤害"
+    },
+    "primed_bane_of_infested": {
+      "tax": 1000000,
+      "desc": "x1.55 对 Infested 的伤害"
+    },
+    "primed_bane_of_the_murmur": {
+      "tax": 1000000,
+      "desc": "x1.55 对低语者的伤害"
+    },
+    "primed_chamber": {
+      "tax": 8000,
+      "desc": "弹匣中第一发子弹 +100% 伤害"
+    },
+    "primed_cleanse_corpus": {
+      "tax": 1000000,
+      "desc": "x1.55 对 Corpus 的伤害"
+    },
+    "primed_charged_shell": {
+      "tax": 1000000,
+      "desc": "+165% 电击伤害"
+    },
+    "primed_chilling_grasp": {
+      "tax": 1000000,
+      "desc": "+165% 冰冻伤害"
+    },
+    "primed_cleanse_corrupted": {
+      "tax": 1000000,
+      "desc": "x1.55 对奥罗金的伤害"
+    },
+    "primed_cleanse_infested": {
+      "tax": 1000000,
+      "desc": "x1.55 对 Infested 的伤害"
+    },
+    "primed_cleanse_grineer": {
+      "tax": 1000000,
+      "desc": "x1.55 对 Grineer 的伤害"
+    },
+    "primed_cleanse_the_murmur": {
+      "tax": 1000000,
+      "desc": "x1.55 对低语者的伤害"
+    },
+    "primed_continuity": {
+      "tax": 1000000,
+      "desc": "+55% 技能持续时间"
+    },
+    "primed_combustion_rounds": {
+      "tax": 1000000,
+      "desc": "+187% 火焰伤害"
+    },
+    "primed_convulsion": {
+      "tax": 1000000,
+      "desc": "+165% 电击伤害"
+    },
+    "primed_counterbalance": {
+      "tax": 1000000,
+      "desc": "-85% 武器后坐力"
+    },
+    "primed_cryo_rounds": {
+      "tax": 1000000,
+      "desc": "+165% 冰冻伤害"
+    },
+    "primed_deadly_efficiency": {
+      "tax": 1000000,
+      "desc": "空弹匣装填时： +220% 伤害，持续 17 秒"
+    },
+    "primed_dual_rounds": {
+      "tax": 1000000,
+      "desc": "+110% 多重射击"
+    },
+    "primed_expel_corpus": {
+      "tax": 1000000,
+      "desc": "x1.55 对 Corpus 的伤害"
+    },
+    "primed_expel_corrupted": {
+      "tax": 1000000,
+      "desc": "x1.55 对奥罗金的伤害"
+    },
+    "primed_expel_grineer": {
+      "tax": 1000000,
+      "desc": "x1.55 对 Grineer 的伤害"
+    },
+    "primed_expel_infested": {
+      "tax": 1000000,
+      "desc": "x1.55 对 Infested 的伤害"
+    },
+    "primed_expel_the_murmur": {
+      "tax": 1000000,
+      "desc": "x1.55 对低语者的伤害"
+    },
+    "primed_firestorm": {
+      "tax": 1000000,
+      "desc": "提高范围攻击武器的爆炸半径。 +44% 爆炸范围"
+    },
+    "primed_flow": {
+      "tax": 1000000,
+      "desc": "+185% 最大能量"
+    },
+    "primed_fulmination": {
+      "tax": 1000000,
+      "desc": "提高范围攻击武器的爆炸半径。 +44% 爆炸范围"
+    },
+    "primed_heated_charge": {
+      "tax": 1000000,
+      "desc": "+165% 火焰伤害"
+    },
+    "primed_heavy_trauma": {
+      "tax": 1000000,
+      "desc": "+165% 冲击伤害"
+    },
+    "primed_fast_hands": {
+      "tax": 1000000,
+      "desc": "+55% 装填速度"
+    },
+    "primed_magazine_warp": {
+      "tax": 1000000,
+      "desc": "+55% 弹匣容量"
+    },
+    "primed_pack_leader": {
+      "tax": 1000000,
+      "desc": "用近战攻击治愈你的同伴。额外的治疗会给予超宏防护。 每次击中生命值恢复 +183\n+2200 超宏防护上限"
+    },
+    "primed_pistol_ammo_mutation": {
+      "tax": 1000000,
+      "desc": "将拾取的主要武器弹药转换为 92% 弹药拾取。"
+    },
+    "primed_pistol_gambit": {
+      "tax": 1000000,
+      "desc": "+187% 暴击几率"
+    },
+    "primed_point_blank": {
+      "tax": 1000000,
+      "desc": "+165% 伤害"
+    },
+    "primed_polar_magazine": {
+      "tax": 1000000,
+      "desc": "+187% 冰冻伤害"
+    },
+    "primed_morphic_transformer": {
+      "tax": 1000000,
+      "desc": "+55% 技能强度"
+    },
+    "primed_pressure_point": {
+      "tax": 1000000,
+      "desc": "+165% 近战伤害"
+    },
+    "primed_quickdraw": {
+      "tax": 1000000,
+      "desc": "+88% 装填速度"
+    },
+    "primed_reach": {
+      "tax": 1000000,
+      "desc": "+3 攻击范围"
+    },
+    "primed_redirection": {
+      "tax": 1000000,
+      "desc": "+180% 护盾容量"
+    },
+    "primed_fever_strike": {
+      "tax": 1000000,
+      "desc": "+165% 毒素伤害"
+    },
+    "primed_rifle_ammo_mutation": {
+      "tax": 1000000,
+      "desc": "将拾取的次要武器弹药转换为 92% 弹药拾取。"
+    },
+    "primed_rubedo_lined_barrel": {
+      "tax": 1000000,
+      "desc": "+187% 伤害"
+    },
+    "primed_shotgun_ammo_mutation": {
+      "tax": 1000000,
+      "desc": "将拾取的次要武器弹药转换为 92% 弹药拾取。"
+    },
+    "primed_slip_magazine": {
+      "tax": 1000000,
+      "desc": "+55% 弹匣容量"
+    },
+    "primed_smite_corpus": {
+      "tax": 1000000,
+      "desc": "x1.55 对 Corpus 的伤害"
+    },
+    "primed_regen": {
+      "tax": 1000000,
+      "desc": "守护恢复时间减少 35 秒。复活时具有 10 秒的无敌状态。"
+    },
+    "primed_smite_corrupted": {
+      "tax": 1000000,
+      "desc": "x1.55 对奥罗金的伤害"
+    },
+    "primed_smite_infested": {
+      "tax": 1000000,
+      "desc": "x1.55 对 Infested 的伤害"
+    },
+    "primed_smite_the_murmur": {
+      "tax": 1000000,
+      "desc": "x1.55 对低语者的伤害"
+    },
+    "primed_sniper_ammo_mutation": {
+      "tax": 1000000,
+      "desc": "将拾取的次要武器弹药转换为 92% 弹药拾取。"
+    },
+    "primed_stabilizer": {
+      "tax": 1000000,
+      "desc": "-85% 武器后坐力"
+    },
+    "primed_steady_hands": {
+      "tax": 1000000,
+      "desc": "-85% 武器后坐力"
+    },
+    "primed_smite_grineer": {
+      "tax": 1000000,
+      "desc": "x1.55 对 Grineer 的伤害"
+    },
+    "primed_target_cracker": {
+      "tax": 1000000,
+      "desc": "+110% 暴击伤害"
+    },
+    "primed_venomous_clip": {
+      "tax": 1000000,
+      "desc": "+187% 毒素伤害"
+    },
+    "primed_ravage": {
+      "tax": 1000000,
+      "desc": "+110% 暴击伤害"
+    },
+    "prova_vandal": {
+      "tax": 2000,
+      "desc": "（英文：PROVA VANDAL）这是凶恶的普罗沃的定制化版本，拥有金属质感及莲花徽记。"
+    },
+    "primed_tactical_pump": {
+      "tax": 1000000,
+      "desc": "+100% 装填速度"
+    }
+  }
+}

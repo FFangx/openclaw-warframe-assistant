@@ -673,8 +673,8 @@ export function buildTraderShoppingCard(data) {
     choice: { zh: '看需求', color: '#c99b62' }, need: { zh: '库存不足', color: '#a56b6b' }, market: { zh: '市场买', color: '#e07777' },
     exclusive: { zh: '独占', color: '#b48ce8' }, skip: { zh: '跳过', color: '#56616d' },
   };
-  const rowH = 96;
-  const relicRowH = 118;
+  const rowH = 106;
+  const relicRowH = 132;
   const noteH = 22;
   const heights = rows.map((row) => (row.relicParts?.missingCount ? relicRowH : rowH));
   const height = 86 + 30 + noteH + heights.reduce((sum, h) => sum + h, 0) + 34;
@@ -682,15 +682,15 @@ export function buildTraderShoppingCard(data) {
     const rowHeight = heights[index];
     const advice = ADVICE_STYLE[row.advice?.tag] || ADVICE_STYLE.skip;
     const name = row.zhName || (row.tradable ? row.nameEn : (row.nameEn || '未收录物品'));
-    // 布局：名称行 → 内容行（左=商品说明，右=三列紧凑组（补足|虚空商人|市场，顶部对齐，上移））
-    // 三列对比：补足（机会成本/缺口 → 预计开遗物次数）｜虚空商人（杜卡德+现金）｜市场（对比价+税+需求度）。
-    const coverMain = !row.tradable ? '—'
+    // 布局：名称行 → 内容行（左=商品说明，右=三列紧凑组（补足|虚空商人|市场，顶部对齐））
+    // 行内容在行高内垂直居中：市场列最底行（需求）与下边界的间距 ≈ 名称行顶部与上边界的间距。
+    const coverMain = (!row.tradable && !row.relicKind) ? '—'
       : row.ducatPlanShortfall != null
         ? `还差 ${currency('ducat', row.ducatPlanShortfall, { size: 11, color: '#e07777' })}`
-        : row.ducatOpportunityPlat != null
+        : row.ducatOpportunityPlat != null && (row.ducatNeed ?? 0) > 0
           ? `${currency('ducat', row.ducatNeed, { size: 11 })} → ${currency('plat', row.ducatOpportunityPlat, { size: 11 })}`
           : '<span style="color:#75dcca">余额可覆盖</span>';
-    const coverSub = !row.tradable ? ''
+    const coverSub = (!row.tradable && !row.relicKind) ? ''
       : row.ducatPlanShortfall != null
         ? `可动 ${currency('ducat', row.ducatPlanDucats ?? 0, { size: 9, weight: 700, color: '#e07777' })}`
         : row.relicRuns ? `约 ${escapeHtml(row.relicRuns.min)}~${escapeHtml(row.relicRuns.max)} 次遗物` : '';
@@ -701,7 +701,7 @@ export function buildTraderShoppingCard(data) {
       : currency('plat', row.platinum, { size: 11, weight: 800 });
     const marketSub = row.tradingTax == null ? '税 未知' : `税 ${currency('credit', row.tradingTax, { size: 9, weight: 700 })}`;
     const demandText = row.buyCount == null ? ''
-      : `求购 ${escapeHtml(row.buyCount)} 单${row.todayVolume ? ` · 今成交 ${escapeHtml(row.todayVolume)} 笔` : ''}`;
+      : `求购 ${escapeHtml(row.buyCount)} 单${row.recentVolume ? ` · 近期成交 ${escapeHtml(row.recentVolume)} 笔` : ''}`;
     const tierBadge = row.tier
       ? `<span style="margin-left:6px;display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:18px;border-radius:5px;background:rgba(240,199,101,.14);color:#f0c765;font-size:11px;font-weight:900;vertical-align:middle">${escapeHtml(row.tier)}</span>`
       : '';
@@ -709,9 +709,9 @@ export function buildTraderShoppingCard(data) {
     const descBlock = row.description
       ? `<div style="min-width:0;font-size:10px;line-height:14px;color:#98a4b0;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;word-break:break-word">${escapeHtml(row.description)}</div>`
       : '<div></div>';
-    // 遗物缺件行：未持有部件（稀有优先），来自动态判定
+    // 遗物缺件行：未持有部件（★=稀有奖励），来自动态判定
     const relicLine = row.relicParts?.missing?.length
-      ? `<div style="margin-top:5px;font-size:9px;color:#8ab4f8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">未持有：${row.relicParts.missing.map(escapeHtml).join(' · ')}${row.relicParts.missingCount > row.relicParts.missing.length ? ` 等 ${escapeHtml(row.relicParts.missingCount)} 件` : ''}</div>`
+      ? `<div style="margin-top:5px;font-size:9px;color:#8ab4f8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">未持有：${row.relicParts.missing.map((m) => `${m.rare ? '<b style="color:#f0c765">★</b>' : ''}${escapeHtml(m.name)}`).join(' · ')}${row.relicParts.missingCount > row.relicParts.missing.length ? ` 等 ${escapeHtml(row.relicParts.missingCount)} 件` : ''}</div>`
       : '';
     // 插画列：有图用图，查无（Baro 饰品类未收录）留空保持对齐
     const iconCell = row.iconDataUri

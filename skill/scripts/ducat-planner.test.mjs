@@ -225,7 +225,7 @@ test('成交统计优先今日中位且样本不足回退 90 天中位', () => {
     ],
   } } };
   assert.deepEqual(summarizeTradeStatistics(payload, true, now), {
-    platinum: 30, basis: 'today', todayVolume: 5, todayMedian: 30,
+    platinum: 30, basis: 'today', todayVolume: 5, recentVolume: 5, todayMedian: 30,
     median90: 24, deviationPct: 25, dailyVolume: 2,
   });
   payload.payload.statistics_closed['48hours'][1].volume = 1;

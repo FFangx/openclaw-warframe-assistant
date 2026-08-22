@@ -163,7 +163,8 @@ test('appraiseTraderGoods：遗物动态分级——未持有部件升 A 且稀�
   assert.equal(missing[0].tier, 'A');
   assert.equal(missing[0].advice.tag, 'good');
   assert.equal(missing[0].relicParts.missingCount, 2);
-  assert.equal(missing[0].relicParts.missing[0], 'Masseter Prime Blade'); // 稀有优先
+  assert.equal(missing[0].relicParts.missing[0].name, 'Masseter Prime Blade'); // 稀有优先
+  assert.equal(missing[0].relicParts.missing[0].rare, true);
   const complete = await run([{ englishName: 'Valkyr Prime Systems' }, { englishName: 'Masseter Prime Blade' }, { englishName: 'Rubico Prime Barrel' }]);
   assert.equal(complete[0].tier, 'B');
   assert.equal(complete[0].relicParts.missingCount, 0);
@@ -287,7 +288,7 @@ test('buildTraderShoppingCard：三列对比、实用性标签、需求度与库
       platinum: 30, marketBasis: 'orders', orderLow: 30, orderCount: 6, orderLowSuspicious: true,
       todayMedian: 50, todayVolume: 9, median90: 55, dailyVolume: 6, ratio: 10,
       buyCount: 23, buyQty: 41, ducatNeed: 45, ducatOpportunityPlat: 2, ducatPlanShortfall: null,
-      relicRuns: { min: 3, max: 5 }, description: '+55% 技能持续时间', tradingTax: 1000000,
+      relicRuns: { min: 3, max: 5 }, recentVolume: 9, description: '+55% 技能持续时间', tradingTax: 1000000,
     }],
   });
   assert.match(card.html, /公认必买/u);
@@ -299,9 +300,9 @@ test('buildTraderShoppingCard：三列对比、实用性标签、需求度与库
   // 补足列：机会成本 + 预计开遗物区间
   assert.match(card.html, /45<\/span>/u);
   assert.match(card.html, /约 3~5 次遗物/u);
-  // 需求度：求购单数 + 今日成交
+  // 需求度：求购单数 + 近 48 小时成交量
   assert.match(card.html, /求购 23 单/u);
-  assert.match(card.html, /今成交 9 笔/u);
+  assert.match(card.html, /近期成交 9 笔/u);
   // 推荐标签=社区口碑分级，不再出现「已剔除异常低单」「90天」
   assert.doesNotMatch(card.html, /已剔除异常低单|90天/u);
   assert.match(card.html, /社区口碑分级/u);

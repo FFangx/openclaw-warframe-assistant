@@ -251,6 +251,8 @@ export function summarizeTradeStatistics(payload, rankFilter, now = Date.now()) 
   const todayKey = beijingDayKey(now);
   const todayRows = hourly.filter((row) => beijingDayKey(row.datetime) === todayKey);
   const todayVolume = todayRows.reduce((sum, row) => sum + Number(row.volume), 0);
+  // 近期成交量 = 统计端点 48hours 窗口全量合计（用户口径：近 48 小时成交，展示为「近期成交」）
+  const recentVolume = hourly.reduce((sum, row) => sum + Number(row.volume), 0);
   const total90Volume = daily.reduce((sum, row) => sum + Number(row.volume), 0);
   const todayMedian = weightedMedian(todayRows);
   const median90 = weightedMedian(daily);
@@ -267,6 +269,7 @@ export function summarizeTradeStatistics(payload, rankFilter, now = Date.now()) 
     platinum,
     basis: useToday ? 'today' : '90days',
     todayVolume,
+    recentVolume,
     todayMedian,
     median90,
     deviationPct: deviation == null ? null : Math.round(deviation * 100),
@@ -407,6 +410,7 @@ export function resolveMarketReference(statistics, order) {
     orderCount: order?.orderCount ?? null,
     orderLowSuspicious: Boolean(order?.orderLowSuspicious),
     todayVolume: statistics?.todayVolume ?? null,
+    recentVolume: statistics?.recentVolume ?? null,
     todayMedian: statistics?.todayMedian ?? null,
     median90: statistics?.median90 ?? null,
     dailyVolume: statistics?.dailyVolume ?? null,
@@ -450,7 +454,7 @@ export function gradeBaroItem(row, overrides = null) {
 }
 
 export function decidePractical(row, tier) {
-  if (!row.tradable) return row.owned ? { tag: 'skip', zh: '已有' } : { tag: 'exclusive', zh: '独占·收藏' };
+  if (!row.tradable && !row.relicKind) return row.owned ? { tag: 'skip', zh: '已有' } : { tag: 'exclusive', zh: '独占·收藏' };
   if (row.owned) return { tag: 'skip', zh: '已有·跳过' };
   return TIER_ADVICE[tier] ?? TIER_ADVICE.B;
 }
@@ -463,8 +467,19 @@ export function decide(row) {
   return ratio >= 0.25 ? { tag: 'flip', zh: '可囤倒卖' } : { tag: 'skip', zh: '跳过' };
 }
 
-// /v2/items 目录不含 tradingTax/description，必须查单品详情；数据基本静态，按物品缓存 7 天。
-// 同一请求同时取「中文商品说明」（i18n['zh-hans'].description，如「+55% 技能持续时间」）供卡片展示。
+// /v2/items 目录不含 tradingTax/description → 一次性构建本地清单 baro-static.json
+// （tradingTax/description 是不变信息；运行时优先读清单，仅清单外商品在线兜底，减少限流压力）。
+let baroStaticCache = null;
+export function loadBaroStatic() {
+  if (baroStaticCache) return baroStaticCache;
+  try {
+    baroStaticCache = JSON.parse(readFileSync(new URL('./baro-static.json', import.meta.url), 'utf8'));
+  } catch {
+    baroStaticCache = { items: {} };
+  }
+  return baroStaticCache;
+}
+
 async function fetchItemInfo(slug, detailFetcher) {
   if (detailFetcher) {
     const detail = await detailFetcher(slug);
@@ -474,6 +489,8 @@ async function fetchItemInfo(slug, detailFetcher) {
       description: detail?.data?.i18n?.['zh-hans']?.description ?? detail?.i18n?.['zh-hans']?.description ?? null,
     };
   }
+  const staticEntry = loadBaroStatic().items?.[slug];
+  if (staticEntry) return { tradingTax: staticEntry.tax ?? null, description: staticEntry.desc ?? null };
   try {
     const { staleCachedJson } = await import('./wfdata.mjs');
     const result = await staleCachedJson(`market-item-detail-${slug}`, { ttlMs: 7 * 24 * 60 * 60 * 1000, version: 3 }, async () => {
@@ -541,9 +558,10 @@ export async function appraiseTraderGoods(goods, options = {}) {
     .map((entry) => compact(String(entry.englishName ?? '')))
     .filter(Boolean));
   const RARITY_RANK = { Rare: 0, Uncommon: 1, Common: 2 };
+  const isRelicRow = (row) => /Relic/u.test(row.uniqueName ?? '') || /遗物/u.test(row.nameEn ?? '') || /遗物/u.test(row.zhName ?? '');
   const enrichRelicRow = async (row) => {
-    const isRelicRow = /Relic/u.test(row.uniqueName ?? '') || /遗物/u.test(row.nameEn ?? '') || /遗物/u.test(row.zhName ?? '');
-    if (!row.tradable || !isRelicRow) return row;
+    if (!isRelicRow(row)) return row;
+    row.relicKind = true; // 遗物：即使 Market 无商品条目也按实用性分级（动态 A/B），不作独占
     const db = await relicDbOf();
     const entries = db?.rewardsByBase?.get(String(row.nameEn ?? '').trim());
     if (!Array.isArray(entries) || !entries.length) return row;
@@ -553,7 +571,7 @@ export async function appraiseTraderGoods(goods, options = {}) {
     row.relicParts = {
       total: entries.length,
       missingCount: missing.length,
-      missing: missing.slice(0, 4).map((entry) => entry.name),
+      missing: missing.slice(0, 4).map((entry) => ({ name: entry.name, rare: entry.rarity === 'Rare' })),
     };
     if (missing.length) row.tier = 'A'; // 仍有未持有部件 → 强推；全有/无数据 → 保持兜底 B
     return row;
@@ -597,6 +615,7 @@ export async function appraiseTraderGoods(goods, options = {}) {
         marketStatsStale: Boolean(ref.stale),
         marketStatsCachedAt: ref.cachedAt ?? null,
         todayVolume: ref.todayVolume ?? null,
+        recentVolume: ref.recentVolume ?? null,
         todayMedian: ref.todayMedian ?? null,
         median90: ref.median90 ?? null,
         dailyVolume: ref.dailyVolume ?? null,
@@ -615,7 +634,8 @@ export async function appraiseTraderGoods(goods, options = {}) {
       const row = {
         ...base,
         platinum: null, marketBasis: null, orderLow: null, orderCount: null, orderLowSuspicious: false,
-        marketStatsStale: false, marketStatsCachedAt: null, todayVolume: null, todayMedian: null,
+        marketStatsStale: false, marketStatsCachedAt: null, todayVolume: null, recentVolume: null,
+        todayMedian: null,
         median90: null, dailyVolume: null, deviationPct: null, ratio: null, tradingTax: null,
       };
       row.tier = gradeBaroItem(row, options.tierOverride ?? null);
@@ -682,7 +702,8 @@ export async function traderShopping(inventory, options = {}) {
         alecaDir: options.alecaDir,
       }).catch(() => null);
       for (const row of rows) {
-        if (!row.tradable || row.platinum == null || row.ducats <= 0) continue;
+        // 遗物即使无 Market 条目也参与补足/次数计算；其余商品仍要求可交易且有对比价
+        if ((!row.tradable && !row.relicKind) || (!row.relicKind && row.platinum == null) || row.ducats <= 0) continue;
         // 行级结论表示「只买这一件」：已有杜卡德先抵扣，只为缺口找部件。
         const immediateNeed = Math.max(0, row.ducats - base.ducatBalance);
         const plan = immediateNeed > 0
@@ -699,7 +720,7 @@ export async function traderShopping(inventory, options = {}) {
           continue;
         }
         row.ducatOpportunityPlat = plan.totalPlat;
-        row.platSaving = Math.round((row.platinum - plan.totalPlat) * 10) / 10;
+        row.platSaving = row.platinum == null ? null : Math.round((row.platinum - plan.totalPlat) * 10) / 10;
         row.creditSaving = row.tradingTax == null ? null : row.tradingTax - row.credits;
         row.vendorCreditPressure = currentCredits > 0 ? Math.round(row.credits / currentCredits * 1000) / 10 : null;
         row.marketCreditPressure = row.tradingTax != null && currentCredits > 0 ? Math.round(row.tradingTax / currentCredits * 1000) / 10 : null;
