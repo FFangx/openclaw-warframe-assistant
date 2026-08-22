@@ -140,42 +140,78 @@ test('gradeBaroItem：分级表命中、类型兜底与中文名匹配', async (
   assert.equal(table.items.primed_ammo_case, 'B');
 });
 
-test('appraiseTraderGoods：遗物动态分级——Axi M5 经 slug 候选匹配目录并升 A，全有保持 B', async () => {
+test('appraiseTraderGoods：遗物奖励清单——官方中文名/库存持有与数量/单件市场，全有保持 B', async () => {
   const { appraiseTraderGoods } = await import('./trader-shopping.mjs');
   const relicDb = { rewardsByBase: new Map([['Axi M5', [
     { name: 'Masseter Prime Blade', rarity: 'Rare', slug: 'masseter_prime_blade' },
-    { name: 'Valkyr Prime Systems', rarity: 'Common', slug: 'valkyr_prime_systems' },
+    { name: 'Forma Blueprint', rarity: 'Uncommon', slug: null },
     { name: 'Rubico Prime Barrel', rarity: 'Uncommon', slug: 'rubico_prime_barrel' },
+    { name: 'Valkyr Prime Systems', rarity: 'Common', slug: 'valkyr_prime_systems' },
+    { name: 'Weird Prime Blade', rarity: 'Common', slug: 'weird_prime_blade' },
   ]]]) };
   const stats = async () => ({ payload: { statistics_closed: { '48hours': [{ datetime: new Date().toISOString(), median: 8, volume: 6 }], '90days': [{ datetime: '2026-08-06T00:00:00.000Z', median: 9, volume: 40 }] } } });
   const run = (valuation, itemName = 'Axi M5') => appraiseTraderGoods(
     [{ uniqueName: '/Lotus/Types/Game/Projections/AxiM5', item: itemName, ducats: 125, credits: 55000 }],
     {
       // 目录键='Axi M5 Relic' 的 compact；货单只给 'Axi M5' → 走 slug 候选 axi_m5_relic
-      catalog: { axim5relic: { slug: 'axi_m5_relic', zh: '后纪 M5 遗物' } },
+      catalog: {
+        axim5relic: { slug: 'axi_m5_relic', zh: '后纪 M5 遗物' },
+        masseterprimeblade: { slug: 'masseter_prime_blade', zh: 'Masseter Prime 刀刃' },
+        rubicoprimebarrel: { slug: 'rubico_prime_barrel', zh: 'Rubico Prime 枪管' },
+        valkyrprimesystems: { slug: 'valkyr_prime_systems', zh: 'Valkyr Prime 系统' },
+        formablueprint: { slug: 'forma_blueprint', zh: 'Forma 蓝图' },
+      },
       statisticsFetcher: stats,
       detailFetcher: async () => ({ data: { tradingTax: 2000, i18n: { 'zh-hans': { description: '一个包含着奥罗金秘密的神器。' } } } }),
       ordersFetcher: async () => ({ sell: [{ platinum: 8, quantity: 1 }], buy: [{ platinum: 6, quantity: 3 }] }),
       relicDb,
+      // 官方词典兜底（仅目录未收录的奖励名命中；测试注入，免网络）
+      officialZh: new Map([['weird prime blade', '怪奇 Prime 刀刃']]),
       inventoryValuation: valuation,
     },
   );
-  const missing = await run([{ englishName: 'Valkyr Prime Systems' }]);
+  const missing = await run([{ englishName: 'Valkyr Prime Systems', count: 2 }]);
   assert.equal(missing[0].tradable, true);
   assert.equal(missing[0].slug, 'axi_m5_relic');
   assert.equal(missing[0].relicKind, true);
   assert.equal(missing[0].tier, 'A');
   assert.equal(missing[0].advice.tag, 'good');
   assert.equal(missing[0].description, '一个包含着奥罗金秘密的神器。');
-  assert.equal(missing[0].relicParts.missingCount, 2);
+  assert.equal(missing[0].relicParts.missingCount, 4);
   assert.equal(missing[0].relicParts.missing[0].name, 'Masseter Prime Blade'); // 稀有优先
   assert.equal(missing[0].relicParts.missing[0].rare, true);
+  // 奖励全清单：官方中文名（wm 同款）+ 库存对照 + 单件市场（价格/税/近期成交）
+  const rewards = missing[0].relicRewards;
+  assert.equal(rewards.length, 5);
+  const byName = Object.fromEntries(rewards.map((reward) => [reward.nameEn, reward]));
+  assert.equal(byName['Masseter Prime Blade'].name, 'Masseter Prime 刀刃');
+  assert.equal(byName['Masseter Prime Blade'].rare, true);
+  assert.deepEqual(
+    { owned: byName['Masseter Prime Blade'].owned, count: byName['Masseter Prime Blade'].count, platinum: byName['Masseter Prime Blade'].platinum, tax: byName['Masseter Prime Blade'].tax, recentVolume: byName['Masseter Prime Blade'].recentVolume },
+    { owned: false, count: 0, platinum: 8, tax: 2000, recentVolume: 6 },
+  );
+  assert.equal(byName['Valkyr Prime Systems'].name, 'Valkyr Prime 系统');
+  assert.equal(byName['Valkyr Prime Systems'].owned, true);
+  assert.equal(byName['Valkyr Prime Systems'].count, 2);
+  assert.equal(byName['Forma Blueprint'].name, 'Forma 蓝图');
+  assert.equal(byName['Forma Blueprint'].slug, 'forma_blueprint');
+  // 目录未收录 → 官方词典兜底 + 无市场条目（不可交易）
+  assert.equal(byName['Weird Prime Blade'].name, '怪奇 Prime 刀刃');
+  assert.equal(byName['Weird Prime Blade'].tradable, false);
+  assert.equal(byName['Weird Prime Blade'].slug, null);
   // 货单名称带 Relic 后缀或中文纪元名也匹配（relicPartsOf 解析 base='Axi M5'）
-  const suffixed = await run([{ englishName: 'Valkyr Prime Systems' }], 'Axi M5 Relic');
-  assert.equal(suffixed[0].relicParts.missingCount, 2);
-  const complete = await run([{ englishName: 'Valkyr Prime Systems' }, { englishName: 'Masseter Prime Blade' }, { englishName: 'Rubico Prime Barrel' }]);
+  const suffixed = await run([{ englishName: 'Valkyr Prime Systems', count: 2 }], 'Axi M5 Relic');
+  assert.equal(suffixed[0].relicParts.missingCount, 4);
+  const complete = await run([
+    { englishName: 'Valkyr Prime Systems', count: 2 },
+    { englishName: 'Masseter Prime Blade', count: 1 },
+    { englishName: 'Rubico Prime Barrel', count: 1 },
+    { englishName: 'Weird Prime Blade', count: 1 },
+    { englishName: 'Forma Blueprint', count: 3 },
+  ]);
   assert.equal(complete[0].tier, 'B');
   assert.equal(complete[0].relicParts.missingCount, 0);
+  assert.ok(complete[0].relicRewards.every((reward) => reward.owned));
 });
 
 test('estimateRelicRuns：按期望 ±30% 给出区间，无效输入返回 null', async () => {
@@ -313,7 +349,7 @@ test('buildTraderShoppingCard：三列对比、实用性标签、需求度与库
   assert.match(card.html, /近期成交 9 笔/u);
   // 推荐标签=社区口碑分级，不再出现「已剔除异常低单」「90天」
   assert.doesNotMatch(card.html, /已剔除异常低单|90天/u);
-  assert.match(card.html, /社区口碑分级/u);
+  assert.match(card.html, /口碑分级/u);
   assert.match(card.html, /库存可动/u);
   assert.match(card.html, /1,385/u);
 });
@@ -347,4 +383,44 @@ test('buildTraderShoppingCard：无近期成交 → 市场列为市价待定', a
     }],
   });
   assert.match(card.html, /市价待定/u);
+});
+
+test('buildTraderShoppingCard：遗物奖励清单一行一件、官方中文名+持有/市场信息、行高随清单自动缩放', async () => {
+  const { buildTraderShoppingCard } = await import('./warframe-cards.mjs');
+  const card = buildTraderShoppingCard({
+    arrived: true, fetchedAt: '2026-08-21T12:00:00.000Z', location: 'Orcus 中继站（冥王星）',
+    ducatBalance: 255, wantDucats: 0, affordable: true, rows: [{
+      zhName: '后纪 M5 遗物', nameEn: 'Axi M5 Relic', uniqueName: '/z', tradable: true, relicKind: true,
+      ducats: 125, credits: 55000, owned: false, advice: { tag: 'good', zh: '强推' }, tier: 'A',
+      platinum: 8, marketBasis: 'orders', orderLow: 8, orderCount: 6, orderLowSuspicious: false,
+      todayMedian: 30, todayVolume: 55, median90: null, dailyVolume: 0,
+      buyCount: 38, ducatOpportunityPlat: null, ducatPlanShortfall: null, tradingTax: 2000,
+      relicRewards: [
+        { nameEn: 'Masseter Prime Blade', name: 'Masseter Prime 刀刃', rare: true, owned: false, count: 0, slug: 'masseter_prime_blade', tradable: true, platinum: 8, tax: 2000, recentVolume: 89 },
+        { nameEn: 'Valkyr Prime Systems', name: 'Valkyr Prime 系统', rare: false, owned: true, count: 2, slug: 'valkyr_prime_systems', tradable: true, platinum: 15, tax: 6000, recentVolume: 12 },
+        { nameEn: 'Forma Blueprint', name: 'Forma 蓝图', rare: false, owned: false, count: 0, slug: null, tradable: false, platinum: null, tax: null, recentVolume: null },
+      ],
+    }],
+  });
+  assert.match(card.html, /Masseter Prime 刀刃/u);
+  assert.match(card.html, /已持有 ×2/u);
+  assert.match(card.html, /未持有/u);
+  // 旧「未持有：」堆叠格式已移除
+  assert.doesNotMatch(card.html, /未持有：/u);
+  // 每行 = 官方中文名 + 状态 + 市场信息（价格/税/近期成交），信息完整不截断
+  assert.match(card.html, /8p<\/span> · 税 2,000 · 近期成交 89 笔/u);
+  assert.match(card.html, /15p<\/span> · 税 6,000 · 近期成交 12 笔/u);
+  assert.match(card.html, /不可交易/u);
+  // 行高 = 88 + 3 行 × 17，自动缩放（相对普通行 106 更高）
+  assert.equal(card.height, 86 + 30 + 22 + (88 + 3 * 17) + 34);
+  const plain = buildTraderShoppingCard({
+    arrived: true, fetchedAt: '2026-08-21T12:00:00.000Z', location: 'Orcus 中继站（冥王星）',
+    ducatBalance: 0, wantDucats: 0, affordable: true, rows: [{
+      zhName: '制衡 Prime', nameEn: 'Primed Equilibrium', uniqueName: '/x', tradable: true,
+      ducats: 300, credits: 220000, owned: false, advice: { tag: 'must', zh: '公认必买' }, tier: 'S',
+      platinum: 30, marketBasis: 'orders', orderLow: 30, orderCount: 6, orderLowSuspicious: false,
+      todayMedian: 50, todayVolume: 9, median90: 55, dailyVolume: 6, tradingTax: 1000000,
+    }],
+  });
+  assert.equal(plain.height, 86 + 30 + 22 + 106 + 34);
 });

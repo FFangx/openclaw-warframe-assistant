@@ -105,6 +105,24 @@ async function mapLimit(values, limit, mapper) {
 
 const compact = (value) => String(value ?? '').normalize('NFKC').trim().toLowerCase().replace(/[\s_\-:：·'’&]+/gu, '');
 
+// 库存对照键：去除 Blueprint 尾缀后比较，规避「目录成品名（…Chassis）↔ 遗物奖励蓝图名（…Chassis Blueprint）」差异
+const normItemKey = (value) => String(value ?? '').normalize('NFKC').trim().toLowerCase()
+  .replace(/[\s_\-:：·'’&]+/gu, '').replace(/blueprint$/u, '');
+
+// 非市场奖励（遗物必出的 Forma 蓝图族）：Market 无条目，给与 wm 同款稳定译名
+const NON_MARKET_REWARD_ZH = Object.freeze({ 'Forma Blueprint': 'Forma 蓝图' });
+function rewardZhName(englishName, meta, officialZh) {
+  const raw = String(englishName ?? '').trim();
+  if (meta?.zh) return meta.zh; // wm 同款：Market i18n 官方中文（zh-hans）
+  const forma = raw.match(/^(\d+)X\s+Forma Blueprint$/iu);
+  if (forma) return `${forma[1]} 个 Forma 蓝图`;
+  if (NON_MARKET_REWARD_ZH[raw]) return NON_MARKET_REWARD_ZH[raw];
+  const normalized = String(raw).normalize('NFKC').trim().toLowerCase();
+  const official = officialZh?.get(normalized) ?? officialZh?.get(normalized.replace(/ blueprint$/u, ''));
+  if (official) return official;
+  return raw || '未知奖励';
+}
+
 // 遗物名称解析（货单可能给 'Axi M5'/'Axi M5 Relic'，中文名可能『后纪 M5 遗物』）：
 // → Market slug 候选（axi_m5_relic，catalog 键是 'Axi M5 Relic' 的 compact）与遗物库 base 名（'Axi M5'）。
 const ERA_BY_KEY = {
@@ -571,11 +589,26 @@ export async function appraiseTraderGoods(goods, options = {}) {
     }
     return relicDbPromise;
   };
-  const ownedEnglishNames = new Set((options.inventoryValuation ?? [])
-    .map((entry) => compact(String(entry.englishName ?? '')))
-    .filter(Boolean));
+  // 库存对照索引：englishName（含/不含 Blueprint 变体）→ {count, displayName}
+  const inventoryByItemKey = new Map();
+  for (const entry of options.inventoryValuation ?? []) {
+    const key = normItemKey(entry.englishName);
+    if (!key) continue;
+    const count = Number(entry.count) || 0;
+    const current = inventoryByItemKey.get(key);
+    inventoryByItemKey.set(key, { count: Math.max(count, current?.count ?? 0), displayName: entry.displayName || entry.englishName || '' });
+  }
   const RARITY_RANK = { Rare: 0, Uncommon: 1, Common: 2 };
   const isRelicRow = (row) => /Relic/u.test(row.uniqueName ?? '') || /遗物/u.test(row.nameEn ?? '') || /遗物/u.test(row.zhName ?? '');
+  // 官方中文词典兜底（懒加载，仅奖励名未入 Market 目录时触发；测试可用 options.officialZh 注入）
+  let officialZhCache = null;
+  const officialZhOf = async () => {
+    if (officialZhCache) return officialZhCache;
+    officialZhCache = options.officialZh instanceof Map
+      ? options.officialZh
+      : await import('./wfdata.mjs').then((m) => m.getOfficialTextMap()).catch(() => new Map());
+    return officialZhCache;
+  };
   const enrichRelicRow = async (row) => {
     if (!isRelicRow(row)) return row;
     row.relicKind = true; // 遗物：即使 Market 无商品条目也按实用性分级（动态 A/B），不作独占
@@ -590,13 +623,55 @@ export async function appraiseTraderGoods(goods, options = {}) {
       if (entries) break;
     }
     if (!Array.isArray(entries) || !entries.length) return row;
-    const missing = entries
-      .filter((entry) => !ownedEnglishNames.has(compact(String(entry.name ?? ''))))
-      .sort((a, b) => (RARITY_RANK[a.rarity] ?? 9) - (RARITY_RANK[b.rarity] ?? 9));
+    // 奖励全清单：官方中文名（wm 同款）→ 库存对照（持有/未持有 + 数量）→ 单件市场（价格/税/近期成交）
+    const sorted = [...entries]
+      .filter((entry) => String(entry.name ?? '').trim())
+      .sort((a, b) => (RARITY_RANK[a.rarity] ?? 9) - (RARITY_RANK[b.rarity] ?? 9) || String(a.name ?? '').localeCompare(String(b.name ?? ''), 'zh-CN'));
+    const metaOf = (entry) => (entry.slug ? catalogBySlug.get(String(entry.slug).toLowerCase()) : null)
+      || catalog[compact(entry.name)]
+      || null;
+    let officialZh = null;
+    if (sorted.some((entry) => !metaOf(entry)?.zh)) officialZh = await officialZhOf();
+    const rewards = await mapLimit(sorted, 3, async (entry) => {
+      const meta = metaOf(entry);
+      const inventory = inventoryByItemKey.get(normItemKey(entry.name));
+      let market = { slug: meta?.slug ?? null, tradable: Boolean(meta?.slug), platinum: null, marketBasis: null, orderCount: null, orderLowSuspicious: false, tax: null, recentVolume: null };
+      if (meta?.slug) {
+        try {
+          const [quote, itemInfo, rawOrders] = await Promise.all([
+            fetchTradeStatistics(meta.slug, false, options.statisticsFetcher),
+            fetchItemInfo(meta.slug, options.detailFetcher),
+            fetchMarketOrders(meta.slug, options.ordersFetcher),
+          ]);
+          const orderInfo = rawOrders
+            ? robustOrderLow(rawOrders.sell, quote?.todayMedian ?? null)
+            : { orderLow: null, orderCount: 0, orderLowSuspicious: false };
+          const ref = resolveMarketReference(quote, orderInfo);
+          market = {
+            slug: meta.slug, tradable: true,
+            platinum: ref.platinum, marketBasis: ref.marketBasis,
+            orderCount: ref.orderCount, orderLowSuspicious: ref.orderLowSuspicious,
+            tax: itemInfo?.tradingTax ?? null,
+            recentVolume: quote?.recentVolume ?? null,
+          };
+        } catch { /* 单件行情失败：该奖励无价继续展示，其余照常 */ }
+      }
+      return {
+        nameEn: entry.name,
+        name: rewardZhName(entry.name, meta, officialZh),
+        rare: entry.rarity === 'Rare',
+        rarity: entry.rarity || null,
+        owned: Boolean(inventory),
+        count: inventory?.count ?? 0,
+        ...market,
+      };
+    });
+    const missing = rewards.filter((reward) => !reward.owned);
+    row.relicRewards = rewards;
     row.relicParts = {
-      total: entries.length,
+      total: rewards.length,
       missingCount: missing.length,
-      missing: missing.slice(0, 4).map((entry) => ({ name: entry.name, rare: entry.rarity === 'Rare' })),
+      missing: missing.slice(0, 4).map((reward) => ({ name: reward.nameEn, rare: reward.rare })),
     };
     if (missing.length) row.tier = 'A'; // 仍有未持有部件 → 强推；全有/无数据 → 保持兜底 B
     return row;

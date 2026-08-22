@@ -259,7 +259,7 @@ test('奸商卡片用杜卡德图标展示行内缺口和顶部摘要', async ()
   const card = buildTraderShoppingCard(result);
   assert.match(card.html, /补足/u);
   assert.match(card.html, /195/u);
-  assert.match(card.html, /各商品独立判断/u);
+  assert.match(card.html, /口碑分级/u);
   assert.doesNotMatch(card.html, /补足\s+195\s+杜/u);
   assert.doesNotMatch(card.html, /当前\s+105\s+杜/u);
 });
