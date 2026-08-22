@@ -148,8 +148,8 @@ test('appraiseTraderGoods：遗物动态分级——未持有部件升 A 且稀�
     { name: 'Rubico Prime Barrel', rarity: 'Uncommon' },
   ]]]) };
   const stats = async () => ({ payload: { statistics_closed: { '48hours': [{ datetime: new Date().toISOString(), median: 8, volume: 6 }], '90days': [{ datetime: '2026-08-06T00:00:00.000Z', median: 9, volume: 40 }] } } });
-  const run = (valuation) => appraiseTraderGoods(
-    [{ uniqueName: '/Lotus/StoreItems/NeoM5Relic', item: 'Neo M5', ducats: 125, credits: 55000 }],
+  const run = (valuation, itemName = 'Neo M5') => appraiseTraderGoods(
+    [{ uniqueName: '/Lotus/StoreItems/NeoM5Relic', item: itemName, ducats: 125, credits: 55000 }],
     {
       catalog: { neom5: { slug: 'neo_m5', zh: '后纪 M5 遗物' } },
       statisticsFetcher: stats,
@@ -165,6 +165,10 @@ test('appraiseTraderGoods：遗物动态分级——未持有部件升 A 且稀�
   assert.equal(missing[0].relicParts.missingCount, 2);
   assert.equal(missing[0].relicParts.missing[0].name, 'Masseter Prime Blade'); // 稀有优先
   assert.equal(missing[0].relicParts.missing[0].rare, true);
+  // 货单名称带 Relic 后缀（如 'Neo M5 Relic'）也能匹配遗物库键
+  const suffixed = await run([{ englishName: 'Valkyr Prime Systems' }], 'Neo M5 Relic');
+  assert.equal(suffixed[0].relicKind, true);
+  assert.equal(suffixed[0].relicParts.missingCount, 2);
   const complete = await run([{ englishName: 'Valkyr Prime Systems' }, { englishName: 'Masseter Prime Blade' }, { englishName: 'Rubico Prime Barrel' }]);
   assert.equal(complete[0].tier, 'B');
   assert.equal(complete[0].relicParts.missingCount, 0);

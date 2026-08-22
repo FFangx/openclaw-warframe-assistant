@@ -563,7 +563,10 @@ export async function appraiseTraderGoods(goods, options = {}) {
     if (!isRelicRow(row)) return row;
     row.relicKind = true; // 遗物：即使 Market 无商品条目也按实用性分级（动态 A/B），不作独占
     const db = await relicDbOf();
-    const entries = db?.rewardsByBase?.get(String(row.nameEn ?? '').trim());
+    const nameEn = String(row.nameEn ?? '').trim();
+    // 货单可能带 Relic 后缀（如 'Neo M5 Relic'），遗物库键去后缀（'Neo M5'）
+    const baseName = nameEn.replace(/\s+relic$/iu, '').trim();
+    const entries = db?.rewardsByBase?.get(baseName) ?? db?.rewardsByBase?.get(nameEn);
     if (!Array.isArray(entries) || !entries.length) return row;
     const missing = entries
       .filter((entry) => !ownedEnglishNames.has(compact(String(entry.name ?? ''))))

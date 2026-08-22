@@ -697,9 +697,9 @@ export function buildTraderShoppingCard(data) {
     const vendorMain = currency('ducat', row.ducats, { size: 11 });
     const vendorSub = currency('credit', row.credits, { size: 9, weight: 700 });
     const marketMain = row.platinum == null
-      ? '<span style="color:#7f8b97">市价待定</span>'
+      ? `<span style="color:#7f8b97">${row.relicKind ? '无市场条目' : '市价待定'}</span>`
       : currency('plat', row.platinum, { size: 11, weight: 800 });
-    const marketSub = row.tradingTax == null ? '税 未知' : `税 ${currency('credit', row.tradingTax, { size: 9, weight: 700 })}`;
+    const marketSub = row.tradingTax == null ? '税 —' : `税 ${currency('credit', row.tradingTax, { size: 9, weight: 700 })}`;
     const demandText = row.buyCount == null ? ''
       : `求购 ${escapeHtml(row.buyCount)} 单${row.recentVolume ? ` · 近期成交 ${escapeHtml(row.recentVolume)} 笔` : ''}`;
     const tierBadge = row.tier
