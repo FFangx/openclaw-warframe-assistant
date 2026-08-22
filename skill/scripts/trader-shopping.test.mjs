@@ -143,10 +143,10 @@ test('gradeBaroItem：分级表命中、类型兜底与中文名匹配', async (
 test('appraiseTraderGoods：遗物奖励清单——官方中文名/库存持有与数量/单件市场，全有保持 B', async () => {
   const { appraiseTraderGoods } = await import('./trader-shopping.mjs');
   const relicDb = { rewardsByBase: new Map([['Axi M5', [
-    { name: 'Masseter Prime Blade', rarity: 'Rare', slug: 'masseter_prime_blade' },
-    { name: 'Forma Blueprint', rarity: 'Uncommon', slug: null },
-    { name: 'Rubico Prime Barrel', rarity: 'Uncommon', slug: 'rubico_prime_barrel' },
-    { name: 'Valkyr Prime Systems', rarity: 'Common', slug: 'valkyr_prime_systems' },
+    { name: 'Masseter Prime Blade', rarity: 'Rare', chance: 2, slug: 'masseter_prime_blade' },
+    { name: 'Forma Blueprint', rarity: 'Uncommon', chance: 25.33, slug: null },
+    { name: 'Rubico Prime Barrel', rarity: 'Uncommon', chance: 11, slug: 'rubico_prime_barrel' },
+    { name: 'Valkyr Prime Systems', rarity: 'Uncommon', chance: 25.33, slug: 'valkyr_prime_systems' },
     { name: 'Weird Prime Blade', rarity: 'Common', slug: 'weird_prime_blade' },
   ]]]) };
   const stats = async () => ({ payload: { statistics_closed: { '48hours': [{ datetime: new Date().toISOString(), median: 8, volume: 6 }], '90days': [{ datetime: '2026-08-06T00:00:00.000Z', median: 9, volume: 40 }] } } });
@@ -195,6 +195,10 @@ test('appraiseTraderGoods：遗物奖励清单——官方中文名/库存持有
   assert.equal(byName['Valkyr Prime Systems'].name, 'Valkyr Prime 系统');
   assert.equal(byName['Valkyr Prime Systems'].owned, true);
   assert.equal(byName['Valkyr Prime Systems'].count, 2);
+  // 档位按掉落率判定（25.33%→常见，即使 rarity 字段误标 Uncommon；11%→罕见）
+  assert.equal(byName['Forma Blueprint'].rarity, 'Common');
+  assert.equal(byName['Valkyr Prime Systems'].rarity, 'Common');
+  assert.equal(byName['Rubico Prime Barrel'].rarity, 'Uncommon');
   assert.equal(byName['Forma Blueprint'].name, 'Forma 蓝图');
   assert.equal(byName['Forma Blueprint'].slug, 'forma_blueprint');
   // 表内 d=0（无杜卡德值）→ null，行内显示「杜 —」
@@ -423,8 +427,11 @@ test('buildTraderShoppingCard：遗物奖励清单一行一件、官方中文名
   assert.match(card.html, /近期成交 89 笔/u);
   assert.match(card.html, /近期成交 12 笔/u);
   assert.match(card.html, /不可交易/u);
-  // 行高 = 88 + 3 行 × 17，自动缩放（相对普通行 106 更高）
-  assert.equal(card.height, 86 + 30 + 22 + (88 + 3 * 17) + 34);
+  // 市场区为固定宽度三段（52px/40px/近期成交），内部左对齐、各行以第一行为基准对齐
+  assert.match(card.html, /flex:0 0 52px/u);
+  assert.match(card.html, /flex:0 0 40px/u);
+  // 行高 = 96 + 3 行 × 18，自动缩放（相对普通行 106 更高）
+  assert.equal(card.height, 86 + 30 + 22 + (96 + 3 * 18) + 34);
   const plain = buildTraderShoppingCard({
     arrived: true, fetchedAt: '2026-08-21T12:00:00.000Z', location: 'Orcus 中继站（冥王星）',
     ducatBalance: 0, wantDucats: 0, affordable: true, rows: [{

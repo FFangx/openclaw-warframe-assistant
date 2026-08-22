@@ -674,9 +674,9 @@ export function buildTraderShoppingCard(data) {
     exclusive: { zh: '独占', color: '#b48ce8' }, skip: { zh: '跳过', color: '#56616d' },
   };
   const rowH = 106;
-  // 遗物行 = 名称 + 内容行（三列）＋ 奖励清单（每件一行；行高按清单行数自动加高，不截断信息）
-  const RELIC_LINE_H = 17;
-  const RELIC_BASE_H = 88;
+  // 遗物行 = 名称 + 内容行（三列）＋ 奖励清单（每件一行；行高按清单行数自动加高，清单下方留白保持呼吸感）
+  const RELIC_LINE_H = 18;
+  const RELIC_BASE_H = 96;
   const relicLineCount = (row) => (Array.isArray(row.relicRewards) ? row.relicRewards.length : 0);
   const noteH = 22;
   const heights = rows.map((row) => (relicLineCount(row) ? RELIC_BASE_H + relicLineCount(row) * RELIC_LINE_H : rowH));
@@ -714,9 +714,10 @@ export function buildTraderShoppingCard(data) {
       : '<div></div>';
     // 遗物奖励清单（照遗物正查模板）：彩色档位前缀 + 官方中文名 + 持有状态｜白金 icon+数字 · 杜卡德 icon+数字 · 近期成交
     // 档位色与正查模板一致：rare #e9b879 / uncommon #d7cf8e / common #ddd
+    // 市场区 = 固定宽度三段（白金 52px/杜卡德 40px/近期成交）+ 内部左对齐 → 各行以第一行为基准竖向对齐
     const RARITY_BADGE = { Rare: { zh: '稀有', color: '#e9b879' }, Uncommon: { zh: '罕见', color: '#d7cf8e' }, Common: { zh: '常见', color: '#dddddd' } };
     const rewardsBlock = row.relicRewards?.length
-      ? `<div style="margin-top:6px;border-top:1px solid rgba(127,140,153,.28);padding-top:5px;display:flex;flex-direction:column;gap:3px">${row.relicRewards.map((reward) => {
+      ? `<div style="margin-top:6px;border-top:1px solid rgba(127,140,153,.28);padding:6px 0 8px;display:flex;flex-direction:column;gap:3px">${row.relicRewards.map((reward) => {
         const rarity = RARITY_BADGE[reward.rarity] || null;
         const rarityCell = rarity
           ? `<span style="flex:0 0 auto;margin-right:5px;font-size:9px;font-weight:800;color:${rarity.color}">${rarity.zh}</span>`
@@ -726,17 +727,19 @@ export function buildTraderShoppingCard(data) {
           : '<span style="margin-left:5px;font-size:9px;font-weight:800;color:#e08484">未持有</span>';
         const market = [];
         if (reward.tradable === false) {
-          market.push('<span style="color:#7f8b97">不可交易</span>');
+          market.push('<span style="color:#7f8b97">不可交易</span>', '', '');
         } else {
-          market.push(reward.platinum != null
-            ? currency('plat', reward.platinum, { size: 10, weight: 800, color: '#e8d58c' })
-            : '<span style="color:#7f8b97">无市场条目</span>');
-          market.push(reward.ducats != null
-            ? currency('ducat', reward.ducats, { size: 10, weight: 800, color: '#f0d48e' })
-            : '<span style="color:#7f8b97">杜 —</span>');
-          if (reward.recentVolume != null) market.push(`近期成交 ${escapeHtml(String(reward.recentVolume))} 笔`);
+          market.push(
+            reward.platinum != null
+              ? currency('plat', reward.platinum, { size: 10, weight: 800, color: '#e8d58c' })
+              : '<span style="color:#7f8b97">无市场条目</span>',
+            reward.ducats != null
+              ? currency('ducat', reward.ducats, { size: 10, weight: 800, color: '#f0d48e' })
+              : '<span style="color:#7f8b97">杜 —</span>',
+            reward.recentVolume != null ? `<span>近期成交 ${escapeHtml(String(reward.recentVolume))} 笔</span>` : '',
+          );
         }
-        return `<div style="display:flex;align-items:baseline;gap:8px;min-width:0"><span style="display:flex;min-width:0;flex:1 1 auto;font-size:10px;color:#d5dbe2;white-space:nowrap">${rarityCell}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis">${escapeHtml(reward.name)}</span>${status}</span><span style="flex:0 0 auto;display:inline-flex;gap:8px;align-items:baseline;font-size:9px;color:#9aa6b1;white-space:nowrap;font-variant-numeric:tabular-nums">${market.join('<span style="color:#56616d">·</span>')}</span></div>`;
+        return `<div style="display:flex;align-items:baseline;gap:8px;min-width:0"><span style="display:flex;min-width:0;flex:1 1 auto;font-size:10px;color:#d5dbe2;white-space:nowrap">${rarityCell}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis">${escapeHtml(reward.name)}</span>${status}</span><span style="flex:0 0 auto;display:inline-flex;align-items:baseline;gap:7px;width:190px;font-size:9px;color:#9aa6b1;white-space:nowrap;font-variant-numeric:tabular-nums"><span style="flex:0 0 52px;display:inline-flex;align-items:baseline;gap:3px;white-space:nowrap">${market[0]}</span><span style="flex:0 0 40px;display:inline-flex;align-items:baseline;gap:3px;white-space:nowrap">${market[1]}</span><span style="flex:0 1 auto;white-space:nowrap">${market[2]}</span></span></div>`;
       }).join('')}</div>`
       : '';
     // 插画列：有图用图，查无（Baro 饰品类未收录）留空保持对齐

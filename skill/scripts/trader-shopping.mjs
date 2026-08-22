@@ -632,10 +632,17 @@ export async function appraiseTraderGoods(goods, options = {}) {
       if (entries) break;
     }
     if (!Array.isArray(entries) || !entries.length) return row;
-    // 奖励全清单：官方中文名（wm 同款）→ 库存对照（持有/未持有 + 数量）→ 单件市场（价格/税/近期成交）
+    // 档位以掉落率判定：Relics.json 的 rarity 字段实测把 25.33%（常见）误标为 Uncommon，
+    // 与 recommend.mjs rarityOfChance 同口径：<=3 Rare / <=12 Uncommon / 其余 Common；无 chance 才回退字段值
+    const rarityOfEntry = (entry) => {
+      const chance = Number(entry.chance);
+      if (Number.isFinite(chance) && chance > 0) return chance <= 3 ? 'Rare' : chance <= 12 ? 'Uncommon' : 'Common';
+      return String(entry.rarity || '');
+    };
+    // 奖励全清单：官方中文名（wm 同款）→ 库存对照（持有/未持有 + 数量）→ 单件市场（价格/杜卡德/近期成交）
     const sorted = [...entries]
       .filter((entry) => String(entry.name ?? '').trim())
-      .sort((a, b) => (RARITY_RANK[a.rarity] ?? 9) - (RARITY_RANK[b.rarity] ?? 9) || String(a.name ?? '').localeCompare(String(b.name ?? ''), 'zh-CN'));
+      .sort((a, b) => (RARITY_RANK[rarityOfEntry(a)] ?? 9) - (RARITY_RANK[rarityOfEntry(b)] ?? 9) || String(a.name ?? '').localeCompare(String(b.name ?? ''), 'zh-CN'));
     const metaOf = (entry) => (entry.slug ? catalogBySlug.get(String(entry.slug).toLowerCase()) : null)
       || catalog[compact(entry.name)]
       || null;
@@ -671,7 +678,7 @@ export async function appraiseTraderGoods(goods, options = {}) {
       return {
         nameEn: entry.name,
         name: rewardZhName(entry.name, meta, officialZh),
-        rarity: entry.rarity || null,
+        rarity: rarityOfEntry(entry),
         owned: Boolean(inventory),
         count: inventory?.count ?? 0,
         ducats,
