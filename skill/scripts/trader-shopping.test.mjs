@@ -169,6 +169,14 @@ test('appraiseTraderGoods：遗物动态分级——未持有部件升 A 且稀�
   assert.equal(complete[0].relicParts.missingCount, 0);
 });
 
+test('estimateRelicRuns：按期望 ±30% 给出区间，无效输入返回 null', async () => {
+  const { estimateRelicRuns } = await import('./trader-shopping.mjs');
+  assert.deepEqual(estimateRelicRuns(100, 10), { min: 8, max: 15 });
+  assert.deepEqual(estimateRelicRuns(45, 12.5), { min: 3, max: 6 });
+  assert.equal(estimateRelicRuns(0, 10), null);
+  assert.equal(estimateRelicRuns(100, 0), null);
+});
+
 test('fetchMarketOrders：买卖双方聚合，求购单数/数量作为需求度', async () => {
   const { fetchMarketOrders } = await import('./trader-shopping.mjs');
   const result = await fetchMarketOrders('primed_test', async () => ({
@@ -279,13 +287,15 @@ test('buildTraderShoppingCard：三列对比、实用性标签、需求度与库
       platinum: 30, marketBasis: 'orders', orderLow: 30, orderCount: 6, orderLowSuspicious: true,
       todayMedian: 50, todayVolume: 9, median90: 55, dailyVolume: 6, ratio: 10,
       buyCount: 23, buyQty: 41, ducatNeed: 45, ducatOpportunityPlat: 2, ducatPlanShortfall: null,
-      relicRuns: { min: 3, max: 5 }, tradingTax: 1000000,
+      relicRuns: { min: 3, max: 5 }, description: '+55% 技能持续时间', tradingTax: 1000000,
     }],
   });
   assert.match(card.html, /公认必买/u);
   assert.match(card.html, /补足/u);
   assert.match(card.html, /虚空商人/u);
   assert.match(card.html, /市场/u);
+  // 商品说明（Market i18n 中文描述）与原补足位置
+  assert.match(card.html, /\+55% 技能持续时间/u);
   // 补足列：机会成本 + 预计开遗物区间
   assert.match(card.html, /45<\/span>/u);
   assert.match(card.html, /约 3~5 次遗物/u);

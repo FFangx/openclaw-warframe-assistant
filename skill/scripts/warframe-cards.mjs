@@ -673,8 +673,8 @@ export function buildTraderShoppingCard(data) {
     choice: { zh: '看需求', color: '#c99b62' }, need: { zh: '库存不足', color: '#a56b6b' }, market: { zh: '市场买', color: '#e07777' },
     exclusive: { zh: '独占', color: '#b48ce8' }, skip: { zh: '跳过', color: '#56616d' },
   };
-  const rowH = 98;
-  const relicRowH = 122;
+  const rowH = 96;
+  const relicRowH = 118;
   const noteH = 22;
   const heights = rows.map((row) => (row.relicParts?.missingCount ? relicRowH : rowH));
   const height = 86 + 30 + noteH + heights.reduce((sum, h) => sum + h, 0) + 34;
@@ -682,8 +682,8 @@ export function buildTraderShoppingCard(data) {
     const rowHeight = heights[index];
     const advice = ADVICE_STYLE[row.advice?.tag] || ADVICE_STYLE.skip;
     const name = row.zhName || (row.tradable ? row.nameEn : (row.nameEn || '未收录物品'));
+    // 布局：名称行 → 内容行（左=商品说明，右=三列紧凑组（补足|虚空商人|市场，顶部对齐，上移））
     // 三列对比：补足（机会成本/缺口 → 预计开遗物次数）｜虚空商人（杜卡德+现金）｜市场（对比价+税+需求度）。
-    // 对比价=当前售价（挂单稳健低值）优先；无卖单用今日成交中位；都无 → 市价待定。90 天不参与。
     const coverMain = !row.tradable ? '—'
       : row.ducatPlanShortfall != null
         ? `还差 ${currency('ducat', row.ducatPlanShortfall, { size: 11, color: '#e07777' })}`
@@ -705,6 +705,10 @@ export function buildTraderShoppingCard(data) {
     const tierBadge = row.tier
       ? `<span style="margin-left:6px;display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:18px;border-radius:5px;background:rgba(240,199,101,.14);color:#f0c765;font-size:11px;font-weight:900;vertical-align:middle">${escapeHtml(row.tier)}</span>`
       : '';
+    // 商品说明（Market i18n 中文描述，最多 3 行）：占据原补足列位置
+    const descBlock = row.description
+      ? `<div style="min-width:0;font-size:10px;line-height:14px;color:#98a4b0;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;word-break:break-word">${escapeHtml(row.description)}</div>`
+      : '<div></div>';
     // 遗物缺件行：未持有部件（稀有优先），来自动态判定
     const relicLine = row.relicParts?.missing?.length
       ? `<div style="margin-top:5px;font-size:9px;color:#8ab4f8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">未持有：${row.relicParts.missing.map(escapeHtml).join(' · ')}${row.relicParts.missingCount > row.relicParts.missing.length ? ` 等 ${escapeHtml(row.relicParts.missingCount)} 件` : ''}</div>`
@@ -715,15 +719,16 @@ export function buildTraderShoppingCard(data) {
       : '<div style="width:48px;height:48px"></div>';
     const col = (label, main, sub, subColor = '#8f9aa6') => `<div style="min-width:0"><div style="font-size:9px;color:#7f8b97;font-weight:700">${label}</div><div style="margin-top:2px;font-size:11px;font-weight:760;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${main}</div>${sub ? `<div style="margin-top:1px;font-size:9px;color:${subColor};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sub}</div>` : ''}</div>`;
     const marketCell = `<div style="min-width:0"><div style="font-size:9px;color:#7f8b97;font-weight:700">市场</div><div style="margin-top:2px;font-size:11px;font-weight:760;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${marketMain}</div><div style="margin-top:1px;font-size:9px;color:#8f9aa6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${marketSub}</div>${demandText ? `<div style="margin-top:1px;font-size:9px;color:#8ab4f8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${demandText}</div>` : ''}</div>`;
-    const columns = `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:6px">
+    const trio = `<div style="display:grid;grid-template-columns:96px 88px 128px;gap:4px;align-items:start">
       ${col('补足', coverMain, coverSub)}
       ${col('虚空商人', vendorMain, vendorSub)}
       ${marketCell}
-    </div>${relicLine}`;
+    </div>`;
+    const contentRow = `<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;margin-top:6px;align-items:start">${descBlock}${trio}</div>`;
     return `<div style="position:relative;z-index:1;height:${rowHeight}px;display:grid;grid-template-columns:60px 54px minmax(0,1fr);align-items:center;padding:0 16px;border-bottom:1px solid rgba(176,123,55,.40);background:${index % 2 ? 'rgba(255,255,255,.035)' : 'rgba(255,255,255,.014)'}">
       <div style="width:50px;height:24px;border-radius:6px;display:grid;place-items:center;background:${advice.color};color:#14181d;font-size:11px;font-weight:900;white-space:nowrap">${advice.zh}</div>
       ${iconCell}
-      <div style="min-width:0;padding-left:12px"><div style="font-size:15px;font-weight:820;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(name)}${row.owned ? ' <span style="font-size:10px;color:#8f9aa6;font-weight:700">已有</span>' : ''}${tierBadge}</div>${columns}</div>
+      <div style="min-width:0;padding-left:12px"><div style="font-size:15px;font-weight:820;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(name)}${row.owned ? ' <span style="font-size:10px;color:#8f9aa6;font-weight:700">已有</span>' : ''}${tierBadge}</div>${contentRow}${relicLine}</div>
     </div>`;
   }).join('');
   const empty = '<div style="position:relative;z-index:1;height:62px;display:grid;place-items:center;color:#8995a1;font-size:14px">奸商尚未到达，到货后再来问</div>';
@@ -737,7 +742,7 @@ export function buildTraderShoppingCard(data) {
     <div style="height:${noteH}px;padding:5px 16px;display:flex;align-items:center;font-size:10px;color:#8f9aa6;background:#242b32;border-bottom:1px solid #48525d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">推荐=社区口碑分级（S 公认必买/A 强推/B 看需求）· 各商品独立判断 · 市场列=当前售价/今日中位 · 求购单数=市场实时需求度</div>
     ${body || empty}
     <div class="footer" style="height:34px"><span>${affordText}</span><span>MOD 按 0 级 · 补足=机会成本（含已入库）· 市场=当前售价 · 仅供参考</span></div></div>`;
-  const keySeed = `trader-shop12|${data.fetchedAt}|${allRows.map((row) => `${row.uniqueName}:${row.advice?.tag}:${row.tier ?? ''}:${row.platinum ?? ''}:${row.marketBasis ?? ''}:${row.orderLow ?? ''}:${row.orderCount ?? ''}:${row.orderLowSuspicious ? 1 : 0}:${row.todayMedian ?? ''}:${row.todayVolume ?? ''}:${row.buyCount ?? ''}:${row.buyQty ?? ''}:${row.ducatOpportunityPlat ?? ''}:${row.ducatPlanShortfall ?? ''}:${row.ducatPlanDucats ?? ''}:${row.relicRuns?.min ?? ''}:${row.relicRuns?.max ?? ''}:${row.relicParts?.missingCount ?? ''}:${row.relicParts?.missing?.join(',') ?? ''}:${row.tradingTax ?? ''}`).join('|')}`;
+  const keySeed = `trader-shop13|${data.fetchedAt}|${allRows.map((row) => `${row.uniqueName}:${row.advice?.tag}:${row.tier ?? ''}:${row.platinum ?? ''}:${row.marketBasis ?? ''}:${row.orderLow ?? ''}:${row.orderCount ?? ''}:${row.orderLowSuspicious ? 1 : 0}:${row.todayMedian ?? ''}:${row.todayVolume ?? ''}:${row.buyCount ?? ''}:${row.buyQty ?? ''}:${row.ducatOpportunityPlat ?? ''}:${row.ducatPlanShortfall ?? ''}:${row.ducatPlanDucats ?? ''}:${row.relicRuns?.min ?? ''}:${row.relicRuns?.max ?? ''}:${row.relicParts?.missingCount ?? ''}:${row.relicParts?.missing?.join(',') ?? ''}:${row.description ?? ''}:${row.tradingTax ?? ''}`).join('|')}`;
   return { html: documentShell(content, height), width: 600, height, key: `trader-shop-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 

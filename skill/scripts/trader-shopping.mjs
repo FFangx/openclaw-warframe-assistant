@@ -291,6 +291,33 @@ export async function fetchTradeStatistics(slug, rankFilter, statisticsFetcher) 
   }
 }
 
+// —— 补足杜卡德缺口的「预计开遗物次数」：全库最优遗物按 Intact 概率 × 杜卡德值求每发期望，±30% 区间 ——
+export function estimateRelicRuns(needDucats, bestExpectation) {
+  const need = Number(needDucats);
+  const expect = Number(bestExpectation);
+  if (!(need > 0) || !(expect > 0)) return null;
+  return { min: Math.max(1, Math.ceil(need / (expect * 1.3))), max: Math.ceil(need / (expect * 0.7)) };
+}
+
+export async function bestRelicExpectation({ relicDb = null, priceTable = null, alecaDir = null } = {}) {
+  const db = relicDb
+    ?? await import('./recommend.mjs').then((m) => m.loadLocalRelicDb(alecaDir)).catch(() => null);
+  if (!db?.rewardsByBase) return null;
+  const prices = priceTable && Object.keys(priceTable).length
+    ? priceTable
+    : await import('./recommend.mjs').then((m) => m.loadPriceTable()).catch(() => null) ?? null;
+  let best = 0;
+  for (const entries of db.rewardsByBase.values()) {
+    let sum = 0;
+    for (const entry of entries) {
+      const ducats = Number(prices?.[String(entry.slug ?? '')]?.d) || 0;
+      sum += (Number(entry.chance) || 0) / 100 * ducats;
+    }
+    if (sum > best) best = sum;
+  }
+  return best > 0 ? best : null;
+}
+
 // —— 当前卖单（全量订单端点：data 即订单数组；/top 只给每方向 5 条，不能当真实在售数）——
 // 60 秒磁盘缓存：单次奸商推荐要拉 30 件商品，重复查询避免整批重打 Market；
 // 挂单低值仍来自新鲜度 ≤60s 的快照，不影响「当前可买价」语义。
@@ -422,22 +449,30 @@ export function decide(row) {
   return ratio >= 0.25 ? { tag: 'flip', zh: '可囤倒卖' } : { tag: 'skip', zh: '跳过' };
 }
 
-// /v2/items 目录不含 tradingTax，必须查单品详情；税值基本静态，按物品缓存 7 天。
-async function fetchTradingTax(slug, detailFetcher) {
+// /v2/items 目录不含 tradingTax/description，必须查单品详情；数据基本静态，按物品缓存 7 天。
+// 同一请求同时取「中文商品说明」（i18n['zh-hans'].description，如「+55% 技能持续时间」）供卡片展示。
+async function fetchItemInfo(slug, detailFetcher) {
   if (detailFetcher) {
     const detail = await detailFetcher(slug);
-    const tax = Number(detail?.tradingTax ?? detail?.data?.tradingTax ?? detail);
-    return Number.isFinite(tax) ? tax : null;
+    return {
+      tradingTax: Number(detail?.tradingTax ?? detail?.data?.tradingTax ?? detail) || null,
+      description: detail?.data?.i18n?.['zh-hans']?.description ?? detail?.i18n?.['zh-hans']?.description ?? null,
+    };
   }
   try {
     const { staleCachedJson } = await import('./wfdata.mjs');
-    const result = await staleCachedJson(`market-item-detail-${slug}`, { ttlMs: 7 * 24 * 60 * 60 * 1000, version: 1 }, async () => {
+    const result = await staleCachedJson(`market-item-detail-${slug}`, { ttlMs: 7 * 24 * 60 * 60 * 1000, version: 2 }, async () => {
       const payload = await getJson(`${MARKET_BASE}/v2/item/${slug}`, { Platform: 'pc', Crossplay: 'true', Language: 'zh-hans' });
-      return { tradingTax: payload.data?.tradingTax ?? null };
+      return {
+        tradingTax: payload.data?.tradingTax ?? null,
+        description: payload.data?.i18n?.['zh-hans']?.description ?? null,
+      };
     });
-    const tax = Number(result.data?.tradingTax);
-    return Number.isFinite(tax) ? tax : null;
-  } catch { return null; }
+    return {
+      tradingTax: Number(result.data?.tradingTax),
+      description: result.data?.description ?? null,
+    };
+  } catch { return { tradingTax: null, description: null }; }
 }
 
 // 两条路线的双轴判断。现金不折算成白金：一边省白金、一边省现金时
@@ -521,11 +556,11 @@ export async function appraiseTraderGoods(goods, options = {}) {
     };
     // 单件行情/税/挂单失败不整条爆炸：该行无价继续展示（诚实降级），其余商品照常建议
     try {
-      const [quote, tradingTax, rawOrders] = meta ? await Promise.all([
+      const [quote, itemInfo, rawOrders] = meta ? await Promise.all([
         fetchTradeStatistics(meta.slug, isMod, options.statisticsFetcher),
-        fetchTradingTax(meta.slug, options.detailFetcher),
+        fetchItemInfo(meta.slug, options.detailFetcher),
         fetchMarketOrders(meta.slug, options.ordersFetcher),
-      ]) : [null, null, null];
+      ]) : [null, { tradingTax: null, description: null }, null];
       const orderInfo = rawOrders
         ? robustOrderLow(rawOrders.sell, quote?.todayMedian ?? null)
         : { orderLow: null, orderCount: 0, orderLowSuspicious: false };
@@ -546,7 +581,8 @@ export async function appraiseTraderGoods(goods, options = {}) {
         deviationPct: ref.deviationPct ?? null,
         buyCount: rawOrders?.buyCount ?? null,
         buyQty: rawOrders?.buyQty ?? null,
-        tradingTax: tradingTax ?? meta?.tradingTax ?? null,
+        tradingTax: itemInfo?.tradingTax ?? meta?.tradingTax ?? null,
+        description: itemInfo?.description ?? null,
       };
       const ratio = row.platinum != null && row.ducats > 0 ? row.platinum / row.ducats : null;
       row.ratio = ratio != null ? Math.round(ratio * 100) / 100 : null;
@@ -617,6 +653,12 @@ export async function traderShopping(inventory, options = {}) {
       });
       safeDucatAvailable = ducatCandidates.reduce((sum, entry) => sum + entry.available * entry.ducatsEach, 0);
       const currentCredits = Number(inventory?.RegularCredits) || 0;
+      // 预计开遗物次数：全库最优遗物每发期望杜卡德（Intact 口径，±30% 区间）；失败不阻塞
+      const bestExpectation = await bestRelicExpectation({
+        relicDb: options.relicDb,
+        priceTable: options.priceTable,
+        alecaDir: options.alecaDir,
+      }).catch(() => null);
       for (const row of rows) {
         if (!row.tradable || row.platinum == null || row.ducats <= 0) continue;
         // 行级结论表示「只买这一件」：已有杜卡德先抵扣，只为缺口找部件。
@@ -626,6 +668,9 @@ export async function traderShopping(inventory, options = {}) {
           : { complete: true, target: 0, totalDucats: 0, totalPlat: 0, rows: [] };
         row.ducatNeed = immediateNeed;
         row.ducatPlanDucats = plan.totalDucats;
+        if (row.ducatNeed + (row.ducatPlanShortfall ?? 0) > 0) {
+          row.relicRuns = estimateRelicRuns(row.ducatNeed + (row.ducatPlanShortfall ?? 0), bestExpectation);
+        }
         if (!plan.complete) {
           row.ducatPlanShortfall = Math.max(0, immediateNeed - plan.totalDucats);
           row.advice = { tag: 'need', zh: '库存不足' };
