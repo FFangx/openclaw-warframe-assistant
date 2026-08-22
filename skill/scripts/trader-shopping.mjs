@@ -105,6 +105,22 @@ async function mapLimit(values, limit, mapper) {
 
 const compact = (value) => String(value ?? '').normalize('NFKC').trim().toLowerCase().replace(/[\s_\-:：·'’&]+/gu, '');
 
+// 遗物名称解析（货单可能给 'Axi M5'/'Axi M5 Relic'，中文名可能『后纪 M5 遗物』）：
+// → Market slug 候选（axi_m5_relic，catalog 键是 'Axi M5 Relic' 的 compact）与遗物库 base 名（'Axi M5'）。
+const ERA_BY_KEY = {
+  lith: 'Lith', meso: 'Meso', neo: 'Neo', axi: 'Axi',
+  古纪: 'Lith', 前纪: 'Meso', 中纪: 'Neo', 后纪: 'Axi',
+};
+function relicPartsOf(nameEn, zhName) {
+  const m = String(nameEn ?? '').match(/\b(Lith|Meso|Neo|Axi)\s+([A-Z0-9]+)/iu)
+    || String(zhName ?? '').match(/(古纪|前纪|中纪|后纪)\s*([A-Z0-9]+)/u);
+  if (!m) return null;
+  const eraEn = ERA_BY_KEY[m[1].toLowerCase()] ?? null;
+  if (!eraEn) return null;
+  const id = m[2].toUpperCase();
+  return { base: `${eraEn} ${id}`, slug: `${eraEn.toLowerCase()}_${id.toLowerCase()}_relic` };
+}
+
 function editDistance(left, right) {
   const a = [...String(left || '')];
   const b = [...String(right || '')];
@@ -542,6 +558,7 @@ export async function appraiseTraderGoods(goods, options = {}) {
   const owned = options.owned ?? new Set();
   // 中文名反查索引（官方源无英文名时用 lang.json 中文名匹配 wm 目录）：从同一份目录现建，零额外请求
   const catalogByZh = new Map(Object.values(catalog).filter((meta) => meta?.zh).map((meta) => [compact(meta.zh), meta]));
+  const catalogBySlug = new Map(Object.values(catalog).filter((meta) => meta?.slug).map((meta) => [String(meta.slug).toLowerCase(), meta]));
   // 遗物动态分级：RewardsByBase（Relics.json Intact 行，只读）÷ 库存已拥有部件（valuation englishName）
   let relicDbPromise = null;
   const relicDbOf = () => {
@@ -564,9 +581,14 @@ export async function appraiseTraderGoods(goods, options = {}) {
     row.relicKind = true; // 遗物：即使 Market 无商品条目也按实用性分级（动态 A/B），不作独占
     const db = await relicDbOf();
     const nameEn = String(row.nameEn ?? '').trim();
-    // 货单可能带 Relic 后缀（如 'Neo M5 Relic'），遗物库键去后缀（'Neo M5'）
-    const baseName = nameEn.replace(/\s+relic$/iu, '').trim();
-    const entries = db?.rewardsByBase?.get(baseName) ?? db?.rewardsByBase?.get(nameEn);
+    // 货单可能给 'Axi M5'/'Axi M5 Relic'，中文名可能『后纪 M5 遗物』——统一解析成遗物库键（'Axi M5'）
+    const parsed = relicPartsOf(nameEn, String(row.zhName ?? ''));
+    const baseNames = [...new Set([parsed?.base, nameEn.replace(/\s+relic$/iu, '').trim(), nameEn].filter(Boolean))];
+    let entries = null;
+    for (const base of baseNames) {
+      entries = db?.rewardsByBase?.get(base);
+      if (entries) break;
+    }
     if (!Array.isArray(entries) || !entries.length) return row;
     const missing = entries
       .filter((entry) => !ownedEnglishNames.has(compact(String(entry.name ?? ''))))
@@ -582,7 +604,13 @@ export async function appraiseTraderGoods(goods, options = {}) {
   const rows = await mapLimit(goods, PRICE_CONCURRENCY, async (entry) => {
     const isMod = /\/Mods\//u.test(entry.uniqueName || '');
     const zhLocal = entry.zhLocal ?? options.zhOf?.(entry.uniqueName) ?? null;
-    const meta = catalog[compact(entry.item)] || (zhLocal ? catalogByZh.get(compact(zhLocal)) : null) || null;
+    // 目录名是 'Axi M5 Relic'（compact=axim5relic），货单可能只给 'Axi M5' 或中文『后纪 M5 遗物』：
+    // 用遗物 slug 候选（axi_m5_relic）经 slug 索引再匹配，否则遗物会误判为不可交易。
+    let meta = catalog[compact(entry.item)] || (zhLocal ? catalogByZh.get(compact(zhLocal)) : null) || null;
+    if (!meta) {
+      const relicSlug = relicPartsOf(entry.item, zhLocal)?.slug;
+      if (relicSlug) meta = catalogBySlug.get(relicSlug) ?? null;
+    }
     const base = {
       uniqueName: entry.uniqueName,
       nameEn: entry.item,
