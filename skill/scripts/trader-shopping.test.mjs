@@ -165,6 +165,8 @@ test('appraiseTraderGoods：遗物奖励清单——官方中文名/库存持有
       detailFetcher: async () => ({ data: { tradingTax: 2000, i18n: { 'zh-hans': { description: '一个包含着奥罗金秘密的神器。' } } } }),
       ordersFetcher: async () => ({ sell: [{ platinum: 8, quantity: 1 }], buy: [{ platinum: 6, quantity: 3 }] }),
       relicDb,
+      // 杜卡德价值表（slug → {d}）：奖励行与白金同构展示
+      priceTable: { masseter_prime_blade: { d: 100 }, valkyr_prime_systems: { d: 45 }, rubico_prime_barrel: { d: 45 }, forma_blueprint: { d: 0 } },
       // 官方词典兜底（仅目录未收录的奖励名命中；测试注入，免网络）
       officialZh: new Map([['weird prime blade', '怪奇 Prime 刀刃']]),
       inventoryValuation: valuation,
@@ -180,25 +182,28 @@ test('appraiseTraderGoods：遗物奖励清单——官方中文名/库存持有
   assert.equal(missing[0].relicParts.missingCount, 4);
   assert.equal(missing[0].relicParts.missing[0].name, 'Masseter Prime Blade'); // 稀有优先
   assert.equal(missing[0].relicParts.missing[0].rare, true);
-  // 奖励全清单：官方中文名（wm 同款）+ 库存对照 + 单件市场（价格/税/近期成交）
+  // 奖励全清单：官方中文名（wm 同款）+ 库存对照 + 单件市场（价格/杜卡德/近期成交）
   const rewards = missing[0].relicRewards;
   assert.equal(rewards.length, 5);
   const byName = Object.fromEntries(rewards.map((reward) => [reward.nameEn, reward]));
   assert.equal(byName['Masseter Prime Blade'].name, 'Masseter Prime 刀刃');
-  assert.equal(byName['Masseter Prime Blade'].rare, true);
+  assert.equal(byName['Masseter Prime Blade'].rarity, 'Rare');
   assert.deepEqual(
-    { owned: byName['Masseter Prime Blade'].owned, count: byName['Masseter Prime Blade'].count, platinum: byName['Masseter Prime Blade'].platinum, tax: byName['Masseter Prime Blade'].tax, recentVolume: byName['Masseter Prime Blade'].recentVolume },
-    { owned: false, count: 0, platinum: 8, tax: 2000, recentVolume: 6 },
+    { owned: byName['Masseter Prime Blade'].owned, count: byName['Masseter Prime Blade'].count, platinum: byName['Masseter Prime Blade'].platinum, ducats: byName['Masseter Prime Blade'].ducats, recentVolume: byName['Masseter Prime Blade'].recentVolume },
+    { owned: false, count: 0, platinum: 8, ducats: 100, recentVolume: 6 },
   );
   assert.equal(byName['Valkyr Prime Systems'].name, 'Valkyr Prime 系统');
   assert.equal(byName['Valkyr Prime Systems'].owned, true);
   assert.equal(byName['Valkyr Prime Systems'].count, 2);
   assert.equal(byName['Forma Blueprint'].name, 'Forma 蓝图');
   assert.equal(byName['Forma Blueprint'].slug, 'forma_blueprint');
-  // 目录未收录 → 官方词典兜底 + 无市场条目（不可交易）
+  // 表内 d=0（无杜卡德值）→ null，行内显示「杜 —」
+  assert.equal(byName['Forma Blueprint'].ducats, null);
+  // 目录未收录 → 官方词典兜底 + 无市场条目（不可交易）且无杜卡德值
   assert.equal(byName['Weird Prime Blade'].name, '怪奇 Prime 刀刃');
   assert.equal(byName['Weird Prime Blade'].tradable, false);
   assert.equal(byName['Weird Prime Blade'].slug, null);
+  assert.equal(byName['Weird Prime Blade'].ducats, null);
   // 货单名称带 Relic 后缀或中文纪元名也匹配（relicPartsOf 解析 base='Axi M5'）
   const suffixed = await run([{ englishName: 'Valkyr Prime Systems', count: 2 }], 'Axi M5 Relic');
   assert.equal(suffixed[0].relicParts.missingCount, 4);
@@ -396,9 +401,9 @@ test('buildTraderShoppingCard：遗物奖励清单一行一件、官方中文名
       todayMedian: 30, todayVolume: 55, median90: null, dailyVolume: 0,
       buyCount: 38, ducatOpportunityPlat: null, ducatPlanShortfall: null, tradingTax: 2000,
       relicRewards: [
-        { nameEn: 'Masseter Prime Blade', name: 'Masseter Prime 刀刃', rare: true, owned: false, count: 0, slug: 'masseter_prime_blade', tradable: true, platinum: 8, tax: 2000, recentVolume: 89 },
-        { nameEn: 'Valkyr Prime Systems', name: 'Valkyr Prime 系统', rare: false, owned: true, count: 2, slug: 'valkyr_prime_systems', tradable: true, platinum: 15, tax: 6000, recentVolume: 12 },
-        { nameEn: 'Forma Blueprint', name: 'Forma 蓝图', rare: false, owned: false, count: 0, slug: null, tradable: false, platinum: null, tax: null, recentVolume: null },
+        { nameEn: 'Masseter Prime Blade', name: 'Masseter Prime 刀刃', rarity: 'Rare', owned: false, count: 0, slug: 'masseter_prime_blade', tradable: true, platinum: 8, ducats: 100, recentVolume: 89 },
+        { nameEn: 'Valkyr Prime Systems', name: 'Valkyr Prime 系统', rarity: 'Common', owned: true, count: 2, slug: 'valkyr_prime_systems', tradable: true, platinum: 15, ducats: 45, recentVolume: 12 },
+        { nameEn: 'Forma Blueprint', name: 'Forma 蓝图', rarity: 'Uncommon', owned: false, count: 0, slug: null, tradable: false, platinum: null, ducats: null, recentVolume: null },
       ],
     }],
   });
@@ -407,9 +412,16 @@ test('buildTraderShoppingCard：遗物奖励清单一行一件、官方中文名
   assert.match(card.html, /未持有/u);
   // 旧「未持有：」堆叠格式已移除
   assert.doesNotMatch(card.html, /未持有：/u);
-  // 每行 = 官方中文名 + 状态 + 市场信息（价格/税/近期成交），信息完整不截断
-  assert.match(card.html, /8p<\/span> · 税 2,000 · 近期成交 89 笔/u);
-  assert.match(card.html, /15p<\/span> · 税 6,000 · 近期成交 12 笔/u);
+  // 照遗物正查模板：彩色档位前缀（稀有/罕见/常见），无星标
+  assert.match(card.html, /稀有/u);
+  assert.match(card.html, /罕见/u);
+  assert.match(card.html, /常见/u);
+  assert.doesNotMatch(card.html, /★/u);
+  // 价格/杜卡德 = 图标+数字（无 p 后缀），不再展示税
+  assert.doesNotMatch(card.html, />\d+p</u);
+  assert.doesNotMatch(card.html, /税 2,000|税 6,000/u);
+  assert.match(card.html, /近期成交 89 笔/u);
+  assert.match(card.html, /近期成交 12 笔/u);
   assert.match(card.html, /不可交易/u);
   // 行高 = 88 + 3 行 × 17，自动缩放（相对普通行 106 更高）
   assert.equal(card.height, 86 + 30 + 22 + (88 + 3 * 17) + 34);

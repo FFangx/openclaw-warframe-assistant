@@ -609,6 +609,15 @@ export async function appraiseTraderGoods(goods, options = {}) {
       : await import('./wfdata.mjs').then((m) => m.getOfficialTextMap()).catch(() => new Map());
     return officialZhCache;
   };
+  // 杜卡德价值表（官方 /v1/tools/ducats，slug → {d}）：奖励行与白金同构展示；失败空表不阻塞
+  let priceTableCache = null;
+  const priceTableOf = async () => {
+    if (priceTableCache) return priceTableCache;
+    priceTableCache = options.priceTable && typeof options.priceTable === 'object' && Object.keys(options.priceTable).length
+      ? options.priceTable
+      : await import('./recommend.mjs').then((m) => m.loadPriceTable()).catch(() => ({}));
+    return priceTableCache;
+  };
   const enrichRelicRow = async (row) => {
     if (!isRelicRow(row)) return row;
     row.relicKind = true; // 遗物：即使 Market 无商品条目也按实用性分级（动态 A/B），不作独占
@@ -632,6 +641,7 @@ export async function appraiseTraderGoods(goods, options = {}) {
       || null;
     let officialZh = null;
     if (sorted.some((entry) => !metaOf(entry)?.zh)) officialZh = await officialZhOf();
+    const priceTable = await priceTableOf();
     const rewards = await mapLimit(sorted, 3, async (entry) => {
       const meta = metaOf(entry);
       const inventory = inventoryByItemKey.get(normItemKey(entry.name));
@@ -656,13 +666,15 @@ export async function appraiseTraderGoods(goods, options = {}) {
           };
         } catch { /* 单件行情失败：该奖励无价继续展示，其余照常 */ }
       }
+      const entryPrice = meta?.slug ? priceTable?.[meta.slug] : null;
+      const ducats = Number(entryPrice?.d) > 0 ? Number(entryPrice.d) : null;
       return {
         nameEn: entry.name,
         name: rewardZhName(entry.name, meta, officialZh),
-        rare: entry.rarity === 'Rare',
         rarity: entry.rarity || null,
         owned: Boolean(inventory),
         count: inventory?.count ?? 0,
+        ducats,
         ...market,
       };
     });
@@ -671,7 +683,7 @@ export async function appraiseTraderGoods(goods, options = {}) {
     row.relicParts = {
       total: rewards.length,
       missingCount: missing.length,
-      missing: missing.slice(0, 4).map((reward) => ({ name: reward.nameEn, rare: reward.rare })),
+      missing: missing.slice(0, 4).map((reward) => ({ name: reward.nameEn, rare: reward.rarity === 'Rare' })),
     };
     if (missing.length) row.tier = 'A'; // 仍有未持有部件 → 强推；全有/无数据 → 保持兜底 B
     return row;
