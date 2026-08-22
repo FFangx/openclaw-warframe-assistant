@@ -403,7 +403,8 @@ export function gradeBaroItem(row, overrides = null) {
   if (tier) return tier;
   if (!row.tradable) return 'C';
   const un = String(row.uniqueName ?? '');
-  if (/\/Relic\//u.test(un) || /遗物/u.test(row.nameEn ?? '')) return 'A';
+  const zhName = String(row.zhName ?? '');
+  if (/Relic/u.test(un) || /遗物/u.test(row.nameEn ?? '') || /遗物/u.test(zhName)) return 'A';
   return 'B';
 }
 

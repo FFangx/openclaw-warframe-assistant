@@ -125,6 +125,15 @@ test('summarizeTradeStatistics：无有效数据返回 null', () => {
   assert.equal(result, null);
 });
 
+test('gradeBaroItem：分级表命中、类型兜底与中文名匹配', async () => {
+  const { gradeBaroItem } = await import('./trader-shopping.mjs');
+  assert.equal(gradeBaroItem({ slug: 'primed_continuity', tradable: true, uniqueName: '/Lotus/Mods/PrimedContinuity', nameEn: 'Primed Continuity' }), 'S');
+  assert.equal(gradeBaroItem({ slug: 'unknown_mod', tradable: true, uniqueName: '/Lotus/Mods/Unknown', nameEn: 'Unknown Mod' }), 'B');
+  assert.equal(gradeBaroItem({ slug: 'neo_m5', tradable: true, uniqueName: '/Lotus/Relics/NeoM5', nameEn: 'Neo M5' }), 'A');
+  assert.equal(gradeBaroItem({ slug: 'neo_m5', tradable: true, uniqueName: '/Lotus/StoreItems/NeoM5Relic', nameEn: 'Neo M5', zhName: '后纪 M5 遗物' }), 'A');
+  assert.equal(gradeBaroItem({ slug: 'deco', tradable: false, uniqueName: '/Lotus/Deco', nameEn: 'Deco' }), 'C');
+});
+
 test('fetchMarketOrders：买卖双方聚合，求购单数/数量作为需求度', async () => {
   const { fetchMarketOrders } = await import('./trader-shopping.mjs');
   const result = await fetchMarketOrders('primed_test', async () => ({
