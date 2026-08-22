@@ -8,7 +8,11 @@
 //    偏差 ≤30%)，再回退 90 天成交中位。Baro 到访期大量低价挂单立即反映，钓鱼单不会砸穿参考价。
 //  - 今日/90 天成交中位保留为对照展示；Prime MOD 用 rank 0 成交统计（奸商卖 0 级，满级价虚高）。
 //  - 不可交易品标「独占无市场价」三态，绝不当 0 白金沉底。
+//  - 推荐标签（2026-08-22 改）＝实用性：社区口碑分级表 baro-tier.json（S 公认必买/A 强推/B 看需求/C 收藏）
+//    优先；未收录按类型兜底（遗物 A、Mod B、武器/部件 B、非交易 C）；状态优先（已有=跳过、库存不足=需补）。
+//    经济数据（机会成本/现金/税/需求度）保留为三列展示与极端价格提示，不再驱动推荐标签。
 import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resilientJsonRequest } from './http-resilience.mjs';
@@ -290,26 +294,41 @@ export async function fetchTradeStatistics(slug, rankFilter, statisticsFetcher) 
 // —— 当前卖单（全量订单端点：data 即订单数组；/top 只给每方向 5 条，不能当真实在售数）——
 // 60 秒磁盘缓存：单次奸商推荐要拉 30 件商品，重复查询避免整批重打 Market；
 // 挂单低值仍来自新鲜度 ≤60s 的快照，不影响「当前可买价」语义。
+// 同一端点同时含求购单：buyCount/buyQty = 市场当前需求度（与社区口碑分级互为印证）。
+function summarizeOrders(sell, buy) {
+  const visible = (order) => order.visible !== false && Number(order.quantity) > 0;
+  const sellList = sell.filter(visible);
+  const buyList = buy.filter(visible);
+  return {
+    sell: sellList,
+    buyCount: buyList.length,
+    buyQty: buyList.reduce((sum, order) => sum + Number(order.quantity || 0), 0),
+  };
+}
+
 export async function fetchMarketOrders(slug, ordersFetcher) {
   try {
     if (ordersFetcher) {
       const payload = await ordersFetcher(slug);
-      return { sell: Array.isArray(payload?.sell) ? payload.sell : [] };
+      return summarizeOrders(
+        Array.isArray(payload?.sell) ? payload.sell : [],
+        Array.isArray(payload?.buy) ? payload.buy : [],
+      );
     }
     const { staleCachedJson } = await import('./wfdata.mjs');
-    const result = await staleCachedJson(`market-orders-${slug}`, { ttlMs: ORDERS_CACHE_TTL_MS, version: 2 }, async () => {
+    const result = await staleCachedJson(`market-orders-${slug}`, { ttlMs: ORDERS_CACHE_TTL_MS, version: 3 }, async () => {
       const payload = await getJson(`${MARKET_BASE}/v2/orders/item/${slug}`, { Platform: 'pc', Crossplay: 'true', Language: 'zh-hans' });
       const all = Array.isArray(payload?.data) ? payload.data
         : Array.isArray(payload?.payload?.orders) ? payload.payload.orders
           : [];
-      return {
-        sell: all.filter((order) => String(order.order_type ?? order.type ?? '') === 'sell'
-          && order.visible !== false && Number(order.quantity) > 0),
-      };
+      return summarizeOrders(
+        all.filter((order) => String(order.order_type ?? order.type ?? '') === 'sell'),
+        all.filter((order) => String(order.order_type ?? order.type ?? '') === 'buy'),
+      );
     });
     // 刷新失败退出的陈旧挂单不冒充「当前」：整体放弃，走成交统计兜底
     if (result.stale) return null;
-    return { sell: Array.isArray(result.data?.sell) ? result.data.sell : [] };
+    return result.data;
   } catch {
     return null;
   }
@@ -356,7 +375,45 @@ export function resolveMarketReference(statistics, order) {
   };
 }
 
-// 推荐矩阵：缺+贵=强烈买；缺+便宜=顺手买；已有+比值高=可倒卖；已有+比值低=跳过
+// —— 实用性推荐：社区口碑分级表（baro-tier.json）+ 状态优先，价格不再驱动标签 ——
+let baroTierCache = null;
+export function loadBaroTier() {
+  if (baroTierCache) return baroTierCache;
+  try {
+    baroTierCache = JSON.parse(readFileSync(new URL('./baro-tier.json', import.meta.url), 'utf8'));
+  } catch {
+    baroTierCache = { items: {}, tiers: {} };
+  }
+  return baroTierCache;
+}
+
+const TIER_ADVICE = {
+  S: { tag: 'must', zh: '公认必买' },
+  A: { tag: 'good', zh: '强推' },
+  B: { tag: 'choice', zh: '看需求' },
+  C: { tag: 'premium', zh: '收藏向' },
+};
+
+// 分级：表命中 > 类型兜底（遗物 A、Mod/武器/部件 B、非交易 C）
+export function gradeBaroItem(row, overrides = null) {
+  const table = overrides ?? loadBaroTier();
+  const items = table.items ?? table; // 兼容 {items:{...}} 表对象与测试注平的 {slug:tier}
+  const key = String(row.slug ?? row.nameEn ?? '').toLowerCase();
+  const tier = items?.[key] ?? null;
+  if (tier) return tier;
+  if (!row.tradable) return 'C';
+  const un = String(row.uniqueName ?? '');
+  if (/\/Relic\//u.test(un) || /遗物/u.test(row.nameEn ?? '')) return 'A';
+  return 'B';
+}
+
+export function decidePractical(row, tier) {
+  if (!row.tradable) return row.owned ? { tag: 'skip', zh: '已有' } : { tag: 'exclusive', zh: '独占·收藏' };
+  if (row.owned) return { tag: 'skip', zh: '已有·跳过' };
+  return TIER_ADVICE[tier] ?? TIER_ADVICE.B;
+}
+
+// 旧经济性判定：保留导出（测试/回退用），主流程不再接线
 export function decide(row) {
   if (!row.tradable) return row.owned ? { tag: 'skip', zh: '已拥有' } : { tag: 'exclusive', zh: '独占·看喜好' };
   const ratio = row.ratio ?? 0;
@@ -418,6 +475,7 @@ export async function appraiseTraderGoods(goods, options = {}) {
       uniqueName: entry.uniqueName,
       nameEn: entry.item,
       zhName: meta?.zh || zhLocal || null,
+      slug: meta?.slug ?? null,
       wmIcon: meta?.icon || null,
       wmThumb: meta?.thumb || null,
       wmSubIcon: meta?.subIcon || null,
@@ -452,11 +510,14 @@ export async function appraiseTraderGoods(goods, options = {}) {
         median90: ref.median90 ?? null,
         dailyVolume: ref.dailyVolume ?? null,
         deviationPct: ref.deviationPct ?? null,
+        buyCount: rawOrders?.buyCount ?? null,
+        buyQty: rawOrders?.buyQty ?? null,
         tradingTax: tradingTax ?? meta?.tradingTax ?? null,
       };
       const ratio = row.platinum != null && row.ducats > 0 ? row.platinum / row.ducats : null;
       row.ratio = ratio != null ? Math.round(ratio * 100) / 100 : null;
-      return { ...row, advice: decide(row) };
+      row.tier = gradeBaroItem(row, options.tierOverride ?? null);
+      return { ...row, advice: decidePractical(row, row.tier) };
     } catch {
       const row = {
         ...base,
@@ -464,12 +525,13 @@ export async function appraiseTraderGoods(goods, options = {}) {
         marketStatsStale: false, marketStatsCachedAt: null, todayVolume: null, todayMedian: null,
         median90: null, dailyVolume: null, deviationPct: null, ratio: null, tradingTax: null,
       };
-      return { ...row, advice: decide(row) };
+      row.tier = gradeBaroItem(row, options.tierOverride ?? null);
+      return { ...row, advice: decidePractical(row, row.tier) };
     }
   });
-  // 排序：可交易按比值降序；独占压后但不沉底（放跳过之前）
-  const rank = { strong: 0, buy: 1, flip: 2, exclusive: 3, skip: 4 };
-  rows.sort((a, b) => (rank[a.advice.tag] - rank[b.advice.tag]) || ((b.ratio ?? -1) - (a.ratio ?? -1)) || b.ducats - a.ducats);
+  // 排序：实用性分级优先；同分级按商品杜卡德价值；独占收藏压后但不在沉底（放跳过之前）
+  const rank = { must: 0, good: 1, need: 2, choice: 3, exclusive: 4, premium: 4, skip: 5 };
+  rows.sort((a, b) => (rank[a.advice.tag] - rank[b.advice.tag]) || ((b.ducats ?? 0) - (a.ducats ?? 0)) || ((b.ratio ?? -1) - (a.ratio ?? -1)));
   return rows;
 }
 
@@ -541,17 +603,18 @@ export async function traderShopping(inventory, options = {}) {
         if (row.platSaving < 0 && row.creditSaving > 0) {
           row.breakEvenCreditsPerPlat = Math.round(row.creditSaving / Math.abs(row.platSaving));
         }
-        row.advice = decideEconomicRoute(row);
+        // 推荐标签由实用性决定（社区口碑分级 + 状态）；经济数据只作三列展示与极端价格提示
+        row.advice = decidePractical(row, row.tier);
       }
-      // 先展示能改变购买决定的项目；独占装饰品放在经济结论之后，避免长货单淹没关键信息。
-      const economicRank = { strong: 0, buy: 1, cash: 2, flip: 3, choice: 4, need: 5, market: 6, exclusive: 7, skip: 8 };
-      rows.sort((a, b) => (economicRank[a.advice.tag] ?? 99) - (economicRank[b.advice.tag] ?? 99)
-        || (b.platSaving ?? -Infinity) - (a.platSaving ?? -Infinity)
+      // 先展示实用分级；独占收藏放在之后，避免长货单淹没关键信息
+      const practicalRank = { must: 0, good: 1, need: 2, choice: 3, exclusive: 4, premium: 4, skip: 5 };
+      rows.sort((a, b) => (practicalRank[a.advice.tag] ?? 99) - (practicalRank[b.advice.tag] ?? 99)
+        || (b.ducats ?? 0) - (a.ducats ?? 0)
         || (b.ratio ?? -1) - (a.ratio ?? -1));
-    } catch { /* 兑换估值失败时保留原有白金/杜卡德比值推荐 */ }
+    } catch { /* 兑换估值失败时保留实用性分级推荐 */ }
   }
-  // 购物车口径：所有「建议买」的杜卡德合计 vs 余额
-  const wantDucats = rows.filter((row) => ['strong', 'buy', 'cash'].includes(row.advice.tag))
+  // 购物车口径：所有「推荐买」（S 公认必买/A 强推）的杜卡德合计 vs 余额
+  const wantDucats = rows.filter((row) => ['must', 'good'].includes(row.advice.tag))
     .reduce((sum, row) => sum + row.ducats, 0);
   return {
     ...base,
@@ -584,7 +647,7 @@ export function selectTraderGoal(result, target = { type: 'trader', query: '' })
     row = exact[0] || partial[0] || uniqueFuzzy || null;
     if (!row) return { ok: false, error: 'trader_item_not_found', query: target.query };
   } else {
-    const priority = { strong: 0, buy: 1, cash: 2, flip: 3, need: 4 };
+    const priority = { must: 0, good: 1, need: 2 };
     row = tradable.filter((item) => priority[item.advice?.tag] != null)
       .sort((a, b) => priority[a.advice.tag] - priority[b.advice.tag]
         || (b.ratio ?? -1) - (a.ratio ?? -1)

@@ -125,6 +125,17 @@ test('summarizeTradeStatistics：无有效数据返回 null', () => {
   assert.equal(result, null);
 });
 
+test('fetchMarketOrders：买卖双方聚合，求购单数/数量作为需求度', async () => {
+  const { fetchMarketOrders } = await import('./trader-shopping.mjs');
+  const result = await fetchMarketOrders('primed_test', async () => ({
+    sell: [{ platinum: 5, quantity: 1 }, { platinum: 40, quantity: 2 }],
+    buy: [{ platinum: 3, quantity: 1 }, { platinum: 4, quantity: 5 }, { platinum: 2, quantity: 0 }],
+  }));
+  assert.equal(result.sell.length, 2);
+  assert.equal(result.buyCount, 2); // quantity 0 的买单被过滤
+  assert.equal(result.buyQty, 6);
+});
+
 test('mergeTraderStates：warframestat 补齐英文名并规范化地点', () => {
   const official = {
     character: "Baro Ki'Teer",
@@ -214,59 +225,63 @@ test('formatTraderShopping：无近期成交显示市价待定，不再出现今
   assert.match(text, /奸商 140,000现金｜税 1,000,000/u);
 });
 
-test('buildTraderShoppingCard：当前售价口径、顶部说明与库存可动上限', async () => {
+test('buildTraderShoppingCard：三列对比、实用性标签、需求度与库存可动上限', async () => {
   const { buildTraderShoppingCard } = await import('./warframe-cards.mjs');
   const card = buildTraderShoppingCard({
     arrived: true, fetchedAt: '2026-08-21T12:00:00.000Z', location: 'Orcus 中继站（冥王星）',
     ducatBalance: 255, wantDucats: 300, affordable: true, safeDucatAvailable: 1385, rows: [{
       zhName: '制衡 Prime', nameEn: 'Primed Equilibrium', uniqueName: '/x', iconDataUri: null, tradable: true,
-      ducats: 300, credits: 220000, owned: false, advice: { tag: 'strong', zh: '强烈买' },
+      ducats: 300, credits: 220000, owned: false, advice: { tag: 'must', zh: '公认必买' }, tier: 'S',
       platinum: 30, marketBasis: 'orders', orderLow: 30, orderCount: 6, orderLowSuspicious: true,
       todayMedian: 50, todayVolume: 9, median90: 55, dailyVolume: 6, ratio: 10,
-      ducatOpportunityPlat: null, ducatPlanShortfall: null, tradingTax: 1000000,
+      buyCount: 23, buyQty: 41, ducatNeed: 45, ducatOpportunityPlat: 2, ducatPlanShortfall: null,
+      relicRuns: { min: 3, max: 5 }, tradingTax: 1000000,
     }],
   });
-  assert.match(card.html, /当前售价/u);
-  assert.match(card.html, /6 单在售/u);
-  // 行内不再重复标注异常低单；统一由顶部口径说明表达
-  assert.doesNotMatch(card.html, /已剔除异常低单/u);
-  assert.match(card.html, /剔除异常低单/u);
-  // 90 天历史价不适用 Baro 期行情：行内与说明都不得出现
-  assert.doesNotMatch(card.html, /90天/u);
-  assert.doesNotMatch(card.html, /今日中位 50p·9笔/u);
-  assert.match(card.html, /对比价=当前售价/u);
-  assert.match(card.html, /库存可动上限/u);
+  assert.match(card.html, /公认必买/u);
+  assert.match(card.html, /补足/u);
+  assert.match(card.html, /虚空商人/u);
+  assert.match(card.html, /市场/u);
+  // 补足列：机会成本 + 预计开遗物区间
+  assert.match(card.html, /45<\/span>/u);
+  assert.match(card.html, /约 3~5 次遗物/u);
+  // 需求度：求购单数 + 今日成交
+  assert.match(card.html, /求购 23 单/u);
+  assert.match(card.html, /今成交 9 笔/u);
+  // 推荐标签=社区口碑分级，不再出现「已剔除异常低单」「90天」
+  assert.doesNotMatch(card.html, /已剔除异常低单|90天/u);
+  assert.match(card.html, /社区口碑分级/u);
+  assert.match(card.html, /库存可动/u);
   assert.match(card.html, /1,385/u);
 });
 
-test('buildTraderShoppingCard：无卖单 → 今日成交中位作对比价', async () => {
+test('buildTraderShoppingCard：无卖单 → 今日成交中位作市场列对比价', async () => {
   const { buildTraderShoppingCard } = await import('./warframe-cards.mjs');
   const card = buildTraderShoppingCard({
     arrived: true, fetchedAt: '2026-08-21T12:00:00.000Z', location: 'Orcus 中继站（冥王星）',
     ducatBalance: 255, wantDucats: 300, affordable: true, rows: [{
       zhName: '极地弹仓 Prime', nameEn: 'Primed Ammo Case', uniqueName: '/y', tradable: true,
-      ducats: 300, credits: 210000, owned: false, advice: { tag: 'buy', zh: '顺手买' },
+      ducats: 300, credits: 210000, owned: false, advice: { tag: 'good', zh: '强推' }, tier: 'A',
       platinum: 30, marketBasis: 'today', orderLow: null, orderCount: 0, orderLowSuspicious: false,
       todayMedian: 30, todayVolume: 55, median90: null, dailyVolume: 0,
-      ducatOpportunityPlat: null, ducatPlanShortfall: null, tradingTax: 1000000,
+      buyCount: 12, ducatNeed: 45, ducatOpportunityPlat: 6.5, ducatPlanShortfall: null, tradingTax: 1000000,
     }],
   });
-  assert.match(card.html, /今日成交中位[\s\S]*?>30</u);
-  assert.match(card.html, /55笔/u);
-  assert.match(card.html, /无卖单改用今日成交中位/u);
+  assert.match(card.html, /强推/u);
+  assert.match(card.html, /今日中位/u);
 });
 
-test('buildTraderShoppingCard：无近期成交 → 市价待定，不显示省', async () => {
+test('buildTraderShoppingCard：无近期成交 → 市场列为市价待定', async () => {
   const { buildTraderShoppingCard } = await import('./warframe-cards.mjs');
   const card = buildTraderShoppingCard({
     arrived: true, fetchedAt: '2026-08-21T12:00:00.000Z', location: 'Orcus 中继站（冥王星）',
     ducatBalance: 255, wantDucats: 300, affordable: true, rows: [{
       zhName: '后纪 M5 遗物', nameEn: 'Neo M5 Relic', uniqueName: '/z', tradable: true,
-      ducats: 125, credits: 55000, owned: false, advice: { tag: 'choice', zh: '看需求' },
+      ducats: 125, credits: 55000, owned: false, advice: { tag: 'choice', zh: '看需求' }, tier: 'B',
       platinum: null, marketBasis: null, orderLow: null, orderCount: 0, orderLowSuspicious: false,
       todayMedian: null, todayVolume: 0, median90: 55, dailyVolume: 2,
-      ducatOpportunityPlat: null, ducatPlanShortfall: null, tradingTax: 2000,
+      buyCount: null, ducatOpportunityPlat: null, ducatPlanShortfall: null, tradingTax: 2000,
     }],
   });
-  assert.match(card.html, /市价待定 · 无近期成交/u);
+  assert.match(card.html, /市价待定/u);
 });

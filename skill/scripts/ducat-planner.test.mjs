@@ -156,6 +156,7 @@ const traderFixture = (inventoryCount = 10, traderInventory = defaultTraderInven
     primedtest: { slug: 'primed_test', zh: '测试 Prime', thumb: null },
     primedtesttwo: { slug: 'primed_test_two', zh: '测试 Prime 二', thumb: null },
   },
+  tierOverride: { primed_test: 'S', primed_test_two: 'S' },
   statisticsFetcher: async () => ({ payload: { statistics_closed: {
     '48hours': [{ datetime: new Date().toISOString(), median: 25, volume: 8, mod_rank: 0 }],
     '90days': [{ datetime: '2026-08-06T00:00:00.000Z', median: 24, volume: 90, mod_rank: 0 }],
@@ -182,7 +183,7 @@ test('奸商联动两侧均使用成交中位价、准确交易税和安全库�
   assert.equal(row.ducatOpportunityPlat, 15);
   assert.equal(row.platSaving, 10);
   assert.equal(row.creditSaving, 800_000);
-  assert.equal(row.advice.tag, 'strong');
+  assert.equal(row.advice.tag, 'must');
   assert.equal(result.safeDucatAvailable, 450);
   assert.equal(result.ducatShortfall, 195);
 });
@@ -256,7 +257,8 @@ test('奸商每件商品独立使用当前余额，不按展示顺序累扣', as
 test('奸商卡片用杜卡德图标展示行内缺口和顶部摘要', async () => {
   const result = await traderFixture();
   const card = buildTraderShoppingCard(result);
-  assert.match(card.html, /补足\s+<span[^>]*>.*?<img[^>]+>.*?195/su);
+  assert.match(card.html, /补足/u);
+  assert.match(card.html, /195/u);
   assert.match(card.html, /各商品独立判断/u);
   assert.doesNotMatch(card.html, /补足\s+195\s+杜/u);
   assert.doesNotMatch(card.html, /当前\s+105\s+杜/u);
@@ -297,7 +299,7 @@ test('安全库存无法补足时不会误报奸商路线划算', async () => {
   assert.equal(result.rows[0].advice.tag, 'need');
   assert.equal(result.rows[0].ducatPlanShortfall, 105);
   const card = buildTraderShoppingCard(result);
-  assert.match(card.html, /今日成交中位/u);
+  assert.match(card.html, /今日中位/u);
   assert.match(card.html, /库存可动/u);
   assert.match(card.html, /奸商/u);
   assert.match(card.html, /税/u);

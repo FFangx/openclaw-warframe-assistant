@@ -664,43 +664,59 @@ export function buildTraderShoppingCard(data) {
   // 完整货单可能超过 30 件；卡片只保留前 16 个决策优先项，避免 QQ 中生成过长图片。
   const rows = allRows.slice(0, 16);
   const ADVICE_STYLE = {
+    // 实用性推荐标签（2026-08-22：社区口碑分级）
+    must: { zh: '公认必买', color: '#f0c765' }, good: { zh: '强推', color: '#75dcca' },
+    premium: { zh: '收藏向', color: '#b48ce8' },
+    // 兼容旧数据/经济标签
     strong: { zh: '强烈买', color: '#f0c765' }, buy: { zh: '顺手买', color: '#75dcca' },
     cash: { zh: '省现金', color: '#8ab8ec' }, flip: { zh: '可倒卖', color: '#8ab4f8' },
     choice: { zh: '看需求', color: '#c99b62' }, need: { zh: '库存不足', color: '#a56b6b' }, market: { zh: '市场买', color: '#e07777' },
     exclusive: { zh: '独占', color: '#b48ce8' }, skip: { zh: '跳过', color: '#56616d' },
   };
-  const rowH = 70;
+  const rowH = 92;
   const noteH = 22;
   const height = 86 + 30 + noteH + Math.max(rows.length, 1) * rowH + 34;
   const body = rows.map((row, index) => {
     const advice = ADVICE_STYLE[row.advice?.tag] || ADVICE_STYLE.skip;
     const name = row.zhName || (row.tradable ? row.nameEn : (row.nameEn || '未收录物品'));
-    // 对比价=当前售价（挂单稳健低值）优先；无卖单用今日成交中位；都无 → 市价待定。
-    // 90 天中位在 Baro 期混入非奸商期行情、无参考价值，不展示、不作对比价。
-    const priceText = !row.tradable ? '独占 · 无市场价'
-      : row.platinum == null ? '市价待定 · 无近期成交'
-        : row.marketBasis === 'orders'
-          ? `当前售价 ${currency('plat', row.platinum, { size: 10, weight: 800 })} · ${escapeHtml(row.orderCount ?? 0)} 单在售`
-          : `今日成交中位 ${currency('plat', row.platinum, { size: 10, weight: 800 })} · ${escapeHtml(row.todayVolume ?? 0)}笔`;
-    // 所有可交易商品统一展示：补足杜卡德（或缺口）/ 奸商价 / 交易税，与推荐结论解耦
-    const tax = row.tradingTax != null ? currency('credit', row.tradingTax, { size: 9, weight: 700 }) : '未知';
-    const routeText = !row.tradable
-      ? ''
-      : row.ducatOpportunityPlat != null
-        ? `补足 ${currency('ducat', row.ducatNeed, { size: 9, weight: 760 })}≈${currency('plat', row.ducatOpportunityPlat, { size: 9, weight: 760 })} · 奸商 ${currency('credit', row.credits, { size: 9, weight: 700 })} · 税 ${tax}`
-        : row.ducatPlanShortfall != null
-          ? `还差 ${currency('ducat', row.ducatPlanShortfall, { size: 9, weight: 760 })}（库存可动 ${currency('ducat', row.ducatPlanDucats ?? 0, { size: 9, weight: 760 })}）· 奸商 ${currency('credit', row.credits, { size: 9, weight: 700 })} · 税 ${tax}`
-          : `奸商 ${currency('credit', row.credits, { size: 9, weight: 700 })} · 税 ${tax}`;
+    // 三列对比：补足（机会成本/缺口 → 预计开遗物次数）｜虚空商人（杜卡德+现金）｜市场（对比价+税+需求度）。
+    // 对比价=当前售价（挂单稳健低值）优先；无卖单用今日成交中位；都无 → 市价待定。90 天不参与。
+    const coverMain = !row.tradable ? '—'
+      : row.ducatPlanShortfall != null
+        ? `还差 ${currency('ducat', row.ducatPlanShortfall, { size: 11, color: '#e07777' })}`
+        : row.ducatOpportunityPlat != null
+          ? `${currency('ducat', row.ducatNeed, { size: 11 })} → ${currency('plat', row.ducatOpportunityPlat, { size: 11 })}`
+          : '<span style="color:#75dcca">余额可覆盖</span>';
+    const coverSub = !row.tradable ? ''
+      : row.ducatPlanShortfall != null
+        ? `可动 ${currency('ducat', row.ducatPlanDucats ?? 0, { size: 9, weight: 700, color: '#e07777' })}`
+        : row.relicRuns ? `约 ${escapeHtml(row.relicRuns.min)}~${escapeHtml(row.relicRuns.max)} 次遗物` : '';
+    const vendorMain = currency('ducat', row.ducats, { size: 11 });
+    const vendorSub = currency('credit', row.credits, { size: 9, weight: 700 });
+    const marketMain = row.platinum == null
+      ? '<span style="color:#7f8b97">市价待定</span>'
+      : currency('plat', row.platinum, { size: 11, weight: 800 });
+    const marketSub = row.tradingTax == null ? '税 未知' : `税 ${currency('credit', row.tradingTax, { size: 9, weight: 700 })}`;
+    const demandText = row.buyCount == null ? ''
+      : `求购 ${escapeHtml(row.buyCount)} 单${row.todayVolume ? ` · 今成交 ${escapeHtml(row.todayVolume)} 笔` : ''}`;
+    const tierBadge = row.tier
+      ? `<span style="margin-left:6px;display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:18px;border-radius:5px;background:rgba(240,199,101,.14);color:#f0c765;font-size:11px;font-weight:900;vertical-align:middle">${escapeHtml(row.tier)}</span>`
+      : '';
     // 插画列：有图用图，查无（Baro 饰品类未收录）留空保持对齐
     const iconCell = row.iconDataUri
       ? `<div style="width:40px;height:40px;border-radius:8px;display:grid;place-items:center;background:rgba(255,255,255,.07);overflow:hidden"><img src="${row.iconDataUri}" style="max-width:36px;max-height:36px;object-fit:contain"></div>`
       : '<div></div>';
-    return `<div style="position:relative;z-index:1;height:${rowH}px;display:grid;grid-template-columns:64px 46px minmax(0,1fr) 168px;align-items:center;padding:0 16px;border-bottom:1px solid rgba(176,123,55,.40);background:${index % 2 ? 'rgba(255,255,255,.035)' : 'rgba(255,255,255,.014)'}">
-      <div style="width:54px;height:26px;border-radius:7px;display:grid;place-items:center;background:${advice.color};color:#14181d;font-size:12px;font-weight:900">${advice.zh}</div>
+    const col = (label, main, sub, subColor = '#8f9aa6') => `<div style="min-width:0"><div style="font-size:9px;color:#7f8b97;font-weight:700">${label}</div><div style="margin-top:2px;font-size:11px;font-weight:760;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${main}</div>${sub ? `<div style="margin-top:1px;font-size:9px;color:${subColor};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sub}</div>` : ''}</div>`;
+    const columns = `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:6px">
+      ${col('补足', coverMain, coverSub)}
+      ${col('虚空商人', vendorMain, vendorSub)}
+      ${col('市场', marketMain, marketSub)}
+      <div style="grid-column:3;margin-top:-6px"><div style="font-size:9px;color:#8ab4f8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${demandText}</div></div>
+    </div>`;
+    return `<div style="position:relative;z-index:1;height:${rowH}px;display:grid;grid-template-columns:64px 42px minmax(0,1fr);align-items:center;padding:0 16px;border-bottom:1px solid rgba(176,123,55,.40);background:${index % 2 ? 'rgba(255,255,255,.035)' : 'rgba(255,255,255,.014)'}">
+      <div style="min-width:54px;height:26px;border-radius:7px;display:grid;place-items:center;background:${advice.color};color:#14181d;font-size:11px;font-weight:900;white-space:nowrap;padding:0 6px">${advice.zh}</div>
       ${iconCell}
-      <div style="min-width:0;padding-left:10px"><div style="font-size:15px;font-weight:820;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(name)}${row.owned ? ' <span style="font-size:10px;color:#8f9aa6;font-weight:700">已有</span>' : ''}</div>
-        <div style="margin-top:3px;font-size:10px;color:#8995a1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${priceText}</div>${routeText ? `<div style="margin-top:2px;font-size:9px;color:#788592;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${routeText}</div>` : ''}</div>
-      <div style="text-align:left;padding-left:18px"><div style="font-size:16px">${currency('ducat', row.ducats, { size: 15 })}</div><div style="margin-top:3px;font-size:10px">${row.platSaving == null ? currency('credit', row.credits, { size: 10, weight: 700 }) : row.platSaving >= 0 ? `<span style="color:#75dcca">省 ${currency('plat', row.platSaving, { size: 10, color: '#75dcca', weight: 760 })}</span>` : `<span style="color:#e07777">多 ${currency('plat', Math.abs(row.platSaving), { size: 10, color: '#e07777', weight: 760 })}</span>`}</div></div>
+      <div style="min-width:0;padding-left:10px"><div style="font-size:15px;font-weight:820;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(name)}${row.owned ? ' <span style="font-size:10px;color:#8f9aa6;font-weight:700">已有</span>' : ''}${tierBadge}</div>${columns}</div>
     </div>`;
   }).join('');
   const empty = '<div style="position:relative;z-index:1;height:62px;display:grid;place-items:center;color:#8995a1;font-size:14px">奸商尚未到达，到货后再来问</div>';
@@ -710,11 +726,11 @@ export function buildTraderShoppingCard(data) {
     ? (data.affordable ? `推荐项合计 ${currency('ducat', want, { size: 12 })} · 余额够用` : `推荐项还差 ${currency('ducat', data.ducatShortfall || 0, { size: 12 })} · 发「杜卡德 ${escapeHtml(data.ducatShortfall || 0)}」`)
     : `预计 ${localDateTime(data.activation)} 到达`;
   const content = `<div class="card"><div class="header" style="height:86px">${headerIcon('baro')}<div style="min-width:0"><div class="kicker">奸商购物推荐 · 仅用户私聊</div><div class="title" style="font-size:23px">${escapeHtml(data.location || '虚空商人')}</div></div><div class="header-meta"><strong>余额 ${currency('ducat', balance, { size: 14 })}</strong><span>${escapeHtml(localTime(data.fetchedAt))}</span></div></div>
-    <div class="section"><span class="section-badge">${rows.length}/${allRows.length} 件</span>奸商兑换路线 vs 玩家市场路线<small>${data.arrived ? `当前 ${currency('ducat', balance, { size: 10, weight: 760 })}${data.safeDucatAvailable != null ? ` · 库存可动上限 ${currency('ducat', data.safeDucatAvailable, { size: 10, weight: 760 })}（含已入库）` : ''} · 各商品独立判断` : '未到货'}</small></div>
-    <div style="height:${noteH}px;padding:5px 16px;display:flex;align-items:center;font-size:10px;color:#8f9aa6;background:#242b32;border-bottom:1px solid #48525d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">对比价=当前售价（剔除异常低单）优先 · 无卖单改用今日成交中位 · 无近期成交=市价待定</div>
+    <div class="section"><span class="section-badge">${rows.length}/${allRows.length} 件</span>奸商购物推荐 · 实用性分级<small>${data.arrived ? `当前 ${currency('ducat', balance, { size: 10, weight: 760 })}${data.safeDucatAvailable != null ? ` · 库存可动 ${currency('ducat', data.safeDucatAvailable, { size: 10, weight: 760 })}（含已入库）` : ''}` : '未到货'}</small></div>
+    <div style="height:${noteH}px;padding:5px 16px;display:flex;align-items:center;font-size:10px;color:#8f9aa6;background:#242b32;border-bottom:1px solid #48525d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">推荐=社区口碑分级（S 公认必买/A 强推/B 看需求）· 各商品独立判断 · 市场列=当前售价/今日中位 · 求购单数=市场实时需求度</div>
     ${body || empty}
-    <div class="footer" style="height:34px"><span>${affordText}</span><span>MOD 按 0 级 · 市场路线=当前售价/今日中位 · 仅供参考</span></div></div>`;
-  const keySeed = `trader-shop10|${data.fetchedAt}|${allRows.map((row) => `${row.uniqueName}:${row.advice?.tag}:${row.platinum ?? ''}:${row.marketBasis ?? ''}:${row.orderLow ?? ''}:${row.orderCount ?? ''}:${row.orderLowSuspicious ? 1 : 0}:${row.todayMedian ?? ''}:${row.todayVolume ?? ''}:${row.ducatOpportunityPlat ?? ''}:${row.tradingTax ?? ''}`).join('|')}`;
+    <div class="footer" style="height:34px"><span>${affordText}</span><span>MOD 按 0 级 · 补足=机会成本（含已入库）· 市场=当前售价 · 仅供参考</span></div></div>`;
+  const keySeed = `trader-shop11|${data.fetchedAt}|${allRows.map((row) => `${row.uniqueName}:${row.advice?.tag}:${row.tier ?? ''}:${row.platinum ?? ''}:${row.marketBasis ?? ''}:${row.orderLow ?? ''}:${row.orderCount ?? ''}:${row.orderLowSuspicious ? 1 : 0}:${row.todayMedian ?? ''}:${row.todayVolume ?? ''}:${row.buyCount ?? ''}:${row.buyQty ?? ''}:${row.ducatOpportunityPlat ?? ''}:${row.ducatPlanShortfall ?? ''}:${row.ducatPlanDucats ?? ''}:${row.relicRuns?.min ?? ''}:${row.relicRuns?.max ?? ''}:${row.tradingTax ?? ''}`).join('|')}`;
   return { html: documentShell(content, height), width: 600, height, key: `trader-shop-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 
