@@ -454,8 +454,9 @@ export function decide(row) {
 async function fetchItemInfo(slug, detailFetcher) {
   if (detailFetcher) {
     const detail = await detailFetcher(slug);
+    const tax = Number(detail?.tradingTax ?? detail?.data?.tradingTax ?? detail);
     return {
-      tradingTax: Number(detail?.tradingTax ?? detail?.data?.tradingTax ?? detail) || null,
+      tradingTax: Number.isFinite(tax) && tax > 0 ? tax : null,
       description: detail?.data?.i18n?.['zh-hans']?.description ?? detail?.i18n?.['zh-hans']?.description ?? null,
     };
   }
@@ -468,8 +469,9 @@ async function fetchItemInfo(slug, detailFetcher) {
         description: payload.data?.i18n?.['zh-hans']?.description ?? null,
       };
     });
+    const tax = Number(result.data?.tradingTax);
     return {
-      tradingTax: Number(result.data?.tradingTax),
+      tradingTax: Number.isFinite(tax) && tax > 0 ? tax : null,
       description: result.data?.description ?? null,
     };
   } catch { return { tradingTax: null, description: null }; }
