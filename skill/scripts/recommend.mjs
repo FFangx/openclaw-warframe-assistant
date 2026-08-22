@@ -262,6 +262,8 @@ export async function loadLocalRelicDb(alecaDir) {
     rewardsByBase.set(base, relic.rewards.map((reward) => ({
       name: reward.item?.name || '',
       slug: reward.item?.warframeMarket?.urlName || null,
+      uniqueName: reward.item?.uniqueName || null,
+      rarity: reward.rarity || null,
       chance: Number(reward.chance) || 0,
     })));
     relicsByBase.set(base, {

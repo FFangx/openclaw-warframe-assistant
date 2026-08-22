@@ -129,14 +129,44 @@ test('gradeBaroItem：分级表命中、类型兜底与中文名匹配', async (
   const { gradeBaroItem, loadBaroTier } = await import('./trader-shopping.mjs');
   assert.equal(gradeBaroItem({ slug: 'primed_continuity', tradable: true, uniqueName: '/Lotus/Mods/PrimedContinuity', nameEn: 'Primed Continuity' }), 'S');
   assert.equal(gradeBaroItem({ slug: 'unknown_mod', tradable: true, uniqueName: '/Lotus/Mods/Unknown', nameEn: 'Unknown Mod' }), 'B');
-  assert.equal(gradeBaroItem({ slug: 'neo_m5', tradable: true, uniqueName: '/Lotus/Relics/NeoM5', nameEn: 'Neo M5' }), 'A');
-  assert.equal(gradeBaroItem({ slug: 'neo_m5', tradable: true, uniqueName: '/Lotus/StoreItems/NeoM5Relic', nameEn: 'Neo M5', zhName: '后纪 M5 遗物' }), 'A');
+  // 遗物兜底=看需求（无数据不声称强推）；动态判定在 appraise 层升级 A
+  assert.equal(gradeBaroItem({ slug: 'neo_m5', tradable: true, uniqueName: '/Lotus/Relics/NeoM5', nameEn: 'Neo M5' }), 'B');
+  assert.equal(gradeBaroItem({ slug: 'neo_m5', tradable: true, uniqueName: '/Lotus/StoreItems/NeoM5Relic', nameEn: 'Neo M5', zhName: '后纪 M5 遗物' }), 'B');
   assert.equal(gradeBaroItem({ slug: 'deco', tradable: false, uniqueName: '/Lotus/Deco', nameEn: 'Deco' }), 'C');
   // 表合同：非 Baro 商品（Daily Tribute）不得入表；评审收敛后的 S 骨架
   const table = loadBaroTier();
   assert.equal(table.items.primed_sure_footed, undefined);
   assert.equal(table.items.primed_shred, 'S');
   assert.equal(table.items.primed_ammo_case, 'B');
+});
+
+test('appraiseTraderGoods：遗物动态分级——未持有部件升 A 且稀有优先，全有保持 B', async () => {
+  const { appraiseTraderGoods } = await import('./trader-shopping.mjs');
+  const relicDb = { rewardsByBase: new Map([['Neo M5', [
+    { name: 'Masseter Prime Blade', rarity: 'Rare' },
+    { name: 'Valkyr Prime Systems', rarity: 'Common' },
+    { name: 'Rubico Prime Barrel', rarity: 'Uncommon' },
+  ]]]) };
+  const stats = async () => ({ payload: { statistics_closed: { '48hours': [{ datetime: new Date().toISOString(), median: 8, volume: 6 }], '90days': [{ datetime: '2026-08-06T00:00:00.000Z', median: 9, volume: 40 }] } } });
+  const run = (valuation) => appraiseTraderGoods(
+    [{ uniqueName: '/Lotus/StoreItems/NeoM5Relic', item: 'Neo M5', ducats: 125, credits: 55000 }],
+    {
+      catalog: { neom5: { slug: 'neo_m5', zh: '后纪 M5 遗物' } },
+      statisticsFetcher: stats,
+      detailFetcher: async () => ({ data: { tradingTax: 2000 } }),
+      ordersFetcher: async () => ({ sell: [{ platinum: 8, quantity: 1 }] }),
+      relicDb,
+      inventoryValuation: valuation,
+    },
+  );
+  const missing = await run([{ englishName: 'Valkyr Prime Systems' }]);
+  assert.equal(missing[0].tier, 'A');
+  assert.equal(missing[0].advice.tag, 'good');
+  assert.equal(missing[0].relicParts.missingCount, 2);
+  assert.equal(missing[0].relicParts.missing[0], 'Masseter Prime Blade'); // 稀有优先
+  const complete = await run([{ englishName: 'Valkyr Prime Systems' }, { englishName: 'Masseter Prime Blade' }, { englishName: 'Rubico Prime Barrel' }]);
+  assert.equal(complete[0].tier, 'B');
+  assert.equal(complete[0].relicParts.missingCount, 0);
 });
 
 test('fetchMarketOrders：买卖双方聚合，求购单数/数量作为需求度', async () => {

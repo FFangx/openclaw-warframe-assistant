@@ -404,7 +404,7 @@ export function gradeBaroItem(row, overrides = null) {
   if (!row.tradable) return 'C';
   const un = String(row.uniqueName ?? '');
   const zhName = String(row.zhName ?? '');
-  if (/Relic/u.test(un) || /遗物/u.test(row.nameEn ?? '') || /遗物/u.test(zhName)) return 'A';
+  if (/Relic/u.test(un) || /遗物/u.test(row.nameEn ?? '') || /遗物/u.test(zhName)) return 'B'; // 兜底=看需求；动态判定（奖励 vs 库存）在 appraise 层升级为 A
   return 'B';
 }
 
@@ -468,6 +468,39 @@ export async function appraiseTraderGoods(goods, options = {}) {
   const owned = options.owned ?? new Set();
   // 中文名反查索引（官方源无英文名时用 lang.json 中文名匹配 wm 目录）：从同一份目录现建，零额外请求
   const catalogByZh = new Map(Object.values(catalog).filter((meta) => meta?.zh).map((meta) => [compact(meta.zh), meta]));
+  // 遗物动态分级：RewardsByBase（Relics.json Intact 行，只读）÷ 库存已拥有部件（valuation englishName）
+  let relicDbPromise = null;
+  const relicDbOf = () => {
+    if (!relicDbPromise) {
+      relicDbPromise = (async () => {
+        if (options.relicDb) return options.relicDb;
+        const { loadLocalRelicDb } = await import('./recommend.mjs');
+        return loadLocalRelicDb(options.alecaDir);
+      })().catch(() => null);
+    }
+    return relicDbPromise;
+  };
+  const ownedEnglishNames = new Set((options.inventoryValuation ?? [])
+    .map((entry) => compact(String(entry.englishName ?? '')))
+    .filter(Boolean));
+  const RARITY_RANK = { Rare: 0, Uncommon: 1, Common: 2 };
+  const enrichRelicRow = async (row) => {
+    const isRelicRow = /Relic/u.test(row.uniqueName ?? '') || /遗物/u.test(row.nameEn ?? '') || /遗物/u.test(row.zhName ?? '');
+    if (!row.tradable || !isRelicRow) return row;
+    const db = await relicDbOf();
+    const entries = db?.rewardsByBase?.get(String(row.nameEn ?? '').trim());
+    if (!Array.isArray(entries) || !entries.length) return row;
+    const missing = entries
+      .filter((entry) => !ownedEnglishNames.has(compact(String(entry.name ?? ''))))
+      .sort((a, b) => (RARITY_RANK[a.rarity] ?? 9) - (RARITY_RANK[b.rarity] ?? 9));
+    row.relicParts = {
+      total: entries.length,
+      missingCount: missing.length,
+      missing: missing.slice(0, 4).map((entry) => entry.name),
+    };
+    if (missing.length) row.tier = 'A'; // 仍有未持有部件 → 强推；全有/无数据 → 保持兜底 B
+    return row;
+  };
   const rows = await mapLimit(goods, PRICE_CONCURRENCY, async (entry) => {
     const isMod = /\/Mods\//u.test(entry.uniqueName || '');
     const zhLocal = entry.zhLocal ?? options.zhOf?.(entry.uniqueName) ?? null;
@@ -518,6 +551,7 @@ export async function appraiseTraderGoods(goods, options = {}) {
       const ratio = row.platinum != null && row.ducats > 0 ? row.platinum / row.ducats : null;
       row.ratio = ratio != null ? Math.round(ratio * 100) / 100 : null;
       row.tier = gradeBaroItem(row, options.tierOverride ?? null);
+      await enrichRelicRow(row);
       return { ...row, advice: decidePractical(row, row.tier) };
     } catch {
       const row = {
@@ -527,6 +561,7 @@ export async function appraiseTraderGoods(goods, options = {}) {
         median90: null, dailyVolume: null, deviationPct: null, ratio: null, tradingTax: null,
       };
       row.tier = gradeBaroItem(row, options.tierOverride ?? null);
+      await enrichRelicRow(row);
       return { ...row, advice: decidePractical(row, row.tier) };
     }
   });
