@@ -12,16 +12,19 @@ permissions:
 
 jobs:
   source-verify:
-    name: Source verification (Windows, Node ${{ matrix.node-version }})
+    name: Source verification (Windows, Node ${{ matrix.node-version }}, PS ${{ matrix.ps }})
     runs-on: windows-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         node-version: [20, 24]
-        # pwsh = PowerShell 7 (fast, best diagnostics); powershell = Windows
-        # PowerShell 5.1, the shell a new user actually runs install.ps1 with.
-        shell: [pwsh, powershell]
+        # ps = '7' → PowerShell 7 (fast, best diagnostics);
+        # ps = '5.1' → Windows PowerShell 5.1, the shell a new user actually
+        # runs install.ps1 with. Note: the step `shell:` input does NOT accept
+        # expressions (matrix context unavailable there), so the host is chosen
+        # in `run` below with a static `shell: pwsh` wrapper.
+        ps: ['7', '5.1']
     steps:
       - name: Checkout
         # v4 — 固定完整 commit SHA（供应链安全），原 tag 见注释
@@ -42,6 +45,7 @@ jobs:
         run: |
           node --version
           $PSVersionTable.PSVersion.ToString()
+          powershell.exe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
 
       - name: Reproducible lockfile check (skill, no lifecycle scripts)
         shell: pwsh
@@ -51,5 +55,11 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Source tests + installer lifecycle (verify.ps1 -SourceOnly)
-        shell: ${{ matrix.shell }}
-        run: ./verify.ps1 -SourceOnly
+        shell: pwsh
+        run: |
+          if ("${{ matrix.ps }}" -eq "5.1") {
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./verify.ps1 -SourceOnly
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else {
+            ./verify.ps1 -SourceOnly
+          }
