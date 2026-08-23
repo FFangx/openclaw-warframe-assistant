@@ -1322,9 +1322,11 @@ async function renderWeeklyDetailCardFor(weeklyStatePath, context, worldState, c
   return { mediaUrl, rows };
 }
 
-// —— 周日提醒：只读本地打卡记录 + 订阅账本，零网络 ——
+// —— 周日提醒：只读本地打卡记录 + 订阅账本；提醒前拉一次本周世界状态 ——
+// 使执刑官/电波也能按本周对账自动核销（每周一次、带 5 分钟缓存与失败降级）。
+// 网络或缓存失败时退回保守模式：不传 worldState，执刑官/电波跳过自动判定，宁多提醒不漏提醒。
 // cron 周日 20:00 北京时间触发；没有启用的周常订阅或全部完成时输出 NO_REPLY 不打扰
-async function remindWeekly(weeklyStatePath, ledgerPath, target) {
+async function remindWeekly(weeklyStatePath, ledgerPath, target, options = {}) {
   let ledger;
   try { ledger = JSON.parse(await readFile(ledgerPath, 'utf8')); }
   catch { return { output: 'NO_REPLY\n', data: { ok: true, reason: 'no_ledger' } }; }
@@ -1333,8 +1335,12 @@ async function remindWeekly(weeklyStatePath, ledgerPath, target) {
   if (!subs.length) return { output: 'NO_REPLY\n', data: { ok: true, reason: 'no_weekly_subscription' } };
 
   const state = await readState(weeklyStatePath);
-  // 提醒前先合并快照自动核销（零网络：不传 worldState，执刑官/电波两项跳过自动判定，宁多提醒不漏提醒）
-  const autoResult = await autoCheckFromSnapshot(null, state.conquestSamples);
+  // 提醒前先合并快照自动核销；世界状态拉取失败（或测试注入失败）时 worldState 为 null，
+  // 执刑官/电波两项跳过自动判定，宁多提醒不漏提醒（绝不让对账失败吞掉整个提醒）。
+  const fetchWorld = options.fetchWorldState || fetchWorldState;
+  let fetched = null;
+  try { fetched = await fetchWorld(); } catch { fetched = null; }
+  const autoResult = await autoCheckFromSnapshot(fetched?.value || null, state.conquestSamples);
   await recordConquestObservations(weeklyStatePath, autoResult?.observations);
   const lines = [];
   for (const sub of subs) {

@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { archimedeaResearchProgress, calendarChallengeLine, calendarRewardZh, calendarUpgradeZh, evaluateAutoCheck, hasCompleteArchimedeas, localizeArchimedeaModifier, nextReset, nightwaveChallengeZh, weekStart } from './weekly.mjs';
+import { archimedeaResearchProgress, calendarChallengeLine, calendarRewardZh, calendarUpgradeZh, evaluateAutoCheck, hasCompleteArchimedeas, localizeArchimedeaModifier, nextReset, nightwaveChallengeZh, remindWeekly, weekStart } from './weekly.mjs';
 import { labsSection } from './weekly-mega-card.mjs';
 
 const calendarDays = [
@@ -357,4 +359,42 @@ test('电波部分挑战无 requiredCount 时只按已知项计数、不整体�
   const result = evaluateAutoCheck(inventory, worldState, Date.now(), challengeRequired);
   assert.equal(result.progress.nightwave, '周挑战 1/2'); // 已知 1 条命中
   assert.equal(result.auto.nightwave, undefined); // 另一条未知，不猜
+});
+
+// —— 周日收尾提醒：自动核销与保守降级（2026-08-23 实机「执刑官已打仍被提醒」）——
+
+test('执刑官：快照 SortieId 与本周 archonHunt.id 一致才核销，对不上或无世界状态不猜', () => {
+  const inventory = { LastLiteSortieReward: [{ SortieId: { $oid: 'abc123' }, StoreItem: '/Lotus/Powersuits/Test', Manifest: {} }] };
+  const worldState = { archonHunt: { id: 'abc123', boss: 'Archon Amar' } };
+  assert.equal(evaluateAutoCheck(inventory, worldState).auto.archon, true);
+  assert.equal(evaluateAutoCheck(inventory, { archonHunt: { id: 'other' } }).auto.archon, undefined);
+  assert.equal(evaluateAutoCheck(inventory, null).auto.archon, undefined);
+});
+
+function reminderFixtures() {
+  const dir = mkdtempSync(join(tmpdir(), 'wf-remind-'));
+  const target = 'qqbot:c2c:test-owner';
+  const statePath = join(dir, 'warframe-weekly.json');
+  const ledgerPath = join(dir, 'ledger.json');
+  writeFileSync(statePath, JSON.stringify({ version: 1, records: [{ target, ownerId: 'test-owner', ownerName: 'owner', weekStart: weekStart(), completed: [], dismissed: [] }], prefs: [], nightwaveSamples: [], conquestSamples: [] }));
+  writeFileSync(ledgerPath, JSON.stringify({ subscriptions: [{ target, ownerId: 'test-owner', ownerName: 'owner', enabled: true, type: 'weekly' }] }));
+  return { dir, target, statePath, ledgerPath };
+}
+
+test('收尾提醒：世界状态拉取失败时保守降级，执刑官仍列未完成', async () => {
+  const { dir, target, statePath, ledgerPath } = reminderFixtures();
+  try {
+    const result = await remindWeekly(statePath, ledgerPath, target, { fetchWorldState: async () => ({ value: null, error: 'simulated failure' }) });
+    assert.match(result.output, /周常收尾提醒/);
+    assert.match(result.output, /执刑官猎杀/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('收尾提醒：对账 fetcher 抛异常也不吞掉提醒（仍保守列出未完成）', async () => {
+  const { dir, target, statePath, ledgerPath } = reminderFixtures();
+  try {
+    const result = await remindWeekly(statePath, ledgerPath, target, { fetchWorldState: async () => { throw new Error('boom'); } });
+    assert.match(result.output, /周常收尾提醒/);
+    assert.match(result.output, /执刑官猎杀/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
