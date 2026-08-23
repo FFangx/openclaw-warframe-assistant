@@ -158,9 +158,15 @@ function Remove-AgentsFragment {
 }
 
 function Invoke-Cli([string[]]$Arguments) {
-  # 只取 stdout：openclaw CLI 的良性 stderr 警告在 PS5.1 + ErrorActionPreference=Stop
-  # 下会变成 NativeCommandError，成功与否以退出码为准。
-  $stdout = & $OpenClawCli @Arguments 2>$null
+  # openclaw CLI 的良性 stderr 警告在 PS5.1 + EAP=Stop 下会变成 NativeCommandError
+  # （即使 2>$null）；调用期间临时降级 EAP，成败以退出码为准（与 release.ps1 同模式）。
+  $previousEap = $ErrorActionPreference
+  $ErrorActionPreference = 'SilentlyContinue'
+  try {
+    $stdout = & $OpenClawCli @Arguments 2>$null
+  } finally {
+    $ErrorActionPreference = $previousEap
+  }
   if ($LASTEXITCODE -ne 0) { throw "$OpenClawCli $($Arguments -join ' ') failed with exit code $LASTEXITCODE" }
   return $stdout
 }
