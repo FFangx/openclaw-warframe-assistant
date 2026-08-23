@@ -5,6 +5,13 @@
 
 ## [Unreleased]
 
+## [1.1.5] - 2026-08-23
+
+### 修复
+
+- 仲裁订阅/查询卡片的阵营标签修复「未知阵营」：warframestat 与 browse.wf 排期对同名阵营命名不一致（`Infested` vs `Infestation`），二次翻译查无后回退成「未知阵营」；现按「规范名 → FC_* 代码 → 终值原样」幂等标准化，两个来源渲染一致，只有真正缺失才显示「未知阵营」。
+- 发布版本元数据对齐：`skill/package.json`、`extension/package.json`、`skill/package-lock.json` 根版本与 `INSTALL.md` 的当前版本全部与根 `VERSION` 一致（修复 v1.1.4 发布提交只改 VERSION/CHANGELOG、漏改包版本导致仓库元数据合同校验失败、CI 变红的问题）。
+
 ## [1.1.4] - 2026-08-22
 
 ### 新增
