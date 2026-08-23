@@ -158,7 +158,9 @@ function Remove-AgentsFragment {
 }
 
 function Invoke-Cli([string[]]$Arguments) {
-  $stdout = & $OpenClawCli @Arguments 2>&1
+  # 只取 stdout：openclaw CLI 的良性 stderr 警告在 PS5.1 + ErrorActionPreference=Stop
+  # 下会变成 NativeCommandError，成功与否以退出码为准。
+  $stdout = & $OpenClawCli @Arguments 2>$null
   if ($LASTEXITCODE -ne 0) { throw "$OpenClawCli $($Arguments -join ' ') failed with exit code $LASTEXITCODE" }
   return $stdout
 }

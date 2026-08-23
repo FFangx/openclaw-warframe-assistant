@@ -240,7 +240,10 @@ function Sync-ManagedTree([string]$Source, [string]$Destination, [string]$TreeNa
 # 避免测试过程触碰真实 cron 存储。
 # ————————————————————————————————————————————————
 function Get-CliJson([string[]]$Arguments) {
-  $stdout = & openclaw.cmd @Arguments 2>&1
+  # openclaw.cmd 可能向 stderr 打良性配置警告（如允许列表提示）；PS5.1 下
+  # $ErrorActionPreference=Stop 会把 2>&1 的 stderr 变 NativeCommandError 中止流程，
+  # 因此只取 stdout，成功与否以退出码为准。
+  $stdout = & openclaw.cmd @Arguments 2>$null
   if ($LASTEXITCODE -ne 0) { throw "openclaw $($Arguments -join ' ') failed with exit code $LASTEXITCODE" }
   $text = ($stdout -join "`n")
   $start = $text.IndexOfAny([char[]]('[', '{'))
