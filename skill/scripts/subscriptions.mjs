@@ -118,6 +118,14 @@ const FACTION_ZH = {
   Grineer: 'Grineer', Corpus: 'Corpus', Infested: 'Infestation', Orokin: '奥罗金', Corrupted: '堕落者',
   Sentient: 'Sentient', Murmur: '低语者', 'The Murmur': '低语者', Crossfire: '混战', Tenno: 'Tenno',
 };
+// 仲裁阵营双源命名不一致：warframestat 给 'Infested'（经 FACTION_ZH 规范），browse.wf 排期缓存
+// 已用 ARBITRATION_FACTION_ZH 翻成终值 'Infestation'——若再套 FACTION_ZH 会因查无回退成「未知阵营」。
+// 统一口径：规范名（Infested→Infestation）→ FC_* 代码 → 已终值/其余拉丁原样展示；仅空值显示 未知阵营。
+const arbitrationEnemyZh = (value) => {
+  const raw = normalize(value);
+  if (!raw) return '未知阵营';
+  return FACTION_ZH[raw] || ARBITRATION_FACTION_ZH[raw] || raw;
+};
 const TIER_ZH = { Lith: '古纪', Meso: '前纪', Neo: '中纪', Axi: '后纪', Requiem: '安魂', Omnia: '全能' };
 const PLANET_ZH = {
   Mercury: '水星', Venus: '金星', Earth: '地球', Lua: '月球', Mars: '火星', Deimos: '火卫二',
@@ -915,7 +923,7 @@ function allCandidates(state) {
       id: `arbitration:${state.arbitration.id || `${state.arbitration.node}:${state.arbitration.type}:${state.arbitration.expiry}`}`,
       type: 'arbitration', node: place.node, planet: place.planet,
       missionType: state.arbitration.type, mission: translatedOrChinese(MISSION_ZH, state.arbitration.type, '未知任务'),
-      enemy: translatedOrChinese(FACTION_ZH, state.arbitration.enemy, '未知阵营'), expiry: state.arbitration.expiry,
+      enemy: arbitrationEnemyZh(state.arbitration.enemy), expiry: state.arbitration.expiry,
       source: state.arbitration.source || 'warframestat.us',
       ...(state.arbitration.arbyTier ? { arbyTier: state.arbitration.arbyTier } : {}),
     });

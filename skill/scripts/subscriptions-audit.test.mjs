@@ -147,3 +147,18 @@ test('订阅卡来源只依据本次实际展示的情报', () => {
   assert.match(card.html, /来源：世界状态/u);
   assert.doesNotMatch(card.html, /仲裁排期/u);
 });
+
+test('仲裁阵营双源一致：warframestat 的 Infested 与排期缓存的 Infestation 都显示 Infestation', async () => {
+  const { allCandidates } = await import('./subscriptions.mjs');
+  const base = {
+    node: 'SolNode172', type: 'MT_TERRITORY', expiry: new Date(Date.now() + 3600_000).toISOString(),
+  };
+  const fromStat = allCandidates({ arbitration: { ...base, enemy: 'Infested', source: 'warframestat.us' } }).arbitration[0];
+  const fromSchedule = allCandidates({ arbitration: { ...base, enemy: 'Infestation', source: 'browse.wf' } }).arbitration[0];
+  const fromCode = allCandidates({ arbitration: { ...base, enemy: 'FC_INFESTATION', source: 'browse.wf' } }).arbitration[0];
+  assert.equal(fromStat.enemy, 'Infestation');
+  assert.equal(fromSchedule.enemy, 'Infestation'); // 之前回退成「未知阵营」的 bug
+  assert.equal(fromCode.enemy, 'Infestation');
+  const empty = allCandidates({ arbitration: { ...base, enemy: null } }).arbitration[0];
+  assert.equal(empty.enemy, '未知阵营');
+});
