@@ -1,4 +1,4 @@
-# Contract tests for uninstall.ps1 — the safe uninstall lifecycle.
+﻿# Contract tests for uninstall.ps1 — the safe uninstall lifecycle.
 # Plain PowerShell assertions (no Pester dependency), mirroring the repo's
 # no-framework test style; runs on Windows pwsh (CI: windows-latest).
 #

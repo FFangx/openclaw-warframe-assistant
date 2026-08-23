@@ -1,4 +1,4 @@
-[CmdletBinding(SupportsShouldProcess = $true)]
+﻿[CmdletBinding(SupportsShouldProcess = $true)]
 param(
   [string]$InstallDir = $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'OpenClaw\WFInfo' } else { '' }),
   [string]$ManifestPath = (Join-Path $PSScriptRoot 'config\wfinfo-companion.json'),

@@ -5,6 +5,12 @@
 
 ## [Unreleased]
 
+## [1.1.6]
+
+### 修复
+
+- 安装器与全部 PowerShell 脚本现兼容 Windows PowerShell 5.1（Win10/11 内置外壳）：仓库所有 `.ps1` 改为 UTF-8 带 BOM，避免中文本地化系统（ANSI 代码页 936/932 等）把无 BOM 脚本按 ANSI 解码后吞掉引号/括号/换行，导致解析失败或执行丢行——此前新用户按 INSTALL.md 在中文 Windows 上一键安装会直接失败。仓库元数据合同的 lockfile 版本校验改经 Node 读取（5.1 的 `ConvertFrom-Json` 无法解析 package-lock v3 的空字符串根键）。新增 `tests/ps1-encoding.test.ps1`（BOM 合同测试）与 CI 的 PowerShell 5.1 验证矩阵防止回归；新增 `scripts/env-smoke.ps1` 供新机/虚拟机一键冒烟。
+
 ## [1.1.5] - 2026-08-23
 
 ### 修复

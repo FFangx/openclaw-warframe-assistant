@@ -1,4 +1,4 @@
-# Contract tests for release-changelog.ps1 — the changelog transformation used by
+﻿# Contract tests for release-changelog.ps1 — the changelog transformation used by
 # release.ps1. Plain PowerShell assertions (no Pester dependency), mirroring the
 # repo's no-framework test style; runs on Windows pwsh (CI: windows-latest).
 #

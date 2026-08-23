@@ -1,4 +1,4 @@
-# Contract tests for repository release-readiness metadata: version unification,
+﻿# Contract tests for repository release-readiness metadata: version unification,
 # package manifests, standard MIT license, third-party asset documentation and
 # governance files. Plain PowerShell assertions (no Pester dependency).
 #
@@ -54,9 +54,15 @@ Assert-True 'extension package version equals VERSION (ships in lockstep)' ([str
 Assert-True 'extension package is private' ([bool]$extensionPkg.private -eq $true)
 
 $lockfileText = Read-File 'skill\package-lock.json'
-$lockfile = $lockfileText | ConvertFrom-Json -AsHashtable
-Assert-True 'lockfile root version equals VERSION' ([string]$lockfile['packages'][''].version -eq $version)
 Assert-True 'lockfile is resolved against the official npm registry' (-not ($lockfileText -match 'npmmirror|registry\.npmjs\.cn'))
+# Windows PowerShell 5.1 ConvertFrom-Json cannot parse package-lock v3 (its
+# JavaScriptSerializer rejects the empty-string root key "packages": {""}),
+# so the root version is read through Node, which the project already
+# requires and which both CI hosts provide.
+$lockfilePath = Join-Path $repoRoot 'skill\package-lock.json'
+$lockRootVersion = & node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(String(p.packages[''].version))" $lockfilePath
+if ($LASTEXITCODE -ne 0) { throw "node failed to read lockfile root version: $lockRootVersion" }
+Assert-True 'lockfile root version equals VERSION' (([string]$lockRootVersion).Trim() -eq $version)
 
 # --- license ---
 $expectedMit = @'

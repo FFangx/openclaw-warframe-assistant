@@ -19,6 +19,9 @@ jobs:
       fail-fast: false
       matrix:
         node-version: [20, 24]
+        # pwsh = PowerShell 7 (fast, best diagnostics); powershell = Windows
+        # PowerShell 5.1, the shell a new user actually runs install.ps1 with.
+        shell: [pwsh, powershell]
     steps:
       - name: Checkout
         # v4 — 固定完整 commit SHA（供应链安全），原 tag 见注释
@@ -48,5 +51,5 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Source tests + installer lifecycle (verify.ps1 -SourceOnly)
-        shell: pwsh
+        shell: ${{ matrix.shell }}
         run: ./verify.ps1 -SourceOnly

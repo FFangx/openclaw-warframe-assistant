@@ -1,4 +1,4 @@
-# Changelog transformation shared by release.ps1 and tests/release-changelog.test.ps1.
+﻿# Changelog transformation shared by release.ps1 and tests/release-changelog.test.ps1.
 #
 # Convention (Keep a Changelog + versioned pending section):
 #   ## [Unreleased]           # canonical EMPTY placeholder, must stay the top section

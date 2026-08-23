@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [string]$Workspace = $(if ($env:OPENCLAW_WORKSPACE) { $env:OPENCLAW_WORKSPACE } elseif ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.openclaw\workspace' } else { '' }),
   [switch]$SourceOnly,
@@ -115,6 +115,9 @@ Invoke-Checked 'uninstall lifecycle contract tests' {
 }
 Invoke-Checked 'repo metadata contract tests' {
   & (Join-Path $repoRoot 'tests\repo-metadata.test.ps1')
+}
+Invoke-Checked 'powershell script encoding contract (UTF-8 BOM on every ps1)' {
+  & (Join-Path $repoRoot 'tests\ps1-encoding.test.ps1')
 }
 
 if (-not $SourceOnly) {

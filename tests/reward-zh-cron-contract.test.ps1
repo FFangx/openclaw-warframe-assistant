@@ -1,4 +1,4 @@
-# Contract tests for the deployable definition of the daily reward-zh AI verification task
+﻿# Contract tests for the deployable definition of the daily reward-zh AI verification task
 # (config/cron/reward-zh-ai.job.json) and its install/verify wiring. Plain PowerShell
 # assertions (no Pester dependency), mirroring the repo's no-framework test style.
 #
