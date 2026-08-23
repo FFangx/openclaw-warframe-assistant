@@ -28,7 +28,12 @@ function Assert-True([string]$Label, [bool]$Condition) {
   Write-Host "PASS: $Label"
 }
 
-$files = @(Get-ChildItem -LiteralPath $repoRoot -Recurse -Filter '*.ps1' -File)
+# Only repository-authored scripts are checked: third-party shims under
+# node_modules (e.g. semver.ps1 created by npm ci) are not ours and must not
+# fail the contract.
+$files = @(Get-ChildItem -LiteralPath $repoRoot -Recurse -Filter '*.ps1' -File | Where-Object {
+  $_.FullName -notmatch '[\\/]node_modules[\\/]' -and $_.FullName -notmatch '[\\/]\.git[\\/]'
+})
 Assert-True "repo contains at least one ps1 file (found $($files.Count))" ($files.Count -gt 0)
 
 $missing = @()
