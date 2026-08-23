@@ -28,7 +28,7 @@ jobs:
     steps:
       - name: Checkout
         # v4 — 固定完整 commit SHA（供应链安全），原 tag 见注释
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           # 不需要写权限；禁用 GIT 凭据持久化，防止任何 step 意外使用仓库令牌推送
