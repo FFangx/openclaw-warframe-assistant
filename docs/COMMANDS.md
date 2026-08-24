@@ -4,7 +4,7 @@
 [`skill/scripts/command-registry.cjs`](../skill/scripts/command-registry.cjs)；帮助卡、文字帮助和本页由同一注册表生成。`.mjs` 文件仅提供 ESM 兼容导出，不维护第二份定义。
 
 <!-- BEGIN GENERATED COMMAND TABLE: command-registry -->
-<!-- command-registry-schema: 1 -->
+<!-- command-registry-schema: 2 -->
 | commandId | 模块 | 帮助入口 | 正式语法 | 常用别名 | 用途 | 权限 |
 | --- | --- | --- | --- | --- | --- | --- |
 | help | 基础使用 | 帮助 基础 | 帮助 | help、菜单、功能、功能列表、命令列表、使用说明、说明书、怎么用 | 查看全部公开、用户私聊和订阅入口 | 公开 |

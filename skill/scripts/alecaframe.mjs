@@ -8,6 +8,7 @@ import { access, readFile, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { matchCommandText } from './command-registry.mjs';
 import { buildAccountSnapshotCard, buildInventorySnapshotCard, renderWarframeCard } from './warframe-cards.mjs';
 import { stripDataUriReplacer } from './wfdata.mjs';
 
@@ -821,49 +822,24 @@ function parseSquad(query) {
   return n ? Number(n[1]) : 4;
 }
 
+function normalizeOwnedInventoryQuery(value) {
+  return String(value || '')
+    .replace(/^(?:几个|几|多少个|多少)\s*/u, '')
+    .replace(/[，,。]?\s*(?:推不推荐卖|要不要卖|该不该卖|值不值得卖|卖不卖)?\s*(?:吗|么|呢|？|\?)*$/u, '')
+    .trim();
+}
+
 export function parseAlecaMessage(message) {
-  const text = normalize(message).replace(/^\//u, '');
-  if (/^(?:我的账号|账号状态|我的状态)$/u.test(text)) return { command: 'account', query: '' };
-  // 遗物先行推荐 = 个人数据命令；「裂缝/裂缝推荐」已合并为任务先行的公开卡（用户私聊自动附库存推荐）。
-  const recommend = text.match(/^(?:开遗物|遗物推荐|开什么遗物|开什么)(?:\s+(.+))?$/u);
-  if (recommend) return { command: 'recommend', query: (recommend[1] || '').trim() };
-  // 精炼推荐：库存全扫哪些遗物值得花光体（同属个人数据通道）
-  const refine = text.match(/^(?:精炼推荐|遗物精炼|值得精炼|精炼什么)(?:\s+(.+))?$/u);
-  if (refine) return { command: 'refine', query: (refine[1] || '').trim() };
-  // 奸商购物推荐：读库存+杜卡德余额，同属个人数据通道
-  if (/^(?:奸商推荐|奸商买什么|奸商购物|虚空商人推荐|虚空商人买什么)$/u.test(text)) return { command: 'trader-shopping', query: '' };
-  // 杜卡德兑换：统一短入口，支持目标/清仓/保留 N（套）
-  const ducat = text.match(/^(?:杜卡德|杜卡德推荐|杜卡德兑换)(?:\s+.*)?$/u);
-  if (ducat) return { command: 'ducat-plan', query: text };
-  // 轮换日历：「已有」标读快照 = 个人数据通道（快照读失败降级无标照常出卡）
-  if (/^(?:轮换日历|排期|日历|未来轮换)$/u.test(text)) return { command: 'rotation-calendar', query: '' };
-  // 商店总览/单商人详情：已购标注读快照 = 个人数据通道（快照读失败降级为无已购标）
-  const shop = text.match(/^商店(?:\s+(.+))?$/u);
-  if (shop) return { command: 'shop', query: (shop[1] || '').trim() };
-  // 本周好货直查（与周一订阅推送同一张卡）：已购标读快照 = 个人数据通道
-  if (/^(?:本周好货|好货|好货清单)$/u.test(text)) return { command: 'weekly-deals', query: '' };
-  // 我的紫卡：快照指纹 × AlecaFrame 本机计算表，离线复算数值/神卡标；带武器名=详情卡（wm 拍卖行情+估价）
-  if (/^(?:我的紫卡|紫卡列表|紫卡)$/u.test(text)) return { command: 'rivens', query: '' };
-  const rivenDetail = text.match(/^(?:我的紫卡|紫卡)\s+(.+)$/u);
-  if (rivenDetail) return { command: 'rivens', query: rivenDetail[1].trim() };
-  const relic = text.match(/^我的遗物(?:\s+|$)(.*)$/u);
-  if (relic) return { command: 'relic', query: relic[1].trim() };
-  const arcane = text.match(/^我的赋能(?:\s+|$)(.*)$/u);
-  if (arcane) return { command: 'arcane', query: arcane[1].trim() };
-  const inventory = text.match(/^我的库存(?:\s+|$)(.*)$/u);
-  if (inventory) return { command: 'inventory', query: inventory[1].trim() };
-  const owned = text.match(/^我(?:有多少|有)(.+)$/u);
-  if (owned) {
-    // 「我有几个X」→ X：剥量词前缀与尾部问语，否则整句当查询词 0 匹配
-    const query = owned[1]
-      .replace(/^(?:几个|几|多少个|多少)\s*/u, '')
-      .replace(/[，,。]?\s*(?:推不推荐卖|要不要卖|该不该卖|值不值得卖|卖不卖)?\s*(?:吗|么|呢|？|\?)*$/u, '')
-      .trim();
-    return { command: 'inventory', query };
-  }
-  if (/^(?:账号周常|我的周常状态|周常同步状态)$/u.test(text)) return { command: 'weekly', query: '' };
-  if (/^(?:刷新账号|刷新库存)$/u.test(text)) return { command: 'refresh-help', query: '' };
-  return null;
+  const matched = matchCommandText(message, 'user-account');
+  const adapter = matched?.matcher?.aleca;
+  if (!adapter) return null;
+  const query = adapter.query === 'none' ? ''
+    : adapter.query === 'capture' ? matched.query
+      : adapter.query === 'fullText' ? matched.text
+        : adapter.query === 'ownedInventory' ? normalizeOwnedInventoryQuery(matched.query)
+          : null;
+  if (query === null) return null;
+  return { command: adapter.command || matched.commandId, query };
 }
 
 export async function runAlecaMessage(message, options = {}) {
@@ -1294,7 +1270,7 @@ async function main() {
       out(await runAlecaMessage(rest.join(' ')));
       return;
     }
-    out({ handled: false, ok: false, error: '用法：parse <我的账号|我的库存|我的遗物|我的赋能|杜卡德|奸商推荐|账号周常>' });
+    out({ handled: false, ok: false, error: '用法：parse "<个人账号命令>"；可发送“帮助 账号”“帮助 遗物”或“帮助 商店”查看完整入口。' });
     process.exitCode = 1;
   } catch (error) {
     out({ handled: true, ok: false, error: String(error?.message || error), text: `账号快照读取失败：${String(error?.message || error)}` });

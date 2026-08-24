@@ -13,7 +13,7 @@ const freeze = (value) => {
 
 const command = (value) => freeze(value);
 
-const COMMAND_REGISTRY_SCHEMA_VERSION = 1;
+const COMMAND_REGISTRY_SCHEMA_VERSION = 2;
 
 // Help section ids and helpQuery values are stable keys. User-visible titles are
 // also accepted as convenience aliases, while the overview always prints helpQuery.
@@ -321,9 +321,13 @@ const COMMAND_REGISTRY = freeze([
     ],
     nextActions: [],
     matchers: [
-      { routes: ['user-account', 'shortcut-gate'], kind: 'exact', pattern: '(?:我的账号|账号状态|我的状态|账号周常|我的周常状态|周常同步状态|刷新账号|刷新库存)' },
-      { routes: ['user-account', 'shortcut-gate'], kind: 'regex', pattern: '^(?:我的遗物|我的赋能|我的库存)(?:\\s+.*)?$', flags: 'u' },
-      { routes: ['user-account'], kind: 'regex', pattern: '^我(?:有多少|有).+(?:吗|么|？|\\?)?$', flags: 'u' },
+      { routes: ['user-account', 'shortcut-gate'], kind: 'exact', pattern: '(?:我的账号|账号状态|我的状态)', aleca: { query: 'none' } },
+      { routes: ['user-account', 'shortcut-gate'], kind: 'exact', pattern: '(?:账号周常|我的周常状态|周常同步状态)', aleca: { command: 'weekly', query: 'none' } },
+      { routes: ['user-account', 'shortcut-gate'], kind: 'exact', pattern: '(?:刷新账号|刷新库存)', aleca: { command: 'refresh-help', query: 'none' } },
+      { routes: ['user-account', 'shortcut-gate'], kind: 'regex', pattern: '^我的遗物(?:\\s+|$)(?<query>.*)$', flags: 'u', aleca: { command: 'relic', query: 'capture' } },
+      { routes: ['user-account', 'shortcut-gate'], kind: 'regex', pattern: '^我的赋能(?:\\s+|$)(?<query>.*)$', flags: 'u', aleca: { command: 'arcane', query: 'capture' } },
+      { routes: ['user-account', 'shortcut-gate'], kind: 'regex', pattern: '^我的库存(?:\\s+|$)(?<query>.*)$', flags: 'u', aleca: { command: 'inventory', query: 'capture' } },
+      { routes: ['user-account'], kind: 'regex', pattern: '^我(?:有多少个|有多少|有)(?<query>.+)$', flags: 'u', aleca: { command: 'inventory', query: 'ownedInventory' } },
     ],
   }),
   command({
@@ -344,7 +348,7 @@ const COMMAND_REGISTRY = freeze([
     ],
     nextActions: [],
     matchers: [
-      { routes: ['user-account', 'shortcut-gate'], kind: 'regex', pattern: '^(?:开遗物|遗物推荐|开什么遗物|开什么)(?:\\s+.*)?$', flags: 'u' },
+      { routes: ['user-account', 'shortcut-gate'], kind: 'regex', pattern: '^(?:开遗物|遗物推荐|开什么遗物|开什么)(?:\\s+(?<query>.*))?$', flags: 'u', aleca: { query: 'capture' } },
     ],
   }),
   command({
@@ -362,7 +366,7 @@ const COMMAND_REGISTRY = freeze([
     helpExamples: ['精炼推荐 🔒'],
     nextActions: [],
     matchers: [
-      { routes: ['user-account', 'shortcut-gate'], kind: 'regex', pattern: '^(?:精炼推荐|遗物精炼|值得精炼|精炼什么)(?:\\s+\\S+){0,2}$', flags: 'u' },
+      { routes: ['user-account', 'shortcut-gate'], kind: 'regex', pattern: '^(?:精炼推荐|遗物精炼|值得精炼|精炼什么)(?:\\s+(?<query>\\S+(?:\\s+\\S+)?))?$', flags: 'u', aleca: { query: 'capture' } },
     ],
   }),
   command({
@@ -380,7 +384,7 @@ const COMMAND_REGISTRY = freeze([
     helpExamples: ['杜卡德 / 杜卡德 600'],
     nextActions: [],
     matchers: [
-      { routes: ['user-account', 'shortcut-gate'], kind: 'regex', pattern: '^(?:杜卡德|杜卡德推荐|杜卡德兑换)(?:\\s+.*)?$', flags: 'u' },
+      { routes: ['user-account', 'shortcut-gate'], kind: 'regex', pattern: '^(?:杜卡德|杜卡德推荐|杜卡德兑换)(?:\\s+.*)?$', flags: 'u', aleca: { query: 'fullText' } },
     ],
   }),
   command({
@@ -398,7 +402,7 @@ const COMMAND_REGISTRY = freeze([
     helpExamples: ['奸商推荐 🔒'],
     nextActions: [],
     matchers: [
-      { routes: ['user-account', 'shortcut-gate'], kind: 'exact', pattern: '(?:奸商推荐|奸商买什么|奸商购物|虚空商人推荐|虚空商人买什么)' },
+      { routes: ['user-account', 'shortcut-gate'], kind: 'exact', pattern: '(?:奸商推荐|奸商买什么|奸商购物|虚空商人推荐|虚空商人买什么)', aleca: { query: 'none' } },
     ],
   }),
   command({
@@ -419,7 +423,7 @@ const COMMAND_REGISTRY = freeze([
     ],
     nextActions: [],
     matchers: [
-      { routes: ['user-account', 'shortcut-gate'], kind: 'regex', pattern: '^商店(?:\\s+\\S+)?$', flags: 'u' },
+      { routes: ['user-account', 'shortcut-gate'], kind: 'regex', pattern: '^商店(?:\\s+(?<query>\\S+))?$', flags: 'u', aleca: { query: 'capture' } },
     ],
   }),
   command({
@@ -437,7 +441,7 @@ const COMMAND_REGISTRY = freeze([
     helpExamples: ['本周好货 🔒'],
     nextActions: [],
     matchers: [
-      { routes: ['user-account', 'shortcut-gate'], kind: 'exact', pattern: '(?:本周好货|好货|好货清单)' },
+      { routes: ['user-account', 'shortcut-gate'], kind: 'exact', pattern: '(?:本周好货|好货|好货清单)', aleca: { query: 'none' } },
     ],
   }),
   command({
@@ -455,7 +459,7 @@ const COMMAND_REGISTRY = freeze([
     helpExamples: ['轮换日历 🔒'],
     nextActions: [],
     matchers: [
-      { routes: ['user-account', 'shortcut-gate'], kind: 'exact', pattern: '(?:轮换日历|排期|日历|未来轮换)' },
+      { routes: ['user-account', 'shortcut-gate'], kind: 'exact', pattern: '(?:轮换日历|排期|日历|未来轮换)', aleca: { query: 'none' } },
     ],
   }),
   command({
@@ -473,7 +477,8 @@ const COMMAND_REGISTRY = freeze([
     helpExamples: ['我的紫卡 / 紫卡 3'],
     nextActions: [],
     matchers: [
-      { routes: ['user-account', 'shortcut-gate'], kind: 'regex', pattern: '^(?:我的紫卡|紫卡列表|紫卡)(?:\\s+\\S+)*$', flags: 'u' },
+      { routes: ['user-account', 'shortcut-gate'], kind: 'exact', pattern: '(?:我的紫卡|紫卡列表|紫卡)', aleca: { query: 'none' } },
+      { routes: ['user-account', 'shortcut-gate'], kind: 'regex', pattern: '^(?:我的紫卡|紫卡)\\s+(?<query>\\S.*)$', flags: 'u', aleca: { query: 'capture' } },
     ],
   }),
   command({
@@ -716,6 +721,7 @@ function buildToolCommandSummary() {
 
 function registryContractErrors() {
   const errors = [];
+  const alecaQueryModes = new Set(['none', 'capture', 'fullText', 'ownedInventory']);
   const seen = new Set();
   const sectionIds = new Set();
   const sectionTopics = new Map();
@@ -782,6 +788,16 @@ function registryContractErrors() {
     }
     for (const matcher of entry.matchers || []) {
       try { matcherPattern(matcher); } catch (error) { errors.push(`${entry.commandId} matcher invalid: ${String(error?.message || error)}`); }
+      if (matcherHasRoute(matcher, 'user-account')) {
+        if (entry.executor !== 'alecaframe.runAlecaMessage') errors.push(`${entry.commandId} user-account matcher requires alecaframe executor`);
+        if (matcher.aleca?.command !== undefined && !normalizeCommandText(matcher.aleca.command)) errors.push(`${entry.commandId} user-account matcher has invalid aleca.command`);
+        if (!alecaQueryModes.has(matcher.aleca?.query)) errors.push(`${entry.commandId} user-account matcher has invalid aleca.query`);
+        if (['capture', 'ownedInventory'].includes(matcher.aleca?.query) && !String(matcher.pattern).includes('(?<query>')) {
+          errors.push(`${entry.commandId} user-account matcher must expose a named query capture`);
+        }
+      } else if (matcher.aleca) {
+        errors.push(`${entry.commandId} non-user-account matcher must not declare aleca metadata`);
+      }
     }
   }
   for (const section of HELP_SECTION_REGISTRY) {

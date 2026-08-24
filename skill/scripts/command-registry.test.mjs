@@ -118,6 +118,21 @@ test('注册表匹配定义覆盖短命令、用户私聊、周常、订阅和�
   assert.equal(Boolean(matchSubscriptionCommand('订阅 赏金 尖刃弹头')), true);
 });
 
+test('所有个人账号 matcher 都声明 Aleca 执行动作与参数来源', () => {
+  const personalMatchers = COMMAND_REGISTRY.flatMap((entry) => entry.matchers
+    .filter((matcher) => matcher.routes.includes('user-account'))
+    .map((matcher) => ({ entry, matcher })));
+  assert.ok(personalMatchers.length > 0);
+  for (const { entry, matcher } of personalMatchers) {
+    assert.equal(entry.executor, 'alecaframe.runAlecaMessage', entry.commandId);
+    if (matcher.aleca?.command !== undefined) assert.equal(typeof matcher.aleca.command, 'string', entry.commandId);
+    assert.ok(['none', 'capture', 'fullText', 'ownedInventory'].includes(matcher.aleca?.query), entry.commandId);
+    if (['capture', 'ownedInventory'].includes(matcher.aleca?.query)) {
+      assert.match(matcher.pattern, /\(\?<query>/u, entry.commandId);
+    }
+  }
+});
+
 test('dispatch 对周常执行第二层用户私聊门禁', async () => {
   const { dispatchCommand } = await import('./dispatch.mjs');
   const denied = await dispatchCommand('周常', { personalAllowed: false });
