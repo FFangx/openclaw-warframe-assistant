@@ -60,6 +60,10 @@ test('愿望裸入口与两条模型工具路径只保留共享用例编排', as
   assert.match(entry, /runWishlistIngressUseCase\(api, ingressEvent, ctx, 'before_dispatch'\)/u);
   assert.match(entry, /runWishlistIngressUseCase\(api, event, event, 'inbound_claim'\)/u);
   assert.match(entry, /runWishlistIngressUseCase\(api, ingressEvent, ctx, 'before_agent_reply'\)/u);
+  assert.match(entry, /channel: String\(event\.channel \|\| ctx\?\.messageProvider \|\| ctx\?\.channel \|\| ''\)/u,
+    '共享愿望入口必须把真实通道交给身份门，不得固定伪装为 QQ');
+  assert.match(entry, /channel: String\(channel \|\| ''\)\.trim\(\)\.toLowerCase\(\)/u,
+    'before_agent_reply 必须保留已知通道；只有适配器确实缺失通道时才能走身份兜底');
   assert.equal((entry.match(/return runWishlistToolUseCase\(query, operation\)/gu) || []).length, 2,
     'operation=command 与兼容 operation=subscription 必须共用同一愿望用例');
   assert.doesNotMatch(entry, /wishlistNeedsImmediateCalibration/u);
@@ -121,6 +125,12 @@ test('SKILL.md 与插件工具说明把口语获取问法规范到正式短命�
   // 插件工具描述：模型收到口语问法时改写为获取/购买规范命令
   assert.match(entry, /哪里刷|怎么刷|哪里买|在哪换/u);
   assert.match(entry, /改写为获取\/购买规范命令/u);
+});
+
+test('SKILL.md 不再提示模型绕过插件直跑愿望写脚本', async () => {
+  const skill = await readInstalledOrSourceSkill();
+  assert.doesNotMatch(skill, /wishlist\.mjs manage/u);
+  assert.match(skill, /愿望写操作必须调用 `warframe_assistant` 工具/u);
 });
 
 test('扩展路由从唯一注册表加载，且用户可见权限口径统一', async () => {

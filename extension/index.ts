@@ -644,7 +644,7 @@ async function runWishlistIngressUseCase(api: any, event: any, ctx: any, source:
   const outcome = await runWishlistCommandUseCase(api, {
     source,
     text: String(event.content || event.body || event.cleanedBody || ''),
-    channel: 'qqbot',
+    channel: String(event.channel || ctx?.messageProvider || ctx?.channel || '').trim().toLowerCase(),
     target,
     actorId,
     actorDisplayName: String(event.senderName || event.senderUsername || ctx?.channelContext?.sender?.name || actorId),
@@ -1003,7 +1003,7 @@ export default definePluginEntry({
         `Warframe before_agent_reply matched: channel=${String(channel || 'unknown')} command=${content.trim()}`,
       );
       const ingressEvent = {
-        channel: 'qqbot',
+        channel: String(channel || '').trim().toLowerCase(),
         content,
         conversationId: ctx.channelId || ctx.chatId,
         senderId: ctx.senderId,

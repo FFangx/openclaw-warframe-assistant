@@ -59,7 +59,7 @@ node {baseDir}/scripts/warframe.mjs monitor --platform pc --state <绝对路径>
 
 # 订阅/周常/个人快照（插件正常时无需模型直跑；细节见 references/operations.md）
 node {baseDir}/scripts/subscriptions.mjs manage --state <路径> --message "订阅 仲裁 生存" --target <会话> --owner <发送者>
-node {baseDir}/scripts/wishlist.mjs manage --state <路径> --message "愿望 商品 20" --target <会话> --owner <发送者> --card-dir <路径>
+# 愿望写操作必须调用 `warframe_assistant` 工具，由插件统一处理身份、cron、Gateway 与即时行情检查；不得直跑愿望管理脚本。
 node {baseDir}/scripts/weekly.mjs manage --state <路径> --message "周常" --target <会话> --owner <发送者> --card-dir <路径>
 node {baseDir}/scripts/alecaframe.mjs parse "我的账号"
 ```
