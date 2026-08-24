@@ -14,15 +14,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { stripDataUriReplacer } from './wfdata.mjs';
 import {
   buildTemplateCatalog,
-  directIntelType,
   isUserPrivateCommand,
-  matchArbitrationCommand,
   matchSubscriptionCommand,
   matchWeeklyCommand,
   matchWishlistCommand,
 } from './command-registry.mjs';
 import { executeWeeklyUseCase } from './weekly-usecase.mjs';
 import { executePersonalUseCase } from './personal-usecase.mjs';
+import { executePublicUseCase } from './public-usecase.mjs';
 
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 // scripts → warframe-assistant → skills → workspace（与插件的路径解析保持同一根）
@@ -126,36 +125,27 @@ export async function dispatchCommand(message, options = {}) {
     };
   }
 
-  if (matchArbitrationCommand(text)) {
-    const { queryArbitration } = await import('./subscriptions.mjs');
-    const result = await queryArbitration(options.subscriptionState || DEFAULT_SUBSCRIPTION_STATE, cardDir);
-    return { handled: true, ok: result.ok !== false, kind: 'arbitration', mediaUrl: result.mediaUrl || null, text: result.text || '', ...evidenceMeta(result) };
-  }
-
-  const intelType = directIntelType(text);
-  if (intelType) {
-    // 与插件同步：用户私聊的「虚空商人」走购物建议版（未到货 alecaframe 内部回退查询卡）
-    if (intelType === 'trader' && personalAllowed) {
-      const { runAlecaMessage } = await import('./alecaframe.mjs');
-      const result = await runAlecaMessage('奸商推荐', { cardDir });
-      if (result.handled) return { handled: true, ok: result.ok !== false, kind: 'trader-shopping', mediaUrl: result.mediaUrl || null, text: result.text || '', followupText: result.followupText || null, ...evidenceMeta(result) };
-    }
-    const { queryIntel } = await import('./subscriptions.mjs');
-    const result = await queryIntel(intelType, cardDir, options.subscriptionState || DEFAULT_SUBSCRIPTION_STATE);
-    return { handled: true, ok: result.ok !== false, kind: intelType, mediaUrl: result.mediaUrl || null, text: result.text || '', ...evidenceMeta(result) };
-  }
-
   // 订阅族：不代办（账本按真实 QQ 会话隔离），返回引导文案
   if (matchSubscriptionCommand(text)) {
     return { handled: true, ok: true, kind: 'subscription-guide', guideOnly: true, text: `订阅命令请直接发送给机器人（如「${text}」），由快捷通道处理，我这边不代设。` };
   }
 
-  // wm / 遗物 / 获取 / 购买 / 裂缝 / 帮助 / 悬赏（悬赏索引在用户私聊时附声望列，env 与插件同一契约）
-  if (personalAllowed) process.env.WARFRAME_PERSONAL_OK = '1';
-  const { runShortcut } = await import('./shortcuts.mjs');
-  const result = await runShortcut(text, { cardDir });
+  const target = String(options.target || '').trim().toLowerCase();
+  const outcome = await executePublicUseCase({
+    source: 'dispatch-fallback', text,
+    channel: String(options.channel || (/^qqbot:/u.test(target) ? 'qqbot' : '')).trim().toLowerCase(),
+    target, actorId: options.owner, personalAllowed,
+    isGroup: options.isGroup === true || /^qqbot:group:/u.test(target), cardDir,
+  }, {
+    queryArbitration: async () => import('./subscriptions.mjs').then((m) => m.queryArbitration(options.subscriptionState || DEFAULT_SUBSCRIPTION_STATE, cardDir)),
+    queryIntel: async (command) => import('./subscriptions.mjs').then((m) => m.queryIntel(command.intelType, cardDir, options.subscriptionState || DEFAULT_SUBSCRIPTION_STATE)),
+    runPersonalTrader: async () => import('./alecaframe.mjs').then((m) => m.runAlecaMessage('奸商推荐', { cardDir })),
+    runShortcut: async (command) => import('./shortcuts.mjs').then((m) => m.runShortcut(command.text, { cardDir, personalAllowed: command.personalAllowed })),
+  });
+  const result = outcome.result;
   if (result.handled) return {
-    handled: true, ok: result.ok !== false, kind: result.command,
+    handled: true, ok: result.ok !== false, kind: result.kind || result.command || outcome.commandId,
+    commandId: outcome.commandId,
     query: result.query || '', mediaUrl: result.mediaUrl || null,
     text: result.text || '', followupText: result.followupText || null,
     ...evidenceMeta(result),

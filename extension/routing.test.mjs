@@ -129,6 +129,21 @@ test('个人账号快捷入口、模型工具与调度器 fallback 共用个人�
   assert.match(skill, /禁止直跑 alecaframe\.mjs parse/u);
 });
 
+test('公开快捷入口、模型工具与调度器 fallback 共用公开查询用例', async () => {
+  const [entry, dispatch] = await Promise.all([
+    readFile(new URL('./index.ts', import.meta.url), 'utf8'),
+    readInstalledOrSourceDispatch(),
+  ]);
+  assert.match(entry, /publicUsecaseScript = path\.resolve/u);
+  assert.match(entry, /runPublicCommandUseCase\(api,/u);
+  assert.match(entry, /return runPublicToolUseCase\(query\)/u);
+  assert.doesNotMatch(entry, /const argv = isArbitrationShortcut/u);
+  assert.doesNotMatch(entry, /directIntelType\(event\.content\)/u);
+  assert.match(dispatch, /import \{ executePublicUseCase \} from '\.\/public-usecase\.mjs'/u);
+  assert.doesNotMatch(dispatch, /process\.env\.WARFRAME_PERSONAL_OK\s*=/u);
+  assert.match(dispatch, /personalAllowed: command\.personalAllowed/u);
+});
+
 test('strict documented commands stay on the deterministic fast path', () => {
   for (const input of [
     'wm 高压电流', '遗物 Axi A22', '获取 Caliban p', '普通裂缝', '赏金 尖刃弹头', '购买 诡文枭主',

@@ -835,7 +835,7 @@ async function queryRelicFarm(rawQuery, platform = DEFAULT_PLATFORM, crossplay =
   }
 
   let ownedRelics = options.ownedRelics ?? null;
-  if (ownedRelics === null && process.env.WARFRAME_PERSONAL_OK === '1') {
+  if (ownedRelics === null && (options.personalAllowed === true || process.env.WARFRAME_PERSONAL_OK === '1')) {
     try {
       const { readSnapshot, loadRelics } = await import('./alecaframe.mjs');
       const snapshot = await readSnapshot();
@@ -872,7 +872,7 @@ function splitFissureNode(value) {
   return { node: match[1], planet: PLANET_ZH[match[2]] || match[2] };
 }
 
-async function queryFissures(rawQuery = '', platform = DEFAULT_PLATFORM) {
+async function queryFissures(rawQuery = '', platform = DEFAULT_PLATFORM, options = {}) {
   if (platform === 'mobile') return { ok: false, kind: 'fissure', error: 'unsupported_platform', query: rawQuery };
   const state = await loadWorldState(platform);
   const filters = parseFissureFilters(rawQuery);
@@ -910,7 +910,7 @@ async function queryFissures(rawQuery = '', platform = DEFAULT_PLATFORM) {
   // 用户私聊增强：同一张公开裂缝卡，为每条任务补一枚兼容库存遗物；失败时安全降级为纯公开列表。
   let personalized = false;
   let recommendationModeZh = null;
-  if (process.env.WARFRAME_PERSONAL_OK === '1') {
+  if (options.personalAllowed === true || process.env.WARFRAME_PERSONAL_OK === '1') {
     try {
       const { runAlecaMessage } = await import('./alecaframe.mjs');
       const recommendation = await runAlecaMessage(`开遗物 ${rawQuery}`.trim(), {
@@ -1909,7 +1909,7 @@ export async function runShortcut(message, options = {}) {
       return { handled: true, ok: false, command: 'bounty', query: parsed.query, text: `赏金数据暂时拉取失败（${String(error?.message || error)}），请稍后重试。` };
     }
     // 用户私聊（插件/dispatch 经 env 授权）：索引卡右列附六集团声望+今日余量；快照读失败静默降级纯公开版
-    if (!parsed.query && process.env.WARFRAME_PERSONAL_OK === '1') {
+    if (!parsed.query && (options.personalAllowed === true || process.env.WARFRAME_PERSONAL_OK === '1')) {
       try {
         const { readSnapshot } = await import('./alecaframe.mjs');
         attachBountyStanding(data, (await readSnapshot()).inventory);
@@ -1989,7 +1989,7 @@ export async function runShortcut(message, options = {}) {
   const platform = options.platform || DEFAULT_PLATFORM;
   const crossplay = options.crossplay ?? DEFAULT_CROSSPLAY;
   const data = parsed.command === 'market' ? await queryMarket(parsed.query, platform, crossplay)
-    : parsed.command === 'fissure' ? await queryFissures(parsed.query, platform)
+    : parsed.command === 'fissure' ? await queryFissures(parsed.query, platform, options)
       : parsed.command === 'relic-farm' ? await queryRelicFarm(parsed.query, platform, crossplay, options)
       : await queryRelic(parsed.query, platform, crossplay);
   data.nextActions = buildShortcutNextActions(data, parsed);

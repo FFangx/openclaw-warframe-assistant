@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
-import { commandToolSummary, directIntelType, isArbitrationShortcut, isPersonalAccountCommand, isShortcut, isSubscriptionCommand, isWeeklyCommand, isWishlistCommand } from './routing.mjs';
+import { commandToolSummary, isPersonalAccountCommand, isShortcut, isSubscriptionCommand, isWeeklyCommand, isWishlistCommand } from './routing.mjs';
 import { buildEvidenceEnvelope, STATE_ASSERTION_POLICY } from './evidence.mjs';
 import { classifyNaturalWarframeQuery, DYNAMIC_QUERY_POLICY } from './intent-policy.mjs';
 import { createContextBridge } from './context-bridge.mjs';
@@ -14,7 +14,6 @@ import { executeWishlistUseCase, wishlistNeedsImmediateInspection } from './wish
 const execFileAsync = promisify(execFile);
 const pluginDir = path.dirname(fileURLToPath(import.meta.url));
 const shortcutScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'shortcuts.mjs');
-const dispatchScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'dispatch.mjs');
 const lookupScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'lookup.mjs');
 const subscriptionScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'subscriptions.mjs');
 const wishlistScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'wishlist.mjs');
@@ -23,6 +22,7 @@ const weeklyScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warfra
 const weeklyUsecaseScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'weekly-usecase.mjs');
 const alecaScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'alecaframe.mjs');
 const personalUsecaseScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'personal-usecase.mjs');
+const publicUsecaseScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'public-usecase.mjs');
 const subscriptionState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-subscriptions.json');
 const wishlistState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-wishlist.json');
 const dropsState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-drops.json');
@@ -547,26 +547,14 @@ async function handleFastCommand(api: any, event: any): Promise<any | undefined>
         raw: result,
       };
     }
-    const intelType = directIntelType(event.content);
-    // 用户私聊发「虚空商人/奸商」→ 购物建议版（到货时货单×库存×余额；未到货脚本内部回退查询卡）；
-    // 其他来源纯公开查询卡（2026-08-06 用户拍板方案 A）
-    const personalOk = !event.isGroup && isExactOwner(api, event.senderId);
-    const argv = isArbitrationShortcut(event.content)
-      ? [subscriptionScript, 'query-arbitration', '--state', subscriptionState, '--card-dir', cardDir]
-      : intelType === 'trader' && personalOk
-        ? [alecaScript, 'parse', '奸商推荐']
-        : intelType
-          ? [subscriptionScript, 'query-intel', '--type', intelType, '--state', subscriptionState, '--card-dir', cardDir]
-          : [shortcutScript, 'parse', event.content];
-    const { stdout } = await execFileAsync(process.execPath, argv, {
-      timeout: 45_000,
-      windowsHide: true,
-      maxBuffer: 2 * 1024 * 1024,
-      encoding: 'utf8',
-      // WARFRAME_PERSONAL_OK：公开命令的私聊增强门（如悬赏索引附声望列），脚本侧据此读快照
-      env: { ...process.env, WARFRAME_CARD_DIR: cardDir, WARFRAME_PERSONAL_OK: personalOk ? '1' : '' },
+    const target = qqTarget(event);
+    const ownerId = String(event.senderId || '').trim().toLowerCase();
+    const outcome = await runPublicCommandUseCase(api, {
+      source: 'fast-command', text: event.content, channel: event.channel, target,
+      actorId: ownerId, personalAllowed: !event.isGroup && isExactOwner(api, event.senderId),
+      isGroup: Boolean(event.isGroup), cardDir,
     });
-    const result = JSON.parse(stdout);
+    const result = outcome.result;
     return {
       text: result.followupText || result.text || '查询完成，但没有可显示的结果。',
       ...(result.mediaUrl ? { mediaUrl: result.mediaUrl, trustedLocalMedia: true } : {}),
@@ -686,14 +674,14 @@ function jsonToolResult(value: any): any {
   };
 }
 
-async function runJsonScript(script: string, args: string[], timeoutMs = 60_000): Promise<any> {
+async function runJsonScript(script: string, args: string[], timeoutMs = 60_000, extraEnv: Record<string, string> = {}): Promise<any> {
   try {
     const { stdout } = await execFileAsync(process.execPath, [script, ...args], {
       timeout: timeoutMs,
       windowsHide: true,
       maxBuffer: 4 * 1024 * 1024,
       encoding: 'utf8',
-      env: { ...process.env, WARFRAME_CARD_DIR: cardDir },
+      env: { ...process.env, WARFRAME_CARD_DIR: cardDir, ...extraEnv },
     });
     return JSON.parse(stdout);
   } catch (error: any) {
@@ -741,6 +729,17 @@ async function runPersonalCommandUseCase(api: any, request: any): Promise<any> {
     log: (_level: string, message: string, error: unknown) => {
       api.logger.error(`Warframe ${message}: ${String(error)}`);
     },
+  });
+}
+
+async function runPublicCommandUseCase(api: any, request: any): Promise<any> {
+  const { executePublicUseCase } = await import(pathToFileURL(publicUsecaseScript).href);
+  return executePublicUseCase(request, {
+    queryArbitration: () => runJsonScript(subscriptionScript, ['query-arbitration', '--state', subscriptionState, '--card-dir', cardDir]),
+    queryIntel: (command: any) => runJsonScript(subscriptionScript, ['query-intel', '--type', command.intelType, '--state', subscriptionState, '--card-dir', cardDir]),
+    runPersonalTrader: () => runJsonScript(alecaScript, ['parse', '奸商推荐']),
+    runShortcut: (command: any) => runJsonScript(shortcutScript, ['parse', command.text], 60_000, { WARFRAME_PERSONAL_OK: command.personalAllowed ? '1' : '' }),
+    log: (_level: string, message: string, error: unknown) => api.logger.error(`Warframe ${message}: ${String(error)}`),
   });
 }
 
@@ -887,6 +886,18 @@ function createWarframeTool(api: any, ctx: any): any {
     return jsonToolResult(decorateToolResult(result, mediaDelivered, 'command', query));
   }
 
+  async function runPublicToolUseCase(query: string): Promise<any> {
+    const outcome = await runPublicCommandUseCase(api, {
+      source: 'tool-command', text: query, channel, target, actorId: sender,
+      personalAllowed, isGroup: toolIsGroup(ctx), cardDir,
+    });
+    const result = outcome.result;
+    const mediaUrl = String(result?.mediaUrl || '').trim();
+    const mediaDelivered = mediaUrl ? await sendToolMedia(api, ctx, mediaUrl) : false;
+    rememberShortCommandContext({}, ctx, result, personalAllowed);
+    return jsonToolResult(decorateToolResult(result, mediaDelivered, 'command', query));
+  }
+
   return {
     name: 'warframe_assistant',
     label: 'Warframe Assistant',
@@ -917,17 +928,7 @@ function createWarframeTool(api: any, ctx: any): any {
         if (isPersonalAccountCommand(query)) {
           return runPersonalToolUseCase(query);
         }
-        const result = await runJsonScript(dispatchScript, [
-          'run', query,
-          '--personal-allowed', personalAllowed ? 'true' : 'false',
-          '--target', target || 'model:public',
-          '--owner', sender || 'anonymous',
-          '--card-dir', cardDir,
-        ]);
-        const mediaUrl = String(result?.mediaUrl || '').trim();
-        const mediaDelivered = mediaUrl ? await sendToolMedia(api, ctx, mediaUrl) : false;
-        rememberShortCommandContext({}, ctx, result, personalAllowed);
-        return jsonToolResult(decorateToolResult(result, mediaDelivered, operation, query));
+        return runPublicToolUseCase(query);
       }
 
       if (operation === 'lookup') {
