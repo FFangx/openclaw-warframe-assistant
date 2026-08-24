@@ -204,6 +204,19 @@ test('QQ 周常无损直投使用 /files srv_send_msg 一步链路且不再发 m
   assert.equal(calls.some((call) => /\/messages$/u.test(call.url)), false);
 });
 
+test('周常投递合同锁定单张完整原图并禁止旧三段文案回归', async () => {
+  const operations = await readFile(new URL('../references/operations.md', import.meta.url), 'utf8');
+  assert.match(operations, /周常订阅的主周报保持单张完整高清 PNG/u);
+  assert.match(operations, /不切段、不裁剪、不二次缩放/u);
+  assert.match(operations, /`\/files`\s*并设置 `srv_send_msg=true`/u);
+  assert.match(operations, /不再追加会压缩长图的 `msg_type=7`/u);
+  assert.doesNotMatch(operations, /超长周报.*切为 3 段|160px 边缘重叠|单段最高 4000px/u);
+
+  const subscriptions = await readFile(new URL('./subscriptions.mjs', import.meta.url), 'utf8');
+  assert.match(subscriptions, /weeklyMediaUrls = mediaUrl \? \[mediaUrl\] : \[\]/u);
+  assert.match(subscriptions, /losslessMediaUrls: \[mediaUrl\]/u);
+});
+
 test('仲裁阵营双源一致：warframestat 的 Infested 与排期缓存的 Infestation 都显示 Infestation', async () => {
   const { allCandidates } = await import('./subscriptions.mjs');
   const base = {
