@@ -100,6 +100,11 @@ Invoke-Checked 'source extension contract tests' {
   $tests = @(Get-TestFiles (Join-Path $repoRoot 'extension'))
   & node --test @tests
 }
+Invoke-Checked 'command registry documentation contracts' {
+  & node --test (Join-Path $repoRoot 'tools\generate-command-docs.test.mjs')
+  if ($LASTEXITCODE -ne 0) { throw "command documentation tests failed: $LASTEXITCODE" }
+  & node (Join-Path $repoRoot 'tools\generate-command-docs.mjs') --check
+}
 if (-not $SkipInstallerTest) { Invoke-Checked 'installer lifecycle and stale-file quarantine' { Test-InstallerLifecycle } }
 Invoke-Checked 'release changelog contract tests' {
   & (Join-Path $repoRoot 'tests\release-changelog.test.ps1')
@@ -164,7 +169,12 @@ if (-not $SourceOnly) {
         if ($attempt -lt 2) { Start-Sleep -Milliseconds 250 }
       }
       if (-not $helpData -or -not $helpData.ok -or -not $helpData.handled -or -not $helpData.mediaUrl -or -not (Test-Path -LiteralPath $helpData.mediaUrl -PathType Leaf)) { throw "help command did not render a verifiable card result: $helpError" }
-      Write-Host 'dispatch catalog and help-card rendering are healthy'
+      $sectionHelp = & node $dispatch run '帮助 世界状态' 2>&1
+      if ($LASTEXITCODE -ne 0) { throw "partition help command failed: $($sectionHelp -join "`n")" }
+      $sectionData = ($sectionHelp -join "`n") | ConvertFrom-Json
+      if (-not $sectionData.ok -or -not $sectionData.handled -or -not $sectionData.mediaUrl -or -not (Test-Path -LiteralPath $sectionData.mediaUrl -PathType Leaf)) { throw 'partition help did not render a verifiable card result' }
+      if ([string]$sectionData.query -ne '世界状态') { throw "partition help query was not preserved: $($sectionData.query)" }
+      Write-Host 'dispatch catalog, main help-card, and partition help-card rendering are healthy'
     }
     Invoke-Checked 'runtime reward-zh AI cron contract' {
       $jobsRaw = & openclaw.cmd cron list --json 2>&1

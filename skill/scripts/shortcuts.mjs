@@ -16,7 +16,7 @@ import { buildRelicFarmPlan } from './relic-farm.mjs';
 import { resilientJsonRequest } from './http-resilience.mjs';
 import { readAlecaJson, stripDataUriReplacer } from './wfdata.mjs';
 import { loadWorldState } from './worldstate-source.mjs';
-import { buildHelpSections, matchCommandText } from './command-registry.mjs';
+import { buildHelpSections, getCommand, getHelpSection, listHelpSections, matchCommandText, resolveHelpTopic } from './command-registry.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -1344,25 +1344,44 @@ export function buildRelicFarmSetCard(data) {
 }
 
 // ---- 帮助卡：由单一命令注册表生成（零网络） ----
-const HELP_SECTIONS = buildHelpSections();
+function helpSectionsForTopic(topic = null) {
+  if (topic?.kind === 'command') return buildHelpSections({ commandId: topic.commandId, featuredOnly: false });
+  if (topic?.kind === 'section') return buildHelpSections({ sectionId: topic.sectionId, featuredOnly: false });
+  return buildHelpSections();
+}
 
-export function buildHelpCard() {
-  const rows = HELP_SECTIONS.map(([title, cmds]) =>
+function helpTitleForTopic(topic = null) {
+  if (topic?.kind === 'command') return `命令帮助 · ${getCommand(topic.commandId)?.helpTitle || topic.text}`;
+  if (topic?.kind === 'section') return `分区帮助 · ${getHelpSection(topic.sectionId)?.title || topic.text}`;
+  return '功能总览';
+}
+
+function helpNoteForTopic(topic = null) {
+  if (topic?.kind === 'command') return '查看该命令的正式写法与常用入口';
+  if (topic?.kind === 'section') return '查看本分区的完整命令';
+  return '发左列命令即可使用<br>说人话提问也能识别';
+}
+
+export function buildHelpCard(topic = null) {
+  const sections = helpSectionsForTopic(topic);
+  const rows = sections.map(({ title, commands }) =>
     `<tr class="section"><td colspan="2">${escapeHtml(title)}</td></tr>`
-    + cmds.map((item) => {
+    + commands.map((item) => {
       const commandText = item.privacyScope === 'userPrivate' && !item.command.includes('🔒') ? `${item.command} 🔒` : item.command;
       return `<tr class="help"><td class="help-cmd">${escapeHtml(commandText)}</td><td class="help-desc">${escapeHtml(item.description)}</td></tr>`;
     }).join('')
   ).join('');
-  const rowCount = HELP_SECTIONS.reduce((n, [, cmds]) => n + cmds.length, 0);
-  const height = 92 + HELP_SECTIONS.length * 29 + rowCount * 38 + 34 + 6;
-  const content = `<div class="card"><div class="relic-head"><div class="relic-title">Warframe 助手</div><div class="relic-code">功能总览</div><div class="relic-note">发左列命令即可使用<br>说人话提问也能识别</div></div><table><colgroup><col style="width:38%"><col style="width:62%"></colgroup><tbody>${rows}</tbody></table><div class="foot"><span>🔒 = 仅用户私聊 · 多数命令支持简称：好货/周报/侵袭/悬赏/开什么</span><span>发「帮助」随时唤出</span></div></div>`;
-  return { html: cardDocument(content, height, 760), width: 760, height, key: 'help-v25' };
+  const rowCount = sections.reduce((count, section) => count + section.commands.length, 0);
+  const height = 92 + sections.length * 29 + rowCount * 38 + 34 + 6;
+  const content = `<div class="card"><div class="relic-head"><div class="relic-title">Warframe 助手</div><div class="relic-code">${escapeHtml(helpTitleForTopic(topic))}</div><div class="relic-note">${helpNoteForTopic(topic)}</div></div><table><colgroup><col style="width:38%"><col style="width:62%"></colgroup><tbody>${rows}</tbody></table><div class="foot"><span>🔒 = 仅用户私聊 · 主题可用「帮助 &lt;分区或命令&gt;」查看</span><span>发「帮助」随时唤出</span></div></div>`;
+  const digest = createHash('sha256').update(content).digest('hex').slice(0, 12);
+  return { html: cardDocument(content, height, 760), width: 760, height, key: `help-${digest}` };
 }
 
-export function formatHelp() {
-  const lines = ['【Warframe 助手功能总览】'];
-  for (const [, commands] of HELP_SECTIONS) {
+export function formatHelp(topic = null) {
+  const sections = helpSectionsForTopic(topic);
+  const lines = [`【${helpTitleForTopic(topic)}】`];
+  for (const { commands } of sections) {
     const grouped = new Map();
     for (const item of commands) {
       const current = grouped.get(item.commandId) || { ...item, commands: [] };
@@ -1373,6 +1392,10 @@ export function formatHelp() {
       const privacy = item.privacyScope === 'userPrivate' ? '（仅用户私聊）' : '';
       lines.push(`${item.title || item.commandId}${privacy}：${item.commands.join(' ｜ ')}（${item.description}）`);
     }
+  }
+  if (!sections.length) lines.push('当前主题没有可展示的命令。');
+  if (!topic || topic.kind === 'main') {
+    lines.push(`可用分区：${listHelpSections().map((section) => section.title).join('、')}`);
   }
   lines.push('说人话也行：「奸商来了吗」「这周还剩啥没做」「战刃哪里出」「悟空Prime系统蓝图哪里刷」');
   return lines.join('\n');
@@ -1488,7 +1511,7 @@ async function renderCard(data, cardDir) {
     } catch { /* 无图降级 */ }
   }
   const card = data.kind === 'market' ? buildMarketCard(data)
-    : data.kind === 'help' ? buildHelpCard()
+    : data.kind === 'help' ? buildHelpCard(data.helpTopic)
       : data.kind === 'relic-farm' ? buildRelicFarmCard(data)
       : data.mode === 'reverse' ? buildRelicReverseCard(data) : buildRelicCard(data);
   const stem = card.key.replace(/[^a-z0-9_-]+/giu, '-').replace(/^-+|-+$/gu, '').toLowerCase().slice(0, 50) || 'card';
@@ -1828,10 +1851,23 @@ export async function runShortcut(message, options = {}) {
   const parsed = parseShortcutMessage(message);
   if (!parsed) return { handled: false };
   if (parsed.command === 'help') {
-    const data = { ok: true, kind: 'help', fetchedAt: new Date().toISOString() };
+    const helpTopic = resolveHelpTopic(parsed.query);
+    if (!helpTopic) {
+      const available = listHelpSections().map((section) => section.title).join('、');
+      return {
+        handled: true,
+        ok: false,
+        command: 'help',
+        query: parsed.query || '',
+        mediaUrl: null,
+        followupText: null,
+        text: `没有找到帮助主题「${parsed.query}」。可用分区：${available}。也可以输入「帮助 <命令别名>」。`,
+      };
+    }
+    const data = { ok: true, kind: 'help', helpTopic, fetchedAt: new Date().toISOString() };
     let mediaUrl = null;
     try { mediaUrl = await renderCard(data, options.cardDir || process.env.WARFRAME_CARD_DIR); } catch { mediaUrl = null; }
-    return { handled: true, ok: true, command: 'help', query: '', data, mediaUrl, followupText: null, text: formatHelp() };
+    return { handled: true, ok: true, command: 'help', query: parsed.query || '', data, mediaUrl, followupText: null, text: formatHelp(helpTopic) };
   }
   if (parsed.command === 'where-to-buy') {
     if (!parsed.query) return { handled: true, ok: false, command: 'where-to-buy', text: '用法：购买 <物品>，例如 购买 武器特殊功能槽连接器' };

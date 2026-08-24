@@ -11,7 +11,7 @@
 [![OpenClaw](https://img.shields.io/badge/Runs%20on-OpenClaw-orange)](https://openclaw.ai)
 [![Game](https://img.shields.io/badge/Warframe-国际服-8b5cf6)](https://www.warframe.com)
 
-[安装](INSTALL.md) · [配置](CONFIG.md) · [FAQ](FAQ.md) · [能力详单](skill/references/capabilities.md) · [更新日志](CHANGELOG.md) · [素材授权](ASSET-LICENSES.md) · [安全](SECURITY.md)
+[安装](INSTALL.md) · [配置](CONFIG.md) · [FAQ](FAQ.md) · [正式命令目录](docs/COMMANDS.md) · [能力详单](skill/references/capabilities.md) · [更新日志](CHANGELOG.md) · [素材授权](ASSET-LICENSES.md) · [安全](SECURITY.md)
 
 </div>
 
