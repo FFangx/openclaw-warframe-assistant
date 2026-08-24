@@ -16,6 +16,19 @@ async function readInstalledOrSourceSkill() {
   throw new Error('SKILL.md was not found in the source or managed-runtime layout');
 }
 
+async function readInstalledOrSourceDispatch() {
+  const candidates = [
+    new URL('../skill/scripts/dispatch.mjs', import.meta.url),
+    new URL('../../../skills/warframe-assistant/scripts/dispatch.mjs', import.meta.url),
+  ];
+  for (const candidate of candidates) {
+    try { return await readFile(candidate, 'utf8'); } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
+  throw new Error('dispatch.mjs was not found in the source or managed-runtime layout');
+}
+
 test('plugin entry imports every routing helper it calls', async () => {
   const [entry, routing] = await Promise.all([
     readFile(new URL('./index.ts', import.meta.url), 'utf8'),
@@ -40,7 +53,7 @@ test('订阅 cron 使用脚本直投 QQ 原图并关闭 runner announce 压缩�
 test('愿望裸入口与两条模型工具路径只保留共享用例编排', async () => {
   const [entry, dispatch] = await Promise.all([
     readFile(new URL('./index.ts', import.meta.url), 'utf8'),
-    readFile(new URL('../skill/scripts/dispatch.mjs', import.meta.url), 'utf8'),
+    readInstalledOrSourceDispatch(),
   ]);
   assert.match(entry, /import \{ executeWishlistUseCase, wishlistNeedsImmediateInspection \} from '\.\/wishlist-usecase\.mjs'/u);
   assert.match(entry, /source:\s*`tool-\$\{operation\}`/u);

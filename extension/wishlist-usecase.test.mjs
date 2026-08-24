@@ -4,7 +4,24 @@ import { access, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { executeWishlistUseCase, wishlistNeedsImmediateInspection } from './wishlist-usecase.mjs';
-import { dispatchCommand } from '../skill/scripts/dispatch.mjs';
+
+async function loadDispatchCommand() {
+  const candidates = [
+    new URL('../skill/scripts/dispatch.mjs', import.meta.url),
+    new URL('../../../skills/warframe-assistant/scripts/dispatch.mjs', import.meta.url),
+  ];
+  for (const candidate of candidates) {
+    try {
+      await access(candidate);
+      return (await import(candidate.href)).dispatchCommand;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
+  throw new Error('dispatch.mjs was not found in the source or managed-runtime layout');
+}
+
+const dispatchCommand = await loadDispatchCommand();
 
 function harness(overrides = {}) {
   const calls = [];
