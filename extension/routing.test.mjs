@@ -107,6 +107,7 @@ test('SKILL.md 与插件工具说明把口语获取问法规范到正式短命�
 });
 
 test('扩展路由从唯一注册表加载，且用户可见权限口径统一', async () => {
+  const routing = await readFile(new URL('./routing.mjs', import.meta.url), 'utf8');
   const entry = await readFile(new URL('./index.ts', import.meta.url), 'utf8');
   assert.ok(COMMAND_REGISTRY.some((item) => item.commandId === 'weekly'));
   assert.equal(isShortcut('周报'), true);
@@ -117,6 +118,8 @@ test('扩展路由从唯一注册表加载，且用户可见权限口径统一',
   assert.match(entry, /周常数据只允许用户本人/u);
   assert.match(entry, /if \(isWeeklyCommand\(query\) && !personalAllowed\)/u);
   assert.doesNotMatch(entry, /周常\|当前周常\|周常清单/u);
+  assert.match(routing, /createRequire\(import\.meta\.url\)\(registryPath\)/u);
+  assert.doesNotMatch(routing, /await\s+import/u);
 });
 
 test('工具命令说明由注册表生成，不再手工复制命令清单', async () => {

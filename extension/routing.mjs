@@ -1,17 +1,18 @@
 import path from 'node:path';
 import { existsSync } from 'node:fs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 // 源码测试和已安装运行时的目录层级不同，但二者都只加载 skill 中的唯一注册表。
 // 不在 extension 目录复制命令定义，避免路由、帮助和工具说明再次漂移。
 const extensionDir = path.dirname(fileURLToPath(import.meta.url));
 const registryCandidates = [
-  path.resolve(extensionDir, '..', 'skill', 'scripts', 'command-registry.mjs'),
-  path.resolve(extensionDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'command-registry.mjs'),
+  path.resolve(extensionDir, '..', 'skill', 'scripts', 'command-registry.cjs'),
+  path.resolve(extensionDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'command-registry.cjs'),
 ];
 const registryPath = registryCandidates.find((candidate) => existsSync(candidate));
 if (!registryPath) throw new Error('Warframe command registry was not found');
-const registry = await import(pathToFileURL(registryPath).href);
+const registry = createRequire(import.meta.url)(registryPath);
 
 export const COMMAND_REGISTRY = registry.COMMAND_REGISTRY;
 const normalize = registry.normalizeCommandText;

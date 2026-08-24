@@ -1,7 +1,7 @@
 # OpenClaw Warframe 助手正式命令目录
 
 本页只维护正式命令的机器可验证目录。命令元数据唯一来源是
-[`skill/scripts/command-registry.mjs`](../skill/scripts/command-registry.mjs)；帮助卡、文字帮助和本页由同一注册表生成。
+[`skill/scripts/command-registry.cjs`](../skill/scripts/command-registry.cjs)；帮助卡、文字帮助和本页由同一注册表生成。`.mjs` 文件仅提供 ESM 兼容导出，不维护第二份定义。
 
 <!-- BEGIN GENERATED COMMAND TABLE: command-registry -->
 <!-- command-registry-schema: 1 -->

@@ -205,7 +205,17 @@ if (-not $SourceOnly) {
       Write-Host 'reward-zh AI cron contract verified: enabled, daily, isolated agent job'
     }
     if (-not $SkipDoctor) { Invoke-Checked 'runtime environment doctor' { & node (Join-Path $skillTarget 'scripts\doctor.mjs') } }
-    if (-not $SkipPluginDoctor) { Invoke-Checked 'OpenClaw plugin doctor' { & openclaw.cmd plugins doctor } }
+    if (-not $SkipPluginDoctor) {
+      Invoke-Checked 'OpenClaw plugin doctor' {
+        $pluginDoctor = @(& openclaw.cmd plugins doctor 2>&1)
+        $pluginDoctor | Write-Host
+        if ($LASTEXITCODE -ne 0) { throw "plugin doctor exited with code $LASTEXITCODE" }
+        $pluginDoctorText = $pluginDoctor -join "`n"
+        if ($pluginDoctorText -match '(?im)^Plugin errors:' -or $pluginDoctorText -match '(?im)failed to load plugin') {
+          throw 'plugin doctor reported a plugin load error'
+        }
+      }
+    }
     if (-not $SkipGateway) { Invoke-Checked 'OpenClaw Gateway status' { & openclaw.cmd gateway status } }
   }
 }
