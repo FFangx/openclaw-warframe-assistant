@@ -8,6 +8,7 @@ import { commandToolSummary, directIntelType, isArbitrationShortcut, isPersonalA
 import { buildEvidenceEnvelope, STATE_ASSERTION_POLICY } from './evidence.mjs';
 import { classifyNaturalWarframeQuery, DYNAMIC_QUERY_POLICY } from './intent-policy.mjs';
 import { createContextBridge } from './context-bridge.mjs';
+import { executeSubscriptionUseCase } from './subscription-usecase.mjs';
 import { executeWishlistUseCase, wishlistNeedsImmediateInspection } from './wishlist-usecase.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -426,6 +427,13 @@ async function removeDropsCron(api: any, target: string): Promise<void> {
   for (const job of existing) await runOpenclawCron(['rm', String(job.id)]);
 }
 
+async function syncSubscriptionMonitors(api: any, target: string, actions: any): Promise<void> {
+  if (actions.world === 'ensure') await ensureSubscriptionCron(api, target);
+  else if (actions.world === 'remove') await removeSubscriptionCron(api, target);
+  if (actions.drops === 'ensure') await ensureDropsCron(api, target);
+  else if (actions.drops === 'remove') await removeDropsCron(api, target);
+}
+
 function isQQChannel(value: unknown): boolean {
   return String(value || '').trim().toLowerCase() === 'qqbot';
 }
@@ -496,35 +504,24 @@ async function handleFastCommand(api: any, event: any): Promise<any | undefined>
     if (isSubscriptionCommand(event.content)) {
       const target = qqTarget(event);
       const ownerId = String(event.senderId || '').trim().toLowerCase();
-      if (!target || !ownerId) throw new Error('missing QQ target or sender id');
       // 掉落订阅属于个人数据：只有用户私聊才允许创建，由脚本侧据此拒绝
       const personalAllowed = !event.isGroup && isExactOwner(api, event.senderId);
-      const { stdout } = await execFileAsync(process.execPath, [
-        subscriptionScript, 'manage', '--state', subscriptionState,
-        '--message', event.content, '--target', target, '--owner', ownerId,
-        '--owner-name', String(event.senderName || event.senderUsername || ownerId),
-        '--personal-allowed', personalAllowed ? 'true' : 'false',
-      ], {
-        timeout: 15_000,
-        windowsHide: true,
-        maxBuffer: 1024 * 1024,
-        encoding: 'utf8',
+      const outcome = await runSubscriptionCommandUseCase(api, {
+        source: 'fast-command',
+        text: event.content,
+        channel: event.channel,
+        target,
+        actorId: ownerId,
+        actorDisplayName: String(event.senderName || event.senderUsername || ownerId),
+        personalAllowed,
+        isGroup: Boolean(event.isGroup),
       });
-      const result = JSON.parse(stdout);
-      let cronWarning = '';
-      try {
-        if (result.cronAction === 'ensure') await ensureSubscriptionCron(api, target);
-        else if (result.cronAction === 'remove') await removeSubscriptionCron(api, target);
-        if (result.dropsCronAction === 'ensure') await ensureDropsCron(api, target);
-        else if (result.dropsCronAction === 'remove') await removeDropsCron(api, target);
-      } catch (error) {
-        api.logger.error(`Warframe subscription cron sync failed: ${String(error)}`);
-        cronWarning = '\n⚠️ 订阅已保存，但后台任务同步失败；请稍后重试或联系管理员。';
-      }
+      const result = outcome.result;
       return {
-        text: `${result.text || '订阅设置已更新。'}${cronWarning}`,
+        text: result.text || '订阅设置已更新。',
         replyToId: event.messageId,
-        isError: result.ok === false || Boolean(cronWarning),
+        isError: result.ok === false || Boolean(result.warning),
+        raw: result,
       };
     }
     if (isWeeklyCommand(event.content)) {
@@ -717,6 +714,21 @@ async function runJsonScript(script: string, args: string[], timeoutMs = 60_000)
   }
 }
 
+async function runSubscriptionCommandUseCase(api: any, request: any): Promise<any> {
+  return executeSubscriptionUseCase(request, {
+    manage: (command: any) => runJsonScript(subscriptionScript, [
+      'manage', '--state', subscriptionState,
+      '--message', command.text, '--target', command.target, '--owner', command.actorId,
+      '--owner-name', command.actorDisplayName,
+      '--personal-allowed', command.personalAllowed ? 'true' : 'false',
+    ], 15_000),
+    syncMonitors: (target: string, actions: any) => syncSubscriptionMonitors(api, target, actions),
+    log: (_level: string, message: string, error: unknown) => {
+      api.logger.error(`Warframe ${message}: ${String(error)}`);
+    },
+  });
+}
+
 function toolTarget(ctx: any): string | null {
   const sender = String(ctx?.requesterSenderId || '').trim().toLowerCase();
   const rawTo = String(ctx?.deliveryContext?.to || '').trim().toLowerCase();
@@ -808,6 +820,22 @@ function createWarframeTool(api: any, ctx: any): any {
     ));
   }
 
+  async function runSubscriptionToolUseCase(query: string, operation: string): Promise<any> {
+    const outcome = await runSubscriptionCommandUseCase(api, {
+      source: `tool-${operation}`,
+      text: query,
+      channel,
+      target,
+      actorId: sender,
+      actorDisplayName: sender,
+      personalAllowed,
+      isGroup: toolIsGroup(ctx),
+    });
+    // A legacy model may select operation=command, but the canonical evidence
+    // scope remains the subscription ledger for every entry path.
+    return jsonToolResult(decorateToolResult(outcome.result, false, 'subscription', query));
+  }
+
   return {
     name: 'warframe_assistant',
     label: 'Warframe Assistant',
@@ -828,6 +856,9 @@ function createWarframeTool(api: any, ctx: any): any {
       if (operation === 'command') {
         if (isWishlistCommand(query)) {
           return runWishlistToolUseCase(query, operation);
+        }
+        if (isSubscriptionCommand(query)) {
+          return runSubscriptionToolUseCase(query, operation);
         }
         if (isWeeklyCommand(query) && !personalAllowed) {
           return jsonToolResult({ ok: false, error: '周报和周常核销只允许用户本人在 QQ 私聊中操作。' });
@@ -861,24 +892,7 @@ function createWarframeTool(api: any, ctx: any): any {
         if (isWishlistCommand(query)) {
           return runWishlistToolUseCase(query, operation);
         }
-        if (channel && channel !== 'qqbot') return jsonToolResult({ ok: false, error: '订阅写操作只允许从 QQ 会话发起。' });
-        if (!target || !sender) return jsonToolResult({ ok: false, error: '当前会话缺少可信 QQ 身份，不能修改订阅。' });
-        const result = await runJsonScript(subscriptionScript, [
-          'manage', '--state', subscriptionState,
-          '--message', query, '--target', target, '--owner', sender,
-          '--owner-name', sender,
-          '--personal-allowed', personalAllowed ? 'true' : 'false',
-        ], 15_000);
-        let cronWarning = '';
-        try {
-          if (result.cronAction === 'ensure') await ensureSubscriptionCron(api, target);
-          else if (result.cronAction === 'remove') await removeSubscriptionCron(api, target);
-          if (result.dropsCronAction === 'ensure') await ensureDropsCron(api, target);
-          else if (result.dropsCronAction === 'remove') await removeDropsCron(api, target);
-        } catch (error) {
-          cronWarning = `；定时任务同步失败：${String(error)}`;
-        }
-        return jsonToolResult(decorateToolResult({ ...result, ...(cronWarning ? { warning: cronWarning } : {}) }, false, operation, query));
+        return runSubscriptionToolUseCase(query, operation);
       }
 
       if (operation === 'subscription_diagnosis') {

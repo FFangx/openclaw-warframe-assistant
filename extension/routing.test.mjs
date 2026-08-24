@@ -72,6 +72,21 @@ test('愿望裸入口与两条模型工具路径只保留共享用例编排', as
   assert.match(dispatch, /当前入口不会修改愿望单/u);
 });
 
+test('普通订阅裸入口与两条模型工具路径只保留共享用例编排', async () => {
+  const entry = await readFile(new URL('./index.ts', import.meta.url), 'utf8');
+  assert.match(entry, /import \{ executeSubscriptionUseCase \} from '\.\/subscription-usecase\.mjs'/u);
+  assert.match(entry, /const outcome = await runSubscriptionCommandUseCase\(api,/u);
+  assert.match(entry, /source: 'fast-command'/u);
+  assert.match(entry, /source: `tool-\$\{operation\}`/u);
+  assert.equal((entry.match(/return runSubscriptionToolUseCase\(query, operation\)/gu) || []).length, 2,
+    'operation=command 与 operation=subscription 必须共用同一普通订阅用例');
+  assert.equal((entry.match(/subscriptionScript, \[\s*'manage'/gu) || []).length, 1,
+    '订阅 manage 脚本只能在共享用例端口绑定一次');
+  assert.match(entry, /decorateToolResult\(outcome\.result, false, 'subscription', query\)/u,
+    '兼容 operation=command 也必须返回订阅账本证据范围');
+  assert.doesNotMatch(entry, /let cronWarning = ''/u);
+});
+
 test('strict documented commands stay on the deterministic fast path', () => {
   for (const input of [
     'wm 高压电流', '遗物 Axi A22', '获取 Caliban p', '普通裂缝', '赏金 尖刃弹头', '购买 诡文枭主',
