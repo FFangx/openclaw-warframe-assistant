@@ -75,7 +75,7 @@ export function buildBountyIndexCard(data, fetchedAt = new Date().toISOString())
       standing: board.standing || null,
     };
   });
-  // 声望列（仅主人私聊挂载 standing）：总声望+今日余量；与偶发倒计时共用右列
+  // 声望列（仅用户私聊挂载 standing）：总声望+今日余量；与偶发倒计时共用右列
   const anyStanding = [...placeRows, ...boardRows].some((row) => row.standing);
   const anyRight = anyStanding || [...placeRows, ...boardRows].some((row) => row.right);
   const rightCell = (row) => {

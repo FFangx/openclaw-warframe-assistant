@@ -16,6 +16,7 @@ import { buildRelicFarmPlan } from './relic-farm.mjs';
 import { resilientJsonRequest } from './http-resilience.mjs';
 import { readAlecaJson, stripDataUriReplacer } from './wfdata.mjs';
 import { loadWorldState } from './worldstate-source.mjs';
+import { buildHelpSections, matchCommandText } from './command-registry.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -906,7 +907,7 @@ async function queryFissures(rawQuery = '', platform = DEFAULT_PLATFORM) {
   fissures.sort((a, b) => (tierOrder[a.tier] || 99) - (tierOrder[b.tier] || 99)
     || Date.parse(a.expiry) - Date.parse(b.expiry));
 
-  // 主人私聊增强：同一张公开裂缝卡，为每条任务补一枚兼容库存遗物；失败时安全降级为纯公开列表。
+  // 用户私聊增强：同一张公开裂缝卡，为每条任务补一枚兼容库存遗物；失败时安全降级为纯公开列表。
   let personalized = false;
   let recommendationModeZh = null;
   if (process.env.WARFRAME_PERSONAL_OK === '1') {
@@ -1342,85 +1343,39 @@ export function buildRelicFarmSetCard(data) {
   return { html: cardDocument(content, height, 900), width: 900, height, key: `relic-farm-set9-${data.set.slug || data.set.name}-${data.components.length}-${data.inventoryAvailable ? 'p' : 'x'}-${data.bountyChecked ? 'b' : 'u'}-${data.headIconDataUri ? 'i' : 'x'}` };
 }
 
-// ---- 帮助卡：静态功能总览（零网络，内容改这里即可，无需重启 Gateway） ----
-const HELP_SECTIONS = [
-  ['查价 · warframe.market', [
-    ['wm 悟空p', '最低卖单·买单·90天行情'],
-    ['wm 赋能充沛 满级', '可升级物品支持「满级 / N级」'],
-    ['悟空p多少钱', '说人话问价，同款价格卡'],
-  ]],
-  ['遗物 & 裂缝', [
-    ['遗物 前x1', '正查：六奖励·价格·精炼建议'],
-    ['遗物 战刃', '反查：哪些遗物出它'],
-    ['获取 Prime部件', '获取路线：库存优先·当前赏金·常驻掉点'],
-    ['裂缝 [筛选]', '任务先行：全部普通/钢铁＋标签；私聊逐任务配库存'],
-    ['开遗物 [条件] 🔒', '遗物先行：价值 TOP8；加“钢铁”只匹配钢铁裂缝'],
-    ['开遗物 商品名 🔒', '估算过线候选＋可刷遗物；同步 WFInfo 当屏兜底'],
-    ['精炼推荐 🔒', '哪些值得花光体；加「单人」换口径'],
-  ]],
-  ['世界状态', [
-    ['仲裁 / 警报 / 入侵 / 活动', '当前轮换与事件'],
-    ['突击 / 钢铁侵袭', '今日三段任务 / 六节点钢铁精华；简称「侵袭」'],
-    ['赏金 火卫二', '不带地名看六区索引；同义词「悬赏」'],
-    ['虚空商人', '到离时间与货单'],
-    ['奸商推荐 🔒', '货单×库存×余额购物建议'],
-  ]],
-  ['商店', [
-    ['商店 🔒', '九家总览＋已购标'],
-    ['商店 1 / 商店 泰辛', '单家完整货单'],
-    ['本周好货 🔒', '泰辛/圣言者必抢与周货＋瓦奇娅复刻；简称「好货」'],
-    ['购买 裂罅破解器', '全商人反查'],
-    ['轮换日历 🔒', '未来 8 周：回廊·泰辛·瓦奇娅'],
-  ]],
-  ['周常', [
-    ['周常', '本周清单一图流；同义词「周报」'],
-    ['完成 1 3 / 撤销 2', '手动打卡；六类自动核销'],
-    ['跳过 5 / 取消跳过 5', '长期不做的项不再提醒'],
-  ]],
-  ['愿望单 · 市场盯价', [
-    ['愿望 商品 价格', '现有合价单立即出市场卡；之后秒级提醒'],
-    ['愿望单 / 已购 W3K7', '查看汇总；支持改价·暂停·继续·取消'],
-  ]],
-  ['订阅提醒', [
-    ['订阅 裂缝 钢铁 生存', '新事件自动推图'],
-    ['订阅 类型词', '13 类事件；支持商品上架与轮换提醒'],
-    ['订阅 仲裁推荐', '只推 S/A 好场地'],
-    ['订阅 商品 X / 订阅 轮换 X', '上架对账 / 轮到提醒一次'],
-    ['我的订阅', '列表·暂停·恢复·取消'],
-  ]],
-  ['我的账号 🔒', [
-    ['我的账号 / 我的库存 X', '货币家底 / 快照只读查询'],
-    ['杜卡德 / 杜卡德 600', '按持有状态智能保留；成交中位估算损失'],
-    ['我的遗物 前N11 / 账号周常', '遗物·赋能·周常核对'],
-    ['我的紫卡 / 紫卡 3', '词条等级·神卡标·行情估价'],
-  ]],
-];
+// ---- 帮助卡：由单一命令注册表生成（零网络） ----
+const HELP_SECTIONS = buildHelpSections();
 
 export function buildHelpCard() {
   const rows = HELP_SECTIONS.map(([title, cmds]) =>
     `<tr class="section"><td colspan="2">${escapeHtml(title)}</td></tr>`
-    + cmds.map(([cmd, desc]) => `<tr class="help"><td class="help-cmd">${escapeHtml(cmd)}</td><td class="help-desc">${escapeHtml(desc)}</td></tr>`).join('')
+    + cmds.map((item) => {
+      const commandText = item.privacyScope === 'userPrivate' && !item.command.includes('🔒') ? `${item.command} 🔒` : item.command;
+      return `<tr class="help"><td class="help-cmd">${escapeHtml(commandText)}</td><td class="help-desc">${escapeHtml(item.description)}</td></tr>`;
+    }).join('')
   ).join('');
   const rowCount = HELP_SECTIONS.reduce((n, [, cmds]) => n + cmds.length, 0);
   const height = 92 + HELP_SECTIONS.length * 29 + rowCount * 38 + 34 + 6;
-  const content = `<div class="card"><div class="relic-head"><div class="relic-title">Warframe 助手</div><div class="relic-code">功能总览</div><div class="relic-note">发左列命令即可使用<br>说人话提问也能识别</div></div><table><colgroup><col style="width:38%"><col style="width:62%"></colgroup><tbody>${rows}</tbody></table><div class="foot"><span>🔒 = 仅主人私聊 · 多数命令支持简称：好货/周报/侵袭/悬赏/开什么</span><span>发「帮助」随时唤出</span></div></div>`;
+  const content = `<div class="card"><div class="relic-head"><div class="relic-title">Warframe 助手</div><div class="relic-code">功能总览</div><div class="relic-note">发左列命令即可使用<br>说人话提问也能识别</div></div><table><colgroup><col style="width:38%"><col style="width:62%"></colgroup><tbody>${rows}</tbody></table><div class="foot"><span>🔒 = 仅用户私聊 · 多数命令支持简称：好货/周报/侵袭/悬赏/开什么</span><span>发「帮助」随时唤出</span></div></div>`;
   return { html: cardDocument(content, height, 760), width: 760, height, key: 'help-v25' };
 }
 
 export function formatHelp() {
-  return [
-    '【Warframe 助手功能总览】',
-    '查价：wm 悟空p ｜ wm 赋能充沛 满级 ｜ 或直接问「悟空p多少钱」',
-    '遗物：遗物 前x1（正查）｜ 遗物 战刃（反查哪里出）｜ 获取 <Prime部件>（获取路线）',
-    '裂缝：裂缝 [钢铁 生存 速刷 …]（主人私聊自动配库存遗物）｜ 开遗物 [商品名|未入库|已入库] [白金|杜卡德] [钢铁] [速刷|舒适|收益] [单人]（商品名模式同步 WFInfo 游戏内决策）｜ 精炼推荐 [单人]',
-    '世界：仲裁 ｜ 警报 ｜ 入侵 ｜ 活动 ｜ 突击 ｜ 钢铁侵袭 ｜ 赏金 [地点|物品] ｜ 虚空商人/奸商 ｜ 奸商推荐（仅主人私聊）',
-    '商店：商店 [序号|商人名]（仅主人私聊）｜ 本周好货 ｜ 购买 <物品> ｜ 轮换日历（仅主人私聊）',
-    '周常：周常 ｜ 完成 1 3 ｜ 撤销 2 ｜ 清空周常',
-    '愿望单：愿望 商品 价格 ｜ 愿望单 ｜ 改价/暂停/继续/已购/取消 <短编号>（现有合价单立即出市场卡，之后秒级提醒）',
-    '订阅：订阅 裂缝 钢铁 生存 ｜ 订阅 仲裁/警报/入侵/活动/虚空商人/周常/掉落 ｜ 我的订阅 ｜ 暂停/恢复/取消订阅 <编号>',
-    '账号（仅主人私聊）：我的账号 ｜ 我的库存 X ｜ 杜卡德 [600|清仓] [保留N|保留N套]（默认按成品拥有状态智能保留）｜ 我的遗物 前N11 ｜ 我的赋能 充沛 ｜ 账号周常',
-    '说人话也行：「奸商来了吗」「这周还剩啥没做」「战刃哪里出」「悟空Prime系统蓝图哪里刷」',
-  ].join('\n');
+  const lines = ['【Warframe 助手功能总览】'];
+  for (const [, commands] of HELP_SECTIONS) {
+    const grouped = new Map();
+    for (const item of commands) {
+      const current = grouped.get(item.commandId) || { ...item, commands: [] };
+      current.commands.push(item.command);
+      grouped.set(item.commandId, current);
+    }
+    for (const item of grouped.values()) {
+      const privacy = item.privacyScope === 'userPrivate' ? '（仅用户私聊）' : '';
+      lines.push(`${item.title || item.commandId}${privacy}：${item.commands.join(' ｜ ')}（${item.description}）`);
+    }
+  }
+  lines.push('说人话也行：「奸商来了吗」「这周还剩啥没做」「战刃哪里出」「悟空Prime系统蓝图哪里刷」');
+  return lines.join('\n');
 }
 
 async function findBrowser() {
@@ -1807,28 +1762,9 @@ export function parseNaturalWorldQuestion(message) {
 
 export function parseShortcutMessage(message) {
   const text = normalizeUnicode(message);
-  if (/^\/?(?:帮助|help|菜单|功能|功能列表|命令列表|使用说明|说明书|怎么用)$/iu.test(text)) return { command: 'help', query: '' };
-  // 正式短命令只保留「获取」；哪里刷/怎么刷/获取路线等口语表达交给模型路由。
-  const whereFarm = text.match(/^\/?获取(?:\s+|$)(.*)$/u);
-  if (whereFarm) return { command: 'relic-farm', query: (whereFarm[1] || '').trim() };
-  // 正式短命令只保留「购买」；哪里买/在哪换等口语表达交给模型路由。
-  const whereBuy = text.match(/^\/?购买(?:\s+|$)(.*)$/u);
-  if (whereBuy) return { command: 'where-to-buy', query: (whereBuy[1] || '').trim() };
-  // 星球悬赏：无参=总览；带地名=单区详情；其余当物品反查
-  const bounty = text.match(/^\/?(?:悬赏|赏金)(?:\s+|$)(.*)$/u);
-  if (bounty) return { command: 'bounty', query: (bounty[1] || '').trim() };
-  // wm 免空格（「wm死首」）：(?![a-z]) 挡住 wmv/wma 类英文词误撞，中文/数字/空格都放行
-  const market = text.match(/^\/?wm(?![a-z])\s*(.*)$/iu);
-  if (market) return { command: 'market', query: market[1].trim() };
-  if (text.startsWith('遗物')) return { command: 'relic', query: text.slice(2).trim() };
-  // 旧「裂缝推荐」兼容为任务先行的「裂缝」；主人私聊会在同一卡片自动附库存遗物。
-  const fissureRecommend = text.match(/^\/?(?:裂缝推荐|推荐裂缝)(?:\s+|$)(.*)$/u);
-  if (fissureRecommend) return { command: 'fissure', query: (fissureRecommend[1] || '').trim() };
-  const prefixedFissure = text.match(/^\/?(钢铁|普通|全能|安魂)(?:虚空)?裂缝(?:\s+|$)(.*)$/iu);
-  if (prefixedFissure) return { command: 'fissure', query: `${prefixedFissure[1]} ${prefixedFissure[2]}`.trim() };
-  const fissure = text.match(/^\/?(?:虚空)?裂缝(?:\s+|$)(.*)$/iu);
-  if (fissure) return { command: 'fissure', query: fissure[1].trim() };
-  return null;
+  const routed = matchCommandText(text, 'shortcut-parser');
+  if (!routed) return null;
+  return { command: routed.commandId, query: routed.query };
 }
 
 export function buildShortcutNextActions(data, parsed = {}) {
@@ -1926,7 +1862,7 @@ export async function runShortcut(message, options = {}) {
     } catch (error) {
       return { handled: true, ok: false, command: 'bounty', query: parsed.query, text: `赏金数据暂时拉取失败（${String(error?.message || error)}），请稍后重试。` };
     }
-    // 主人私聊（插件/dispatch 经 env 授权）：索引卡右列附六集团声望+今日余量；快照读失败静默降级纯公开版
+    // 用户私聊（插件/dispatch 经 env 授权）：索引卡右列附六集团声望+今日余量；快照读失败静默降级纯公开版
     if (!parsed.query && process.env.WARFRAME_PERSONAL_OK === '1') {
       try {
         const { readSnapshot } = await import('./alecaframe.mjs');

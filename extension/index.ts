@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
-import { directIntelType, isArbitrationShortcut, isPersonalAccountCommand, isShortcut, isSubscriptionCommand, isWeeklyCommand, isWishlistCommand } from './routing.mjs';
+import { commandToolSummary, directIntelType, isArbitrationShortcut, isPersonalAccountCommand, isShortcut, isSubscriptionCommand, isWeeklyCommand, isWishlistCommand } from './routing.mjs';
 import { buildEvidenceEnvelope, STATE_ASSERTION_POLICY } from './evidence.mjs';
 import { classifyNaturalWarframeQuery, DYNAMIC_QUERY_POLICY } from './intent-policy.mjs';
 import { createContextBridge } from './context-bridge.mjs';
@@ -409,7 +409,7 @@ function isExactOwner(api: any, senderId: unknown): boolean {
   // openid 是 hex，大小写不稳定，比较一律归一化小写
   const sender = String(senderId || '').trim().toLowerCase();
   if (!sender) return false;
-  // 主人身份优先读插件配置；allowFrom 可能是 ["*"]（任何人可对话），通配符不能当主人凭证
+  // 用户身份优先读插件配置；allowFrom 可能是 ["*"]（任何人可对话），通配符不能当用户凭证
   const configured = String(api?.config?.plugins?.entries?.['warframe-fast-commands']?.config?.ownerOpenId || '').trim().toLowerCase();
   if (configured) return sender === configured;
   const allowed = api?.config?.channels?.qqbot?.allowFrom;
@@ -499,7 +499,7 @@ async function handleFastCommand(api: any, event: any): Promise<any | undefined>
       const target = qqTarget(event);
       const ownerId = String(event.senderId || '').trim().toLowerCase();
       if (!target || !ownerId) throw new Error('missing QQ target or sender id');
-      // 掉落订阅属于个人数据：只有主人私聊才允许创建，由脚本侧据此拒绝
+      // 掉落订阅属于个人数据：只有用户私聊才允许创建，由脚本侧据此拒绝
       const personalAllowed = !event.isGroup && isExactOwner(api, event.senderId);
       const { stdout } = await execFileAsync(process.execPath, [
         subscriptionScript, 'manage', '--state', subscriptionState,
@@ -530,6 +530,14 @@ async function handleFastCommand(api: any, event: any): Promise<any | undefined>
       };
     }
     if (isWeeklyCommand(event.content)) {
+      if (event.isGroup || !isExactOwner(api, event.senderId)) {
+        api.logger.info(`Warframe weekly command denied: isGroup=${Boolean(event.isGroup)}`);
+        return {
+          text: '周常数据只允许用户本人在 QQ 私聊中查询或修改。',
+          replyToId: event.messageId,
+          isError: true,
+        };
+      }
       const target = qqTarget(event);
       const ownerId = String(event.senderId || '').trim().toLowerCase();
       if (!target || !ownerId) throw new Error('missing QQ target or sender id');
@@ -554,7 +562,7 @@ async function handleFastCommand(api: any, event: any): Promise<any | undefined>
       };
     }
     const intelType = directIntelType(event.content);
-    // 主人私聊发「虚空商人/奸商」→ 购物建议版（到货时货单×库存×余额；未到货脚本内部回退查询卡）；
+    // 用户私聊发「虚空商人/奸商」→ 购物建议版（到货时货单×库存×余额；未到货脚本内部回退查询卡）；
     // 其他来源纯公开查询卡（2026-08-06 用户拍板方案 A）
     const personalOk = !event.isGroup && isExactOwner(api, event.senderId);
     const argv = isArbitrationShortcut(event.content)
@@ -736,12 +744,33 @@ function createWarframeTool(api: any, ctx: any): any {
   const channel = String(ctx?.messageChannel || ctx?.deliveryContext?.channel || '').trim().toLowerCase();
   const personalAllowed = channel === 'qqbot' && !toolIsGroup(ctx)
     && (ctx?.senderIsOwner === true || isExactOwner(api, sender));
+
+  async function executeWishlistTool(query: string, operation: string): Promise<any> {
+    if (channel && channel !== 'qqbot') return jsonToolResult({ ok: false, error: '愿望单只允许从 QQ 会话发起。' });
+    if (!target || !sender) return jsonToolResult({ ok: false, error: '当前会话缺少可信 QQ 身份，不能修改愿望单。' });
+    const result = await runJsonScript(wishlistScript, [
+      'manage', '--state', wishlistState, '--message', query, '--target', target, '--owner', sender,
+      '--owner-name', sender, '--card-dir', cardDir,
+    ], 30_000);
+    try {
+      if (result.cronAction === 'ensure') await ensureWishlistCron(api, target);
+      else if (result.cronAction === 'remove') await removeWishlistCron(api, target);
+    } catch (error) {
+      result.warning = `愿望已保存，但低频校准任务同步失败：${String(error)}`;
+    }
+    await wishlistGatewayRefresh?.();
+    const mediaUrl = String(result?.mediaUrl || '').trim();
+    const mediaDelivered = mediaUrl ? await sendToolMedia(api, ctx, mediaUrl) : false;
+    if (wishlistNeedsImmediateCalibration(result)) result.currentMarket = await inspectCurrentWishlistNow(api, target, result);
+    return jsonToolResult(decorateToolResult(result, mediaDelivered, operation, query));
+  }
+
   return {
     name: 'warframe_assistant',
     label: 'Warframe Assistant',
     description: [
       '处理所有 Warframe/星际战甲事实查询与操作。凡用户在问实时状态、价格、遗物、裂缝、掉落、配方、商人、库存、紫卡、周报/周常或订阅，都应先调用本工具，不要凭模型记忆回答。',
-      'operation=command 时 query 必须是现有规范命令，例如：愿望 商品 价格、愿望单、已购/改价/暂停/继续/取消 短编号，以及 wm 物品、遗物 Axi A22、获取 Prime部件、购买 物品、裂缝、赏金、仲裁、警报、入侵、活动、突击、钢铁侵袭、虚空商人、我的库存 物品、我的遗物 代号、我的紫卡 武器、周报、完成 深层科研、开遗物、精炼推荐、杜卡德推荐、奸商推荐、商店、本周好货、轮换日历。用户说“哪里刷/怎么刷/哪里买/在哪换”时，提取实体后改写为获取/购买规范命令。',
+      `operation=command 时 query 必须是注册表中的规范命令（如：${commandToolSummary()}）。用户说“哪里刷/怎么刷/哪里买/在哪换”时，提取实体后改写为获取/购买规范命令。`,
       'operation=lookup 用于不适合卡片的底层资料，query 格式只能是：worldstate 板块、vendor 商人、dict 词、drops 关键词、recipe 名字、bounties、sp-incursions、item /Lotus/...。问某武器灵化安装材料时直接用 recipe <武器名>灵化之源，不要逐步试探多个查询。',
       'operation=subscription 用于用户明确要求新增、取消、暂停、恢复或列出订阅，query 使用规范订阅命令。个人数据和写操作会由可信会话身份强制鉴权。可为一个复合问题多次调用。',
       'operation=subscription_diagnosis 用于“为什么没提醒、上次提醒后又出现过吗、多久没轮换到、是不是漏推送”等历史/故障问题；query 只传物品或订阅条件。不得用静态 drops 查询替代。',
@@ -755,25 +784,9 @@ function createWarframeTool(api: any, ctx: any): any {
 
       if (operation === 'command') {
         if (isWishlistCommand(query)) {
-          if (channel && channel !== 'qqbot') return jsonToolResult({ ok: false, error: '愿望单只允许从 QQ 会话发起。' });
-          if (!target || !sender) return jsonToolResult({ ok: false, error: '当前会话缺少可信 QQ 身份，不能修改愿望单。' });
-          const result = await runJsonScript(wishlistScript, [
-            'manage', '--state', wishlistState, '--message', query, '--target', target, '--owner', sender,
-            '--owner-name', sender, '--card-dir', cardDir,
-          ], 30_000);
-          try {
-            if (result.cronAction === 'ensure') await ensureWishlistCron(api, target);
-            else if (result.cronAction === 'remove') await removeWishlistCron(api, target);
-          } catch (error) {
-            result.warning = `愿望已保存，但低频校准任务同步失败：${String(error)}`;
-          }
-          await wishlistGatewayRefresh?.();
-          const mediaUrl = String(result?.mediaUrl || '').trim();
-          const mediaDelivered = mediaUrl ? await sendToolMedia(api, ctx, mediaUrl) : false;
-          if (wishlistNeedsImmediateCalibration(result)) result.currentMarket = await inspectCurrentWishlistNow(api, target, result);
-          return jsonToolResult(decorateToolResult(result, mediaDelivered, operation, query));
+          return executeWishlistTool(query, operation);
         }
-        if (/^(?:周常|当前周常|周常清单|周常列表|本周周常|周报|周常帮助|清空周常|完成\s|撤销\s|跳过\s|取消跳过\s)/u.test(query) && !personalAllowed) {
+        if (isWeeklyCommand(query) && !personalAllowed) {
           return jsonToolResult({ ok: false, error: '周报和周常核销只允许用户本人在 QQ 私聊中操作。' });
         }
         const result = await runJsonScript(dispatchScript, [
@@ -803,23 +816,7 @@ function createWarframeTool(api: any, ctx: any): any {
         // 兼容旧模型仍把「愿望 商品 价格」标成 subscription；愿望单
         // 使用自己的 ledger 与单例 gateway，不进入世界状态订阅解析器。
         if (isWishlistCommand(query)) {
-          if (channel && channel !== 'qqbot') return jsonToolResult({ ok: false, error: '愿望单只允许从 QQ 会话发起。' });
-          if (!target || !sender) return jsonToolResult({ ok: false, error: '当前会话缺少可信 QQ 身份，不能修改愿望单。' });
-          const result = await runJsonScript(wishlistScript, [
-            'manage', '--state', wishlistState, '--message', query, '--target', target, '--owner', sender,
-            '--owner-name', sender, '--card-dir', cardDir,
-          ], 30_000);
-          try {
-            if (result.cronAction === 'ensure') await ensureWishlistCron(api, target);
-            else if (result.cronAction === 'remove') await removeWishlistCron(api, target);
-          } catch (error) {
-            result.warning = `愿望已保存，但低频校准任务同步失败：${String(error)}`;
-          }
-          await wishlistGatewayRefresh?.();
-          const mediaUrl = String(result?.mediaUrl || '').trim();
-          const mediaDelivered = mediaUrl ? await sendToolMedia(api, ctx, mediaUrl) : false;
-          if (wishlistNeedsImmediateCalibration(result)) result.currentMarket = await inspectCurrentWishlistNow(api, target, result);
-          return jsonToolResult(decorateToolResult(result, mediaDelivered, operation, query));
+          return executeWishlistTool(query, operation);
         }
         if (channel && channel !== 'qqbot') return jsonToolResult({ ok: false, error: '订阅写操作只允许从 QQ 会话发起。' });
         if (!target || !sender) return jsonToolResult({ ok: false, error: '当前会话缺少可信 QQ 身份，不能修改订阅。' });

@@ -14,7 +14,7 @@
     "properties": {
       "ownerOpenId": {
         "type": "string",
-        "description": "QQ openid of the bot owner; required for personal account commands when channels.qqbot.allowFrom is a wildcard."
+        "description": "QQ openid of the authorized user; required for personal account commands when channels.qqbot.allowFrom is a wildcard."
       }
     }
   }

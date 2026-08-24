@@ -690,7 +690,7 @@ export async function recommendFissures(relics, options = {}) {
   const eligibleRelics = ducatGoal ? appraised.filter((entry) => valueOf(entry) > 0) : appraised;
 
   // 裂缝先行：每条当前裂缝只出现一次，再从兼容库存中挑价值最高的遗物。
-  // 用于主人私聊的「裂缝」库存增强；排序由裂缝查询卡负责，这里不再混入旧任务权重。
+  // 用于用户私聊的「裂缝」库存增强；排序由裂缝查询卡负责，这里不再混入旧任务权重。
   if (perspective === 'fissure') {
     const reliableAll = mode === 'ducat' && !ducatGoal ? appraisedAll : appraisedAll.filter((entry) => entry.priceReliable);
     const eligibleAll = ducatGoal ? reliableAll.filter((entry) => valueOf(entry) > 0) : reliableAll;

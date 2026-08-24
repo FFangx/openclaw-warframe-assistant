@@ -6,7 +6,7 @@
 
 | 位置 | 键 | 说明 |
 |---|---|---|
-| openclaw.json → `plugins.config.warframe-fast-commands` | `ownerOpenId` | 主人的 QQ openid。个人账号命令（我的账号/库存/紫卡/推荐类/商店/掉落订阅）要求「QQ 私聊 + 发送者精确命中此值」双门；不配则所有个人功能拒绝。`channels.qqbot.allowFrom` 是通配符时它是唯一身份凭证 |
+| openclaw.json → `plugins.config.warframe-fast-commands` | `ownerOpenId` | 已授权用户的 QQ openid。个人账号命令（我的账号/库存/紫卡/推荐类/商店/掉落订阅）要求「QQ 私聊 + 发送者精确命中此值」双门；不配则所有个人功能拒绝。`channels.qqbot.allowFrom` 是通配符时它是唯一身份凭证 |
 
 ## 可选环境变量（给 Gateway 进程设）
 

@@ -25,7 +25,7 @@ test('bridge expires after ttl or four model turns and failed results do not ove
   assert.equal(bridge.consumePrompt('k'), '');
 });
 
-test('群聊上下文按发送者隔离，同一发送者也按群隔离，主人私聊与群聊互不可见', () => {
+test('群聊上下文按发送者隔离，同一发送者也按群隔离，用户私聊与群聊互不可见', () => {
   const bridge = createContextBridge();
   const personal = { ...sample, scope: 'personal', entities: [{ type: 'prime-set', displayName: '夜灵 Prime', canonicalName: 'Revenant Prime' }] };
   assert.equal(bridge.remember('qqbot:group:g1|sender:a', sample), true);
@@ -39,11 +39,11 @@ test('群聊上下文按发送者隔离，同一发送者也按群隔离，主�
   // 同一发送者在不同群互不可见
   assert.equal(bridge.peek('qqbot:group:g2|sender:a').length, 1);
   assert.equal(bridge.peek('qqbot:group:g1|sender:a').length, 1);
-  // 主人私聊独立成键：群的 key 与私聊 key 不同，任何方向都不泄漏
+  // 用户私聊独立成键：群的 key 与私聊 key 不同，任何方向都不泄漏
   assert.equal(bridge.peek('qqbot:group:g1|owner').length, 0);
   assert.equal(bridge.peek('qqbot:group:g2|owner').length, 0);
   assert.equal(bridge.peek('qqbot:c2c:owner|owner').length, 1);
-  // 个人域信封保留 scope 标记，插件据此只在主人私聊放行（见 index.ts rememberShortCommandContext）
+  // 个人域信封保留 scope 标记，插件据此只在用户私聊放行（见 index.ts rememberShortCommandContext）
   assert.equal(bridge.peek('qqbot:group:g1|sender:b')[0].scope, 'personal');
   assert.equal(bridge.peek('qqbot:c2c:owner|owner')[0].scope, 'personal');
 });
@@ -130,4 +130,3 @@ test('nextActions 消毒后与卡片渲染端同构：只保留 command+label，
   assert.doesNotMatch(prompt, /"command":"extra"/u);
   assert.doesNotMatch(prompt, /"label":"不应上卡"/u);
 });
-

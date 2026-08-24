@@ -824,7 +824,7 @@ function parseSquad(query) {
 export function parseAlecaMessage(message) {
   const text = normalize(message).replace(/^\//u, '');
   if (/^(?:我的账号|账号状态|我的状态)$/u.test(text)) return { command: 'account', query: '' };
-  // 遗物先行推荐 = 个人数据命令；「裂缝/裂缝推荐」已合并为任务先行的公开卡（主人私聊自动附库存推荐）。
+  // 遗物先行推荐 = 个人数据命令；「裂缝/裂缝推荐」已合并为任务先行的公开卡（用户私聊自动附库存推荐）。
   const recommend = text.match(/^(?:开遗物|遗物推荐|开什么遗物|开什么)(?:\s+(.+))?$/u);
   if (recommend) return { command: 'recommend', query: (recommend[1] || '').trim() };
   // 精炼推荐：库存全扫哪些遗物值得花光体（同属个人数据通道）

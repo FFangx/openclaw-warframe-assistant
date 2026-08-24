@@ -26,7 +26,7 @@
 - 本仓库**不接受任何凭据**：API Key、QQ openid、Market Token、AlecaFrame 解密密钥等一律不得写入代码、配置模板、文档或测试。
   发现测试/文档要求真实凭据即视为漏洞。
 - 游戏与市场集成**只读**：任何「写操作」代码路径（挂单、改单、删单、游戏内自动化）都是违规实现。
-- 个人数据（AlecaFrame 快照、QQ 身份）必须满足「主人私聊 + 精确身份匹配」双门。
+- 个人数据（AlecaFrame 快照、QQ 身份）必须满足「用户本人私聊 + 精确身份匹配」双门。
 - 安装/卸载脚本只处理**受管标记**的文件（`.warframe-assistant-managed.json` / 受控 AGENTS 片段 / 受管 WFInfo marker），
   卸载不得永久删除未标记内容；cron 操作只按精确 `declarationKey` 匹配。
 

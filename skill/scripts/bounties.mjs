@@ -317,7 +317,7 @@ export function resolveBountyBoard(query) {
   return null;
 }
 
-// 六区集团声望挂载（仅主人私聊，索引卡右列用）：快照 Affiliations（总声望+等级）+ DailyAffiliation*（今日余量）
+// 六区集团声望挂载（仅用户私聊，索引卡右列用）：快照 Affiliations（总声望+等级）+ DailyAffiliation*（今日余量）
 // 快照缺字段的区静默跳过；调用方失败整体降级无声望列
 export function attachBountyStanding(data, inventory) {
   if (!inventory) return data;

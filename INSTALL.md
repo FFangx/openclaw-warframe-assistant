@@ -59,7 +59,7 @@ WFInfo 默认安装到 `%LOCALAPPDATA%\OpenClaw\WFInfo`；可用 `-WFInfoInstall
 
 ## 2. 配置（只有 1 个必填）
 
-在 OpenClaw 配置（openclaw.json）给插件填主人 openid：
+在 OpenClaw 配置（openclaw.json）中给插件填写已授权用户的 openid：
 
 ```jsonc
 {
@@ -88,7 +88,7 @@ node scripts/prefetch-icons.mjs   # 预热全量物品小图（~64MB），掉落
 
 装 AlecaFrame：官网安装 → 先启动它再进游戏 → 过一次加载点（进任务/中继站）→ 生成 `%LOCALAPPDATA%\AlecaFrame\lastData.dat`。
 
-配套 WFInfo 推荐用第一节的 `-WithWFInfo` 安装；也可单独运行 `.\install-wfinfo.ps1`。在 WFInfo 设置中把“开奖决策”切到“奸商目标”；主人私聊发送 `开遗物 商品名`（旧写法`开遗物 杜卡德 商品名`同样可用）后，助手会原子写入 `%APPDATA%\WFInfo\ducat_strategy.json`。OpenClaw 先列达到商品保本线的“立即可开＋建议获取”遗物；WFInfo 识别实际四项奖励后，使用同一批今日/90 天成交中位计算并在游戏覆盖层标出选择。策略过期、缺失或任一奖励没有可靠估值时只展示普通信息，不强行推荐。另可用 `node skill/scripts/prime-reward-index.mjs`（部署后为 `scripts/prime-reward-index.mjs`，默认输出 `%APPDATA%\WFInfo\prime_reward_prices.json`、24h 有效期）预热全 Prime 奖励估值索引：策略缺价时 WFInfo 从该索引补缺（策略内价格始终优先），索引过期/损坏/无效时 WFInfo 仍按缺价安全停判，刷新失败不会覆盖上一份索引。
+配套 WFInfo 推荐用第一节的 `-WithWFInfo` 安装；也可单独运行 `.\install-wfinfo.ps1`。在 WFInfo 设置中把“开奖决策”切到“奸商目标”；用户本人私聊发送 `开遗物 商品名`（旧写法`开遗物 杜卡德 商品名`同样可用）后，助手会原子写入 `%APPDATA%\WFInfo\ducat_strategy.json`。OpenClaw 先列达到商品保本线的“立即可开＋建议获取”遗物；WFInfo 识别实际四项奖励后，使用同一批今日/90 天成交中位计算并在游戏覆盖层标出选择。策略过期、缺失或任一奖励没有可靠估值时只展示普通信息，不强行推荐。另可用 `node skill/scripts/prime-reward-index.mjs`（部署后为 `scripts/prime-reward-index.mjs`，默认输出 `%APPDATA%\WFInfo\prime_reward_prices.json`、24h 有效期）预热全 Prime 奖励估值索引：策略缺价时 WFInfo 从该索引补缺（策略内价格始终优先），索引过期/损坏/无效时 WFInfo 仍按缺价安全停判，刷新失败不会覆盖上一份索引。
 
 ## 4. 自检
 
@@ -116,7 +116,7 @@ Gateway 日志确认插件数量包含本插件（搜 `plugins:`）。然后 QQ 
 
 1. 发 `帮助` → 应秒回功能总览卡（不经模型，验证插件拦截）
 2. 发 `裂缝` → 应回当前裂缝卡（验证世界状态链路）
-3. 主人私聊发 `开遗物` → 应回遗物价值 TOP8；`裂缝`卡应逐任务附库存遗物（验证两套推荐逻辑）
+3. 用户本人私聊发 `开遗物` → 应回遗物价值 TOP8；`裂缝`卡应逐任务附库存遗物（验证两套推荐逻辑）
 4. 发 `wm 悟空p` → 应回价格卡（验证 market 链路）
 5. 发 `我的账号` → 装了 AlecaFrame 且 ownerOpenId 配对时回账号卡；否则拒绝（验证个人门）
 6. 发一句自然语言「悟空p多少钱」→ 应先出卡再补一句点评（验证两段式）

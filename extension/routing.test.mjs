@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { isShortcut, isSubscriptionCommand } from './routing.mjs';
+import { COMMAND_REGISTRY, isPersonalAccountCommand, isShortcut, isSubscriptionCommand, isWeeklyCommand } from './routing.mjs';
 
 async function readInstalledOrSourceSkill() {
   const candidates = [
@@ -45,8 +45,10 @@ test('愿望创建后的当前行情检查覆盖裸命令与两条模型工具�
   assert.match(entry, /runShortcut\(wishlistMarketCommand\(wish\)/u);
   assert.match(entry, /Number\(order\?\.platinum\) \/ perTrade <= Number\(wish\.maxPrice\)/u);
   assert.match(entry, /当前已有[^`]+最新市场行情/u);
-  assert.equal((entry.match(/currentMarket\s*=\s*await inspectCurrentWishlistNow/gu) || []).length, 3,
-    'before_dispatch、operation=command、兼容 operation=subscription 都必须立即查当前行情');
+  assert.equal((entry.match(/currentMarket\s*=\s*await inspectCurrentWishlistNow/gu) || []).length, 2,
+    '裸命令与共享模型工具执行器都必须立即查当前行情');
+  assert.equal((entry.match(/return executeWishlistTool\(query, operation\)/gu) || []).length, 2,
+    'operation=command 与兼容 operation=subscription 必须共用同一愿望执行器');
 });
 
 test('strict documented commands stay on the deterministic fast path', () => {
@@ -104,12 +106,31 @@ test('SKILL.md 与插件工具说明把口语获取问法规范到正式短命�
   assert.match(entry, /改写为获取\/购买规范命令/u);
 });
 
-test('plugin context bridge keys isolate group senders and owner private chat', async () => {
+test('扩展路由从唯一注册表加载，且用户可见权限口径统一', async () => {
+  const entry = await readFile(new URL('./index.ts', import.meta.url), 'utf8');
+  assert.ok(COMMAND_REGISTRY.some((item) => item.commandId === 'weekly'));
+  assert.equal(isShortcut('周报'), true);
+  assert.equal(isWeeklyCommand('完成 1 3'), true);
+  assert.equal(isPersonalAccountCommand('我的库存 延几草'), true);
+  assert.equal(isPersonalAccountCommand('我有这些遗物吗'), false);
+  assert.match(entry, /if \(isWeeklyCommand\(event\.content\)\)/u);
+  assert.match(entry, /周常数据只允许用户本人/u);
+  assert.match(entry, /if \(isWeeklyCommand\(query\) && !personalAllowed\)/u);
+  assert.doesNotMatch(entry, /周常\|当前周常\|周常清单/u);
+});
+
+test('工具命令说明由注册表生成，不再手工复制命令清单', async () => {
+  const entry = await readFile(new URL('./index.ts', import.meta.url), 'utf8');
+  assert.match(entry, /commandToolSummary\(\)/u);
+  assert.doesNotMatch(entry, /愿望 商品 价格、愿望单、已购\/改价\/暂停\/继续\/取消 短编号，以及 wm 物品/u);
+});
+
+test('plugin context bridge keys isolate group senders and authorized private chat', async () => {
   const entry = await readFile(new URL('./index.ts', import.meta.url), 'utf8');
   // contextBridgeKey 把会话与发送者都编进 key：群聊按发送者隔离，私聊与群聊互不可见
   assert.match(entry, /\$\{session\}\|\$\{sender \|\| session\}/u);
   // 群聊缺少发送者时不落上下文；私聊与群聊会话不同 → key 不同 → 天然隔离
   assert.match(entry, /if \(!session \|\| \(group && !sender\)\) return null;/u);
-  // 个人域信封只在确认主人私聊时入桥（群聊即使同发送者也不入桥）
+  // 个人域信封只在确认用户私聊时入桥（群聊即使同发送者也不入桥）
   assert.match(entry, /envelope\.scope === 'personal' && !personalAllowed/u);
 });
