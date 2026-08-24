@@ -80,6 +80,8 @@ if (Test-Path -LiteralPath $verifyPath -PathType Leaf) { $verifyText = [IO.File]
 Assert-Contains 'verify.ps1 runs the contract test' $verifyText 'tests\reward-zh-cron-contract.test.ps1'
 Assert-Contains 'verify.ps1 has the runtime cron check' $verifyText 'runtime reward-zh AI cron contract'
 Assert-Contains 'verify.ps1 lifecycle test skips cron' $verifyText '-SkipCron'
+Assert-Contains 'verify.ps1 tolerates benign OpenClaw stderr warnings on PowerShell 5.1' $verifyText "`$ErrorActionPreference = 'SilentlyContinue'"
+Assert-Contains 'verify.ps1 still validates the cron CLI exit code' $verifyText 'openclaw cron list failed with exit code'
 
 # --- runtime tests must never write to the real inbox (2026-08-21 pollution regression) ---
 $auditTest = Join-Path $repoRoot 'skill\scripts\subscriptions-audit.test.mjs'

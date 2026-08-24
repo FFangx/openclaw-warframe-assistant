@@ -182,8 +182,17 @@ if (-not $SourceOnly) {
       Write-Host 'dispatch catalog, main help-card, and module help-card rendering are healthy'
     }
     Invoke-Checked 'runtime reward-zh AI cron contract' {
-      $jobsRaw = & openclaw.cmd cron list --json 2>&1
-      if ($LASTEXITCODE -ne 0) { throw 'openclaw cron list failed' }
+      # OpenClaw may emit benign config warnings on stderr. In Windows PowerShell 5.1,
+      # EAP=Stop turns that stderr into NativeCommandError even when the CLI succeeds.
+      $previousEap = $ErrorActionPreference
+      $ErrorActionPreference = 'SilentlyContinue'
+      try {
+        $jobsRaw = & openclaw.cmd cron list --json 2>$null
+        $cronExitCode = $LASTEXITCODE
+      } finally {
+        $ErrorActionPreference = $previousEap
+      }
+      if ($cronExitCode -ne 0) { throw "openclaw cron list failed with exit code $cronExitCode" }
       $text = ($jobsRaw -join "`n")
       $start = $text.IndexOfAny([char[]]('[', '{'))
       if ($start -lt 0) { throw 'openclaw cron list produced no JSON' }
