@@ -27,7 +27,7 @@ jobs:
         ps: ['7', '5.1']
     steps:
       - name: Checkout
-        # v4 — 固定完整 commit SHA（供应链安全），原 tag 见注释
+        # v7 — 固定完整 commit SHA（供应链安全），精确版本见行尾注释
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -35,7 +35,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Node
-        # v4 — 固定完整 commit SHA（供应链安全），原 tag 见注释
+        # v7 — 固定完整 commit SHA（供应链安全），精确版本见行尾注释
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node-version }}
