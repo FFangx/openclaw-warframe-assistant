@@ -1377,6 +1377,10 @@ const HELP_SECTIONS = [
     ['完成 1 3 / 撤销 2', '手动打卡；六类自动核销'],
     ['跳过 5 / 取消跳过 5', '长期不做的项不再提醒'],
   ]],
+  ['愿望单 · 市场盯价', [
+    ['愿望 商品 价格', '现有合价单立即出市场卡；之后秒级提醒'],
+    ['愿望单 / 已购 W3K7', '查看汇总；支持改价·暂停·继续·取消'],
+  ]],
   ['订阅提醒', [
     ['订阅 裂缝 钢铁 生存', '新事件自动推图'],
     ['订阅 类型词', '13 类事件；支持商品上架与轮换提醒'],
@@ -1392,7 +1396,7 @@ const HELP_SECTIONS = [
   ]],
 ];
 
-function buildHelpCard() {
+export function buildHelpCard() {
   const rows = HELP_SECTIONS.map(([title, cmds]) =>
     `<tr class="section"><td colspan="2">${escapeHtml(title)}</td></tr>`
     + cmds.map(([cmd, desc]) => `<tr class="help"><td class="help-cmd">${escapeHtml(cmd)}</td><td class="help-desc">${escapeHtml(desc)}</td></tr>`).join('')
@@ -1400,10 +1404,10 @@ function buildHelpCard() {
   const rowCount = HELP_SECTIONS.reduce((n, [, cmds]) => n + cmds.length, 0);
   const height = 92 + HELP_SECTIONS.length * 29 + rowCount * 38 + 34 + 6;
   const content = `<div class="card"><div class="relic-head"><div class="relic-title">Warframe 助手</div><div class="relic-code">功能总览</div><div class="relic-note">发左列命令即可使用<br>说人话提问也能识别</div></div><table><colgroup><col style="width:38%"><col style="width:62%"></colgroup><tbody>${rows}</tbody></table><div class="foot"><span>🔒 = 仅主人私聊 · 多数命令支持简称：好货/周报/侵袭/悬赏/开什么</span><span>发「帮助」随时唤出</span></div></div>`;
-  return { html: cardDocument(content, height, 760), width: 760, height, key: 'help-v24' };
+  return { html: cardDocument(content, height, 760), width: 760, height, key: 'help-v25' };
 }
 
-function formatHelp() {
+export function formatHelp() {
   return [
     '【Warframe 助手功能总览】',
     '查价：wm 悟空p ｜ wm 赋能充沛 满级 ｜ 或直接问「悟空p多少钱」',
@@ -1412,6 +1416,7 @@ function formatHelp() {
     '世界：仲裁 ｜ 警报 ｜ 入侵 ｜ 活动 ｜ 突击 ｜ 钢铁侵袭 ｜ 赏金 [地点|物品] ｜ 虚空商人/奸商 ｜ 奸商推荐（仅主人私聊）',
     '商店：商店 [序号|商人名]（仅主人私聊）｜ 本周好货 ｜ 购买 <物品> ｜ 轮换日历（仅主人私聊）',
     '周常：周常 ｜ 完成 1 3 ｜ 撤销 2 ｜ 清空周常',
+    '愿望单：愿望 商品 价格 ｜ 愿望单 ｜ 改价/暂停/继续/已购/取消 <短编号>（现有合价单立即出市场卡，之后秒级提醒）',
     '订阅：订阅 裂缝 钢铁 生存 ｜ 订阅 仲裁/警报/入侵/活动/虚空商人/周常/掉落 ｜ 我的订阅 ｜ 暂停/恢复/取消订阅 <编号>',
     '账号（仅主人私聊）：我的账号 ｜ 我的库存 X ｜ 杜卡德 [600|清仓] [保留N|保留N套]（默认按成品拥有状态智能保留）｜ 我的遗物 前N11 ｜ 我的赋能 充沛 ｜ 账号周常',
     '说人话也行：「奸商来了吗」「这周还剩啥没做」「战刃哪里出」「悟空Prime系统蓝图哪里刷」',
