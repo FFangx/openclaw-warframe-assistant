@@ -11,8 +11,9 @@ import path from 'node:path';
 const rewardCacheDir = await mkdtemp(path.join(os.tmpdir(), 'wf-sub-audit-reward-cache-'));
 process.env.WARFRAME_DATA_CACHE_DIR = rewardCacheDir;
 
-import { appendFreshMatches, currentNotificationMatches, diagnoseSubscriptions, manageCommand, matchedBountyTarget, notificationSource, translateRewardName } from './subscriptions.mjs';
+import { appendFreshMatches, currentNotificationMatches, deliverMonitorResult, diagnoseSubscriptions, manageCommand, matchedBountyTarget, monitorDeliveryParts, notificationSource, translateRewardName } from './subscriptions.mjs';
 import { buildIntelCard } from './warframe-cards.mjs';
+import { parseQQMediaTarget, resolveQQCredentials, sendQQLosslessLocalImage } from './qq-lossless-image.mjs';
 import { clearPendingRewards, flushRewardQueues, readPendingRewards } from './reward-zh-fallback.mjs';
 
 test.after(async () => {
@@ -146,6 +147,61 @@ test('订阅卡来源只依据本次实际展示的情报', () => {
   const card = buildIntelCard({ title: '订阅命中', items: [invasion], source: notificationSource([invasion]), fetchedAt: '2026-08-16T00:00:00.000Z' });
   assert.match(card.html, /来源：世界状态/u);
   assert.doesNotMatch(card.html, /仲裁排期/u);
+});
+
+test('订阅直投完整保留两张本地原图并按顺序调用 QQ outbound', async () => {
+  const result = {
+    output: 'MEDIA:C:\\cards\\weekly.png\nMEDIA:C:\\cards\\deals.png\n',
+    data: { losslessMediaUrls: ['C:\\cards\\weekly.png'] },
+  };
+  assert.deepEqual(monitorDeliveryParts(result), {
+    mediaUrls: ['C:\\cards\\weekly.png', 'C:\\cards\\deals.png'],
+    text: '',
+  });
+  const calls = [];
+  const sent = await deliverMonitorResult(
+    result,
+    'qqbot:c2c:test',
+    async (target, args) => calls.push({ kind: 'normal', target, args }),
+    async (target, mediaUrl) => calls.push({ kind: 'lossless', target, mediaUrl }),
+  );
+  assert.equal(sent, 2);
+  assert.deepEqual(calls, [
+    { kind: 'lossless', target: 'qqbot:c2c:test', mediaUrl: 'C:\\cards\\weekly.png' },
+    { kind: 'normal', target: 'qqbot:c2c:test', args: ['--media', 'C:\\cards\\deals.png'] },
+  ]);
+});
+
+test('QQ 周常无损直投使用 /files srv_send_msg 一步链路且不再发 msg_type=7', async () => {
+  assert.deepEqual(parseQQMediaTarget('qqbot:c2c:user-id'), { scope: 'c2c', id: 'user-id' });
+  assert.deepEqual(resolveQQCredentials({ channels: { qqbot: { appId: 'app', clientSecret: 'secret' } } }), { appId: 'app', clientSecret: 'secret' });
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'wf-qq-lossless-'));
+  const image = path.join(dir, 'weekly.png');
+  await writeFile(image, Buffer.from('png-bytes'));
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    const body = JSON.parse(options.body);
+    return new Response(JSON.stringify(url.includes('getAppAccessToken')
+      ? { access_token: 'token', expires_in: 7200 }
+      : { file_info: 'sent' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    await sendQQLosslessLocalImage('qqbot:c2c:user-id', image, {
+      config: { channels: { qqbot: { appId: 'app', clientSecret: 'secret' } } },
+      fetchImpl,
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].url, /\/v2\/users\/user-id\/files$/u);
+  assert.deepEqual(JSON.parse(calls[1].options.body), {
+    file_type: 1,
+    file_data: Buffer.from('png-bytes').toString('base64'),
+    srv_send_msg: true,
+  });
+  assert.equal(calls.some((call) => /\/messages$/u.test(call.url)), false);
 });
 
 test('仲裁阵营双源一致：warframestat 的 Infested 与排期缓存的 Infestation 都显示 Infestation', async () => {

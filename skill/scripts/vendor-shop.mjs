@@ -105,6 +105,11 @@ export function vendorPurchases(inventory, typeName) {
   const vendor = (inventory?.RecentVendorPurchases || []).find((entry) => String(entry.VendorType) === typeName);
   return (vendor?.PurchaseHistory || []).map((entry) => ({
     expiryMs: msOf(entry.Expiry),
+    // Mongo ObjectId 的前 4 字节是记录创建时间。服务端会把上周购买记录的
+    // Expiry 推进到新周期，因此 expiry 相等仍不足以证明「本周购买」。
+    createdMs: /^[0-9a-f]{24}$/iu.test(String(entry.ItemId || ''))
+      ? Number.parseInt(String(entry.ItemId).slice(0, 8), 16) * 1000
+      : Number.NaN,
     num: Number(entry.NumPurchased) || 1,
     itemId: String(entry.ItemId || ''),
   })).filter((entry) => entry.itemId);
@@ -291,15 +296,27 @@ export function teshinWeekInfo(now = Date.now()) {
   return { week, tail: TESHIN_ROTATION[((week % 8) + 8) % 8], weekEndMs: TESHIN_EPOCH_MS + (week + 1) * 604_800_000 };
 }
 
+// RecentVendorPurchases 会提前写入未来几期的限购记录。周计数必须与本周
+// 结束时刻精确对齐，不能只用「尚未过期」，否则未来周会被误报为本周已购。
+export function purchasesForCycle(purchases, cycleExpiryMs, cycleStartMs = Number.NEGATIVE_INFINITY) {
+  return purchases.filter((purchase) => Number.isFinite(purchase.expiryMs)
+    && purchase.expiryMs === cycleExpiryMs
+    && Number.isFinite(purchase.createdMs)
+    && purchase.createdMs >= cycleStartMs
+    && purchase.createdMs < cycleExpiryMs);
+}
+
 // ==== 装配：单商人详情 ====
 
 // 返回一份「渲染无关」的数据对象，卡片层照着画；inventory 传 null = 无已购标（降级）
-export async function buildVendorDetail(vendorKey, { vendors, meta, names, inventory, now = Date.now() } = {}) {
+export async function buildVendorDetail(vendorKey, { vendors, meta, names, inventory, now = Date.now(), purchaseNotBeforeMs = Number.NEGATIVE_INFINITY } = {}) {
   const manifest = vendors[vendorKey];
   if (!manifest) return null;
   const kind = classifyVendor(manifest);
   const vendorMeta = meta[vendorKey] || {};
-  const purchases = inventory ? vendorPurchases(inventory, vendorKey) : [];
+  const purchases = inventory
+    ? vendorPurchases(inventory, vendorKey).filter((purchase) => purchase.createdMs >= purchaseNotBeforeMs && purchase.createdMs <= now)
+    : [];
 
   const detail = {
     key: vendorKey,
@@ -342,7 +359,7 @@ export async function buildVendorDetail(vendorKey, { vendors, meta, names, inven
     detail.kind = 'cyclic';
     detail.cycleMs = 604_800_000;
     detail.nextRotationAt = weekEndMs;
-    detail.boughtTotal = purchases.filter((purchase) => purchase.expiryMs > now).reduce((sum, purchase) => sum + purchase.num, 0);
+    detail.boughtTotal = purchasesForCycle(purchases, weekEndMs, weekEndMs - 604_800_000).reduce((sum, purchase) => sum + purchase.num, 0);
     detail.scheduleSource = '周精选排期来自社区 8 周表';
     return detail;
   }
@@ -494,8 +511,10 @@ function dealTierOf(vendorKey, row) {
 // 返回渲染无关的数据对象；inventory=null 时已购标降级消失（诚实降级，与详情卡同约定）
 export async function buildWeeklyDeals({ vendors, meta, names, inventory, worldState, now = Date.now() } = {}) {
   const sections = [];
+  const { weekEndMs } = teshinWeekInfo(now);
+  const weekStartMs = weekEndMs - 604_800_000;
   for (const key of [TESHIN_KEY, DONDA_KEY]) {
-    const detail = await buildVendorDetail(key, { vendors, meta, names, inventory, now });
+    const detail = await buildVendorDetail(key, { vendors, meta, names, inventory, now, purchaseNotBeforeMs: weekStartMs });
     if (!detail) continue;
     const rows = [];
     for (const row of [...detail.rotating, ...detail.evergreen]) {
@@ -516,8 +535,9 @@ export async function buildWeeklyDeals({ vendors, meta, names, inventory, worldS
       key,
       vendorZh: detail.zhName,
       rows,
-      // 泰辛 oid 不对齐只有计数；圣言者行内 mark 已精确，计数用于「本周已购 N 件」小字
-      boughtTotal: detail.boughtTotal + detail.evergreenBought,
+      // 「本周已购」只统计与本期轮换 expiry 精确对齐的记录。evergreenBought
+      // 包含无法归入本期的旧账/常驻长周期记录，不能并入周计数。
+      boughtTotal: detail.boughtTotal,
       nextRotationAt: detail.nextRotationAt,
     });
   }

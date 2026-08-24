@@ -103,6 +103,7 @@ async function subscriptionDeliveryAudit(api: any, target: string): Promise<any>
     });
     const latest = entries[0] || null;
     const lastNotification = notifications[0] || null;
+    const directDelivered = /^DIRECT_DELIVERED:/u.test(String(lastNotification?.diagnostics?.summary || '').trim());
     return {
       available: true,
       monitorEnabled: job.enabled !== false,
@@ -111,8 +112,8 @@ async function subscriptionDeliveryAudit(api: any, target: string): Promise<any>
       lastRunAt: latest?.tsIso || (latest?.runAtMs ? new Date(latest.runAtMs).toISOString() : null),
       notificationRunsInWindow: notifications.length,
       lastNotificationRunAt: lastNotification?.tsIso || (lastNotification?.runAtMs ? new Date(lastNotification.runAtMs).toISOString() : null),
-      lastNotificationDelivered: lastNotification ? Boolean(lastNotification.delivered) : null,
-      lastNotificationDeliveryStatus: lastNotification?.deliveryStatus || null,
+      lastNotificationDelivered: lastNotification ? (directDelivered || Boolean(lastNotification.delivered)) : null,
+      lastNotificationDeliveryStatus: directDelivered ? 'direct' : (lastNotification?.deliveryStatus || null),
       historyLimit: entries.length,
     };
   } catch (error) {
@@ -123,8 +124,20 @@ async function subscriptionDeliveryAudit(api: any, target: string): Promise<any>
 
 async function ensureSubscriptionCron(api: any, target: string): Promise<void> {
   const existing = await findSubscriptionCrons(api, target);
+  const commandArgv = ['node', subscriptionScript, 'deliver', '--state', subscriptionState, '--target', target, '--card-dir', subscriptionCardDir];
   if (existing.length) {
     for (const job of existing) {
+      const currentArgv = Array.isArray(job?.payload?.argv) ? job.payload.argv : [];
+      if (JSON.stringify(currentArgv) !== JSON.stringify(commandArgv)
+        || job?.delivery?.mode === 'announce'
+        || Number(job?.payload?.timeoutSeconds) !== 120) {
+        await runOpenclawCron([
+          'edit', String(job.id),
+          '--command-argv', JSON.stringify(commandArgv),
+          '--timeout-seconds', '120',
+          '--no-deliver', '--clear-channel', '--clear-to', '--no-best-effort-deliver',
+        ]);
+      }
       if (job.enabled === false) await runOpenclawCron(['enable', String(job.id)]);
     }
     return;
@@ -136,11 +149,10 @@ async function ensureSubscriptionCron(api: any, target: string): Promise<void> {
     '--declaration-key', subscriptionDeclarationKey(target),
     '--every', '1m',
     '--session', 'isolated',
-    '--command-argv', JSON.stringify(['node', subscriptionScript, 'monitor', '--state', subscriptionState, '--target', target, '--card-dir', subscriptionCardDir]),
+    '--command-argv', JSON.stringify(commandArgv),
     '--output-max-bytes', '16384',
-    '--timeout-seconds', '45',
-    '--announce', '--channel', 'qqbot', '--to', target,
-    '--best-effort-deliver', '--json',
+    '--timeout-seconds', '120',
+    '--no-deliver', '--json',
   ]);
 }
 

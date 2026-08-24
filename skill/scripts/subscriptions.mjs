@@ -5,9 +5,11 @@
 // public PC world-state endpoint and prints NO_REPLY or one MEDIA directive.
 
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 import {
   buildArbitrationQueryCard,
   buildIncursionCard,
@@ -15,6 +17,7 @@ import {
   buildSortieCard,
   renderWarframeCard,
 } from './warframe-cards.mjs';
+import { sendQQLosslessLocalImage } from './qq-lossless-image.mjs';
 import { nextReset as weeklyNextReset, renderWeeklyDetailCardFor, weekStart as weeklyWeekStart } from './weekly.mjs';
 import { getArbyTiers, getBountyZhMaps, getOracleEventMap, stripDataUriReplacer } from './wfdata.mjs';
 import { applyRewardAliases, learnReward, mergeLearnedRewards, queuePendingReward } from './reward-zh-fallback.mjs';
@@ -38,6 +41,46 @@ const TRADER_TRANSITION_GRACE_MS = 5 * 60 * 1000;
 const TRADER_SCHEDULE_POLICY_VERSION = 2;
 const AUDIT_LIMIT = 1200;
 const AUDIT_PER_SUBSCRIPTION_LIMIT = 120;
+const execFileAsync = promisify(execFile);
+const openclawCli = process.env.OPENCLAW_CLI_PATH
+  || path.join(process.env.APPDATA || '', 'npm', 'node_modules', 'openclaw', 'openclaw.mjs');
+
+export function monitorDeliveryParts(result) {
+  const output = String(result?.output || '');
+  const mediaUrls = [...output.matchAll(/\bMEDIA:\s*`?([^\n`]+)`?/giu)]
+    .map((match) => match[1].trim())
+    .filter(Boolean);
+  const text = output
+    .replace(/\bMEDIA:\s*`?([^\n`]+)`?/giu, '')
+    .replace(/^\s*NO_REPLY\s*$/giu, '')
+    .trim();
+  return { mediaUrls: [...new Set(mediaUrls)], text };
+}
+
+async function sendQQDirect(target, args) {
+  await execFileAsync(process.execPath, [openclawCli, 'message', 'send', '--channel', 'qqbot', '--target', target, ...args, '--json'], {
+    timeout: 45_000,
+    windowsHide: true,
+    maxBuffer: 4 * 1024 * 1024,
+    encoding: 'utf8',
+  });
+}
+
+export async function deliverMonitorResult(result, target, send = sendQQDirect, sendLossless = sendQQLosslessLocalImage) {
+  const { mediaUrls, text } = monitorDeliveryParts(result);
+  const lossless = new Set((result?.data?.losslessMediaUrls || []).map((value) => String(value).trim()));
+  let sent = 0;
+  for (const mediaUrl of mediaUrls) {
+    if (lossless.has(mediaUrl)) await sendLossless(target, mediaUrl);
+    else await send(target, ['--media', mediaUrl]);
+    sent += 1;
+  }
+  if (text) {
+    await send(target, ['--message', text]);
+    sent += 1;
+  }
+  return sent;
+}
 
 const REWARD_ZH = Object.freeze({
   'Fieldron': '电磁力场装置',
@@ -1496,7 +1539,7 @@ function closingLabel(item) {
   return null;
 }
 
-async function monitorTarget(target, statePath, cardDir, dryRun = false) {
+async function monitorTarget(target, statePath, cardDir, dryRun = false, directDeliver = null) {
   return withLedgerLock(statePath, async () => {
     const ledger = await readLedger(statePath);
     // drops 由 drops.mjs 的本地监测器处理，这里只管联网类事件
@@ -1646,12 +1689,21 @@ async function monitorTarget(target, statePath, cardDir, dryRun = false) {
             }
           } catch { dealsMediaUrl = null; }
         }
+        // 多行 MEDIA：运行时 MEDIA_TOKEN_RE 带 g 标志逐条捕获，两张图独立投递（源码实证）
+        const weeklyMediaUrls = mediaUrl ? [mediaUrl] : [];
+        const weeklyResult = mediaUrl
+          ? { output: `MEDIA:${mediaUrl}\n${dealsMediaUrl ? `MEDIA:${dealsMediaUrl}\n` : ''}`, data: { ok: true, weekly: weeklyId, mediaUrl, weeklyMediaUrls, losslessMediaUrls: [mediaUrl], dealsMediaUrl } }
+          : { output: '📅 本周周常已刷新，发送“周常”查看详细清单。\n', data: { ok: true, weekly: weeklyId } };
+        // 周报保持与手动“周常”相同的单张原始 PNG；定时主动消息走 /files
+        // srv_send_msg 一步链路，避免 file_info + msg_type=7 把超长图压成约 2048px。
+        // 发送成功后才核销，避免上传失败却永久吞掉本周提醒。
+        if (directDeliver) await directDeliver(weeklyResult);
         for (const item of pendingWeekly) item.seen = [...new Set([...(item.seen || []), weeklyId])].slice(-600);
         updateSchedule(ledger, target, state, activeTypes);
         await writeLedger(statePath, ledger);
-        // 多行 MEDIA：运行时 MEDIA_TOKEN_RE 带 g 标志逐条捕获，两张图独立投递（源码实证）
-        if (mediaUrl) return { output: `MEDIA:${mediaUrl}\n${dealsMediaUrl ? `MEDIA:${dealsMediaUrl}\n` : ''}`, data: { ok: true, weekly: weeklyId, mediaUrl, dealsMediaUrl } };
-        return { output: '📅 本周周常已刷新，发送“周常”查看详细清单。\n', data: { ok: true, weekly: weeklyId } };
+        return directDeliver
+          ? { output: 'NO_REPLY\n', data: { ...weeklyResult.data, directDelivered: true } }
+          : weeklyResult;
       }
       return { output: 'NO_REPLY\n', data: { ok: true, reason: 'no_fresh' } };
     }
@@ -1736,6 +1788,15 @@ async function main() {
     process.stdout.write(result.output);
     return;
   }
+  if (command === 'deliver') {
+    const target = normalizeId(args.target);
+    let sent = 0;
+    const deliver = async (result) => { sent += await deliverMonitorResult(result, target); };
+    const result = await monitorTarget(target, statePath, args['card-dir'] ? path.resolve(String(args['card-dir'])) : null, false, deliver);
+    if (result.output.trim() !== 'NO_REPLY') await deliver(result);
+    process.stdout.write(sent > 0 ? `DIRECT_DELIVERED:${sent}\n` : 'NO_REPLY\n');
+    return;
+  }
   if (command === 'diagnose') {
     outputJson(await diagnoseSubscriptions(statePath, {
       target: normalizeId(args.target), ownerId: normalizeId(args.owner),
@@ -1754,7 +1815,7 @@ async function main() {
     outputJson(await seedDefaults({ target: normalize(args.target), ownerId: normalize(args.owner), ownerName: normalize(args['owner-name']) || normalize(args.owner) }, statePath));
     return;
   }
-  outputJson({ ok: false, error: '用法：manage、monitor、diagnose、query-arbitration、query-intel 或 seed；请按技能说明提供参数' });
+  outputJson({ ok: false, error: '用法：manage、monitor、deliver、diagnose、query-arbitration、query-intel 或 seed；请按技能说明提供参数' });
   process.exitCode = 1;
 }
 
@@ -1763,7 +1824,7 @@ export { manageCommand, monitorTarget, diagnoseSubscriptions, parseSubscriptionS
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
     // monitor 的 stdout 会被 cron 直接投递到 QQ，异常绝不能漏裸 JSON
-    if (process.argv[2] === 'monitor') process.stdout.write('NO_REPLY\n');
+    if (process.argv[2] === 'monitor' || process.argv[2] === 'deliver') process.stdout.write('NO_REPLY\n');
     else outputJson({ ok: false, error: String(error?.message || error) });
     process.exitCode = 1;
   });

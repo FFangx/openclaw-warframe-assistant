@@ -28,6 +28,15 @@ test('plugin entry imports every routing helper it calls', async () => {
   assert.deepEqual(missing, []);
 });
 
+test('订阅 cron 使用脚本直投 QQ 原图并关闭 runner announce 压缩链路', async () => {
+  const entry = await readFile(new URL('./index.ts', import.meta.url), 'utf8');
+  assert.match(entry, /subscriptionScript, 'deliver'/u);
+  assert.match(entry, /'--no-deliver'/u);
+  const subscriptionBlock = entry.slice(entry.indexOf('async function ensureSubscriptionCron'), entry.indexOf('async function removeSubscriptionCron'));
+  assert.doesNotMatch(subscriptionBlock, /'--announce'/u);
+  assert.match(subscriptionBlock, /'--timeout-seconds', '120'/u);
+});
+
 test('strict documented commands stay on the deterministic fast path', () => {
   for (const input of [
     'wm 高压电流', '遗物 Axi A22', '获取 Caliban p', '普通裂缝', '赏金 尖刃弹头', '购买 诡文枭主',

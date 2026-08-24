@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { itemZh } from './vendor-shop.mjs';
+import { itemZh, purchasesForCycle } from './vendor-shop.mjs';
 import { storeItemZh } from './weekly.mjs';
 
 test('商店配方路径通过目录父子关系恢复中文名称', () => {
@@ -39,4 +39,24 @@ test('路径不共尾名的已核对商店商品使用官方名称覆盖', () =>
   assert.equal(itemZh('/Lotus/Types/StoreItems/Packages/MegaPrimeVault/MPVAviaPrimeArmorSet', names), '飞空 Prime 护甲套装');
   assert.equal(itemZh('/Lotus/Types/StoreItems/Packages/MegaPrimeVault/MPVVetalaPrimeArmorSet', names), '维塔拉 Prime 护甲套装');
   assert.equal(itemZh('/Lotus/StoreItems/Types/JadeShadowsPart2Mission/CrewMembers/AshCrewedCaptainGenerator', names), '忍力（船员）');
+});
+
+test('泰辛本周计数只接纳本周 expiry，不把未来三周预写记录算成已购', () => {
+  const thisWeekExpiry = Date.parse('2026-08-31T00:00:00.000Z');
+  const thisWeekStart = Date.parse('2026-08-24T00:00:00.000Z');
+  const purchases = [
+    { expiryMs: thisWeekExpiry, createdMs: Date.parse('2026-08-24T02:00:00.000Z'), num: 2 },
+    { expiryMs: Date.parse('2026-09-28T00:00:00.000Z'), createdMs: Date.parse('2025-12-10T16:00:53.000Z'), num: 1 },
+    { expiryMs: Date.parse('2026-10-05T00:00:00.000Z'), createdMs: Date.parse('2025-12-10T16:00:53.000Z'), num: 1 },
+    { expiryMs: Date.parse('2026-10-12T00:00:00.000Z'), createdMs: Date.parse('2025-12-10T16:00:53.000Z'), num: 1 },
+  ];
+  assert.deepEqual(purchasesForCycle(purchases, thisWeekExpiry, thisWeekStart), [purchases[0]]);
+  assert.equal(purchasesForCycle(purchases, thisWeekExpiry, thisWeekStart).reduce((sum, row) => sum + row.num, 0), 2);
+});
+
+test('expiry 被服务端推进到本周的上周旧账仍不算本周购买', () => {
+  const thisWeekStart = Date.parse('2026-08-24T00:00:00.000Z');
+  const thisWeekExpiry = Date.parse('2026-08-31T00:00:00.000Z');
+  const carried = { expiryMs: thisWeekExpiry, createdMs: Date.parse('2026-08-16T23:56:02.000Z'), num: 6 };
+  assert.deepEqual(purchasesForCycle([carried], thisWeekExpiry, thisWeekStart), []);
 });
