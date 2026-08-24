@@ -41,6 +41,16 @@ export function isSubscriptionCommand(content) {
   return /^(?:订阅|提醒|我的订阅|订阅列表|我的提醒|取消订阅|取消提醒|暂停订阅|暂停提醒|恢复订阅|恢复提醒|订阅帮助|提醒帮助)(?:\s*.*)?$/u.test(text);
 }
 
+// Public-market wishlist commands are scoped to the sender + QQ target in
+// their own ledger. They are not personal account commands and therefore may
+// be used in group conversations as well.
+export function isWishlistCommand(content) {
+  const text = normalize(content).replace(/^\//u, '');
+  return /^(?:愿望单|我的愿望单|愿望列表)$/u.test(text)
+    || /^(?:愿望|蹲价|盯价|订阅愿望)\s+.+\s+(?:≤|<=|不高于|最高|至多)?\s*\d+(?:\.\d+)?$/u.test(text)
+    || /^(?:愿望\s*)?(?:已购|买到|改价|暂停|继续|恢复|取消)(?:\s+|$).+/u.test(text);
+}
+
 export function isShortcut(content) {
   const text = normalize(content);
   return /^\/?wm(?![a-z])/iu.test(text)
@@ -52,6 +62,7 @@ export function isShortcut(content) {
     || /^\/?购买(?:\s+|$)/u.test(text)
     || /^\/?(?:悬赏|赏金)(?:\s+|$)/u.test(text)
     || isArbitrationShortcut(text)
+    || isWishlistCommand(text)
     || isPersonalAccountCommand(text)
     || isWeeklyCommand(text)
     || Boolean(directIntelType(text));

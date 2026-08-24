@@ -16,6 +16,14 @@ SKILL.md 瘦身移入（2026-08-07）。这些规则的执行主体是脚本与 
 
 ## 订阅调度
 
+### Warframe.Market 愿望单
+
+- 愿望单使用独立的 `state/warframe-wishlist.json`，按 QQ 会话与发送者隔离；只保存商品、愿望价、等级条件、状态和订单去重 ID，不保存卖家名，也不登录 Market。
+- Gateway 生命周期内全插件只建立一条公开 `wss://ws.warframe.market/socket` / `wfm` 新订单订阅，并以内存 itemId 索引过滤；新愿望建立、改价或恢复后立即执行一次 item top 校准，先发送设置反馈卡，再补发已存在的合价卖单。
+- 每个 QQ 会话另有一条 10 分钟命令型 cron，仅请求该会话当前商品的 `/v2/orders/item/{slug}/top` 做漏单/重连校准；REST 请求起点至少相隔 400ms，低于公开 3 req/s 上限。
+- 新订单按 `platinum / perTrade` 计算单件价格，只匹配可见 sell 单和准确等级；同一订单每个愿望只提醒一次。命中仅推送图片和 Market 私聊文本，绝不自动交易、聊天或核销。
+- 用户只有明确发送 `已购 <短编号>` 才会停止该愿望；不回复则继续监控。Gateway 断线指数退避至 60 秒，恢复后继续共用同一连接。
+
 - 每个 QQ 会话只建一条命令型 cron，合并该会话所有人的订阅共用一次世界状态请求；提醒发回订阅创建时的会话。安装/再次管理订阅时会把旧 `monitor + announce` 任务幂等迁移为 `deliver + no-deliver`
 - 蹲守边界：仲裁按当前轮换 expiry（整点）、裂缝按最早 expiry、虚空商人按到达/离开边界、突击每日 16:00 UTC、
   钢铁侵袭每日 00:00 UTC、赏金按候选 expiry（30min 兜底）；到点前 cron 只读本地状态输出 `NO_REPLY`

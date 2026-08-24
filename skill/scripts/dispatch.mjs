@@ -18,6 +18,7 @@ const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const workspaceDir = path.resolve(scriptsDir, '..', '..', '..');
 const DEFAULT_SUBSCRIPTION_STATE = path.join(workspaceDir, 'state', 'warframe-subscriptions.json');
 const DEFAULT_WEEKLY_STATE = path.join(workspaceDir, 'state', 'warframe-weekly.json');
+const DEFAULT_WISHLIST_STATE = path.join(workspaceDir, 'state', 'warframe-wishlist.json');
 const DEFAULT_CARD_DIR = path.join(workspaceDir, '.cache', 'warframe-cards');
 
 // 模板目录：kind / 规范命令样例 / 个人数据与否——SKILL 的意图表与此对齐
@@ -48,6 +49,7 @@ export const TEMPLATE_CATALOG = Object.freeze([
   { kind: 'where-to-buy', example: '购买 裂罅破解器', personal: false, intents: '某物品哪里买/在哪换/哪个商人卖' },
   // 订阅族需要真实会话/发送者标识做账本隔离，模型路径不代办：引导用户发规范命令由插件接管
   { kind: 'subscription', example: '订阅 裂缝 钢铁 生存（引导用户自己发送）', personal: false, intents: '设提醒/订阅', guideOnly: true },
+  { kind: 'wishlist', example: '愿望 商品 价格｜愿望单｜改价/暂停/继续/已购/取消 短编号', personal: false, intents: 'Warframe.Market 愿望单、低价命中推送', guideOnly: false },
 ]);
 
 const normalize = (value) => String(value ?? '').normalize('NFKC').trim().replace(/^\//u, '').replace(/[\u3000\s]+/gu, ' ');
@@ -91,6 +93,12 @@ function isWeeklyCommand(text) {
     || /^(?:完成|撤销|跳过|取消跳过)\s+\S.*$/u.test(text);
 }
 
+function isWishlistCommand(text) {
+  return /^(?:愿望单|我的愿望单|愿望列表)$/u.test(text)
+    || /^(?:愿望|蹲价|盯价|订阅愿望)\s+.+\s+(?:≤|<=|不高于|最高|至多)?\s*\d+(?:\.\d+)?$/u.test(text)
+    || /^(?:愿望\s*)?(?:已购|买到|改价|暂停|继续|恢复|取消)(?:\s+|$).+/u.test(text);
+}
+
 function directIntelType(text) {
   if (/^(?:警报|当前警报)$/u.test(text)) return 'alert';
   if (/^(?:入侵|当前入侵)$/u.test(text)) return 'invasion';
@@ -106,6 +114,17 @@ export async function dispatchCommand(message, options = {}) {
   if (!text) return { handled: false, reason: 'empty' };
   const cardDir = options.cardDir || process.env.WARFRAME_CARD_DIR || DEFAULT_CARD_DIR;
   const personalAllowed = options.personalAllowed === true || options.personalAllowed === 'true';
+
+  if (isWishlistCommand(text)) {
+    const target = String(options.target || '').trim().toLowerCase();
+    const ownerId = String(options.owner || '').trim().toLowerCase();
+    if (!target || !ownerId) return { handled: true, ok: false, kind: 'wishlist', text: '当前会话缺少可信 QQ 身份，不能修改愿望单。' };
+    const { manageWishlist } = await import('./wishlist.mjs');
+    const result = await manageWishlist(text, {
+      target, ownerId, ownerName: options.ownerName || ownerId,
+    }, options.wishlistState || DEFAULT_WISHLIST_STATE, { cardDir });
+    return { handled: true, ok: result.ok !== false, kind: 'wishlist', mediaUrl: result.mediaUrl || null, text: result.text || '', ...evidenceMeta(result), ...(result.wish ? { wish: result.wish } : {}) };
+  }
 
   // 个人数据门：非主人私聊一律拒绝，不区分具体命令（与插件行为一致）
   if (isPersonalCommand(text)) {

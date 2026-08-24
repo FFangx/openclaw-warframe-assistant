@@ -1,10 +1,10 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
-import { directIntelType, isArbitrationShortcut, isPersonalAccountCommand, isShortcut, isSubscriptionCommand, isWeeklyCommand } from './routing.mjs';
+import { directIntelType, isArbitrationShortcut, isPersonalAccountCommand, isShortcut, isSubscriptionCommand, isWeeklyCommand, isWishlistCommand } from './routing.mjs';
 import { buildEvidenceEnvelope, STATE_ASSERTION_POLICY } from './evidence.mjs';
 import { classifyNaturalWarframeQuery, DYNAMIC_QUERY_POLICY } from './intent-policy.mjs';
 import { createContextBridge } from './context-bridge.mjs';
@@ -15,10 +15,12 @@ const shortcutScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warf
 const dispatchScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'dispatch.mjs');
 const lookupScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'lookup.mjs');
 const subscriptionScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'subscriptions.mjs');
+const wishlistScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'wishlist.mjs');
 const dropsScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'drops.mjs');
 const weeklyScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'weekly.mjs');
 const alecaScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'alecaframe.mjs');
 const subscriptionState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-subscriptions.json');
+const wishlistState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-wishlist.json');
 const dropsState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-drops.json');
 const weeklyState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-weekly.json');
 const cardDir = path.resolve(pluginDir, '..', '..', '..', '.cache', 'warframe-cards');
@@ -56,6 +58,10 @@ function subscriptionDeclarationKey(target: string): string {
 
 function dropsDeclarationKey(target: string): string {
   return `warframe-assistant:drops:qq:${createHash('sha1').update(target.toLowerCase()).digest('hex').slice(0, 16)}`;
+}
+
+function wishlistDeclarationKey(target: string): string {
+  return `warframe-assistant:wishlist:qq:${createHash('sha1').update(target.toLowerCase()).digest('hex').slice(0, 16)}`;
 }
 
 // 本地 workspace 插件无权直调 gateway.request（仅 bundled/trusted 可用），
@@ -161,6 +167,181 @@ async function removeSubscriptionCron(api: any, target: string): Promise<void> {
   for (const job of existing) await runOpenclawCron(['rm', String(job.id)]);
 }
 
+// WebSocket 命中由 gateway_start 的单例连接负责；每个 QQ target 只保留
+// 一个低频 item-top 校准任务，避免 cron 为每个目标再开全局订单流。
+async function ensureWishlistCron(api: any, target: string): Promise<void> {
+  const existing = await findCronsByKey(api, wishlistDeclarationKey(target));
+  const commandArgv = ['node', wishlistScript, 'deliver', '--state', wishlistState, '--target', target, '--card-dir', subscriptionCardDir];
+  if (existing.length) {
+    for (const job of existing) {
+      const currentArgv = Array.isArray(job?.payload?.argv) ? job.payload.argv : [];
+      if (JSON.stringify(currentArgv) !== JSON.stringify(commandArgv)
+        || job?.delivery?.mode === 'announce'
+        || Number(job?.payload?.timeoutSeconds) !== 90) {
+        await runOpenclawCron([
+          'edit', String(job.id), '--command-argv', JSON.stringify(commandArgv),
+          '--timeout-seconds', '90', '--no-deliver', '--clear-channel', '--clear-to', '--no-best-effort-deliver',
+        ]);
+      }
+      if (job.enabled === false) await runOpenclawCron(['enable', String(job.id)]);
+    }
+    return;
+  }
+  await runOpenclawCron([
+    'add', '--name', 'Warframe 愿望单校准',
+    '--description', `每 10 分钟按 item top 校准当前 QQ 会话愿望单：${target}`,
+    '--declaration-key', wishlistDeclarationKey(target), '--every', '10m', '--session', 'isolated',
+    '--command-argv', JSON.stringify(commandArgv), '--output-max-bytes', '16384', '--timeout-seconds', '90',
+    '--no-deliver', '--json',
+  ]);
+}
+
+async function removeWishlistCron(api: any, target: string): Promise<void> {
+  const existing = await findCronsByKey(api, wishlistDeclarationKey(target));
+  for (const job of existing) await runOpenclawCron(['rm', String(job.id)]);
+}
+
+type WishlistGatewayState = {
+  stopped: boolean;
+  socket: any;
+  itemIds: Set<string>;
+  refreshTimer: any;
+  reconnectTimer: any;
+  reconnectMs: number;
+  liveQueue: Promise<void>;
+};
+
+let wishlistGateway: WishlistGatewayState | null = null;
+let wishlistGatewayRefresh: (() => Promise<void>) | null = null;
+
+async function sendWishlistGatewayResult(api: any, result: any): Promise<void> {
+  const target = String(result?.target || '').trim();
+  if (!target) return;
+  const adapter = await api.runtime.channel.outbound.loadAdapter('qqbot');
+  if (!adapter) return;
+  const common = { cfg: api.config, to: target, mediaLocalRoots: [subscriptionCardDir, cardDir] };
+  if (result.mediaUrl && adapter.sendMedia) {
+    const mediaResult = await adapter.sendMedia({ ...common, text: '', mediaUrl: result.mediaUrl });
+    if (mediaResult?.error) throw new Error(`QQ wishlist media delivery failed: ${String(mediaResult.error)}`);
+  }
+  if (result.text && adapter.sendText) {
+    const textResult = await adapter.sendText({ ...common, text: result.text });
+    if (textResult?.error) throw new Error(`QQ wishlist text delivery failed: ${String(textResult.error)}`);
+  }
+}
+
+function wishlistNeedsImmediateCalibration(result: any): boolean {
+  return ['create', 'createMany', 'reprice', 'resume'].includes(String(result?.command || ''));
+}
+
+async function calibrateWishlistNow(api: any, target: string): Promise<void> {
+  try {
+    const module = await import(pathToFileURL(wishlistScript).href);
+    const result = await module.monitorWishlist(target, wishlistState, subscriptionCardDir, false, {
+      forceRest: true,
+      skipWebSocket: true,
+    });
+    if (Number(result?.data?.hitCount || 0) > 0) await sendWishlistGatewayResult(api, { ...result, target });
+  } catch (error) {
+    // The wish is already durable and the singleton websocket remains active.
+    // The 10-minute calibration cron will retry current listings later.
+    api.logger.warn?.(`Warframe wishlist immediate calibration failed: ${String(error)}`);
+  }
+}
+
+// gateway_start owns exactly one public WFM subscription for the whole plugin.
+// Its itemId index is refreshed from the local ledger, so unrelated events do
+// not spawn a script, render a card, or touch QQ delivery.
+async function startWishlistGateway(api: any): Promise<void> {
+  if (wishlistGateway && !wishlistGateway.stopped) return;
+  const state: WishlistGatewayState = {
+    stopped: false, socket: null, itemIds: new Set(), refreshTimer: null, reconnectTimer: null, reconnectMs: 1000, liveQueue: Promise.resolve(),
+  };
+  wishlistGateway = state;
+  const wishlistModule = async (): Promise<any> => import(pathToFileURL(wishlistScript).href);
+  let connect: () => void;
+  const refresh = async (): Promise<void> => {
+    if (state.stopped) return;
+    try {
+      const ledger = await (await wishlistModule()).readWishlistLedger(wishlistState);
+      state.itemIds = new Set((ledger.wishes || []).filter((wish: any) => wish.status === 'active' && wish.enabled).map((wish: any) => String(wish.itemId || '').trim()).filter(Boolean));
+      if (!state.itemIds.size && state.socket) {
+        try { state.socket.close(); } catch { /* ignore */ }
+      } else if (state.itemIds.size && !state.socket && !state.reconnectTimer) {
+        connect();
+      }
+    } catch (error) {
+      api.logger.warn?.(`Warframe wishlist gateway ledger refresh failed: ${String(error)}`);
+    }
+  };
+  wishlistGatewayRefresh = refresh;
+  const scheduleReconnect = (): void => {
+    if (state.stopped || !state.itemIds.size || state.reconnectTimer) return;
+    const wait = state.reconnectMs;
+    state.reconnectMs = Math.min(60_000, state.reconnectMs * 2);
+    state.reconnectTimer = setTimeout(() => {
+      state.reconnectTimer = null;
+      connect();
+    }, wait);
+  };
+  connect = (): void => {
+    if (state.stopped || !state.itemIds.size || state.socket) return;
+    const WebSocketImpl = (globalThis as any).WebSocket;
+    if (typeof WebSocketImpl !== 'function') {
+      api.logger.warn?.('Warframe wishlist gateway unavailable: Node WebSocket is missing');
+      scheduleReconnect();
+      return;
+    }
+    try {
+      const socket = new WebSocketImpl('wss://ws.warframe.market/socket', 'wfm');
+      state.socket = socket;
+      socket.onopen = () => {
+        state.reconnectMs = 1000;
+        socket.send(JSON.stringify({ route: '@wfm|cmd/subscribe/newOrders', id: `wishlist-gateway-${Date.now().toString(36)}`, payload: { platform: 'pc', crossplay: true } }));
+      };
+      socket.onmessage = (event: any) => {
+        state.liveQueue = state.liveQueue.then(async () => {
+        let payload: any;
+        try { payload = JSON.parse(String(event?.data || '')); } catch { return; }
+        if (payload?.route !== '@wfm|event/subscriptions/newOrder') return;
+        const order = payload.payload || payload.order || payload;
+        const itemId = String(order?.itemId || order?.item?.id || '').trim();
+        if (!itemId || !state.itemIds.has(itemId)) return;
+        try {
+          const results = await (await wishlistModule()).processWishlistLiveOrder(order, wishlistState, subscriptionCardDir);
+          for (const result of results || []) await sendWishlistGatewayResult(api, result);
+        } catch (error) {
+          api.logger.error(`Warframe wishlist live order failed: ${String(error)}`);
+        }
+        }).catch((error) => api.logger.error(`Warframe wishlist live queue failed: ${String(error)}`));
+      };
+      socket.onerror = () => { try { socket.close(); } catch { /* ignore */ } };
+      socket.onclose = () => {
+        if (state.socket === socket) state.socket = null;
+        scheduleReconnect();
+      };
+    } catch (error) {
+      state.socket = null;
+      api.logger.warn?.(`Warframe wishlist gateway connect failed: ${String(error)}`);
+      scheduleReconnect();
+    }
+  };
+  await refresh();
+  state.refreshTimer = setInterval(refresh, 30_000);
+}
+
+async function stopWishlistGateway(): Promise<void> {
+  const state = wishlistGateway;
+  if (!state) return;
+  state.stopped = true;
+  if (state.refreshTimer) clearInterval(state.refreshTimer);
+  if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
+  try { state.socket?.close?.(); } catch { /* ignore */ }
+  state.socket = null;
+  wishlistGateway = null;
+  wishlistGatewayRefresh = null;
+}
+
 // 掉落监测：每分钟只做本地 mtime 检查，快照变化才解密 diff，不联网轮询
 async function ensureDropsCron(api: any, target: string): Promise<void> {
   const existing = await findCronsByKey(api, dropsDeclarationKey(target));
@@ -229,6 +410,36 @@ function hasWarframeContext(prompt: string, messages: any[]): boolean {
 async function handleFastCommand(api: any, event: any): Promise<any | undefined> {
   if (!isQQChannel(event.channel) || (!isShortcut(event.content) && !isSubscriptionCommand(event.content))) return;
   try {
+    if (isWishlistCommand(event.content)) {
+      const target = qqTarget(event);
+      const ownerId = String(event.senderId || '').trim().toLowerCase();
+      if (!target || !ownerId) throw new Error('missing QQ target or sender id');
+      const { stdout } = await execFileAsync(process.execPath, [
+        wishlistScript, 'manage', '--state', wishlistState,
+        '--message', event.content, '--target', target, '--owner', ownerId,
+        '--owner-name', String(event.senderName || event.senderUsername || ownerId),
+        '--card-dir', subscriptionCardDir,
+      ], {
+        timeout: 30_000, windowsHide: true, maxBuffer: 2 * 1024 * 1024, encoding: 'utf8',
+      });
+      const result = JSON.parse(stdout);
+      let cronWarning = '';
+      try {
+        if (result.cronAction === 'ensure') await ensureWishlistCron(api, target);
+        else if (result.cronAction === 'remove') await removeWishlistCron(api, target);
+      } catch (error) {
+        api.logger.error(`Warframe wishlist calibration cron sync failed: ${String(error)}`);
+        cronWarning = '\n⚠️ 愿望已保存，但低频校准任务同步失败；实时监控仍会在网关恢复后继续。';
+      }
+      await wishlistGatewayRefresh?.();
+      return {
+        text: `${result.text || '愿望单已更新。'}${cronWarning}`,
+        ...(result.mediaUrl ? { mediaUrl: result.mediaUrl, trustedLocalMedia: true } : {}),
+        replyToId: event.messageId,
+        isError: result.ok === false || Boolean(cronWarning),
+        raw: result,
+      };
+    }
     if (isPersonalAccountCommand(event.content)) {
       if (event.isGroup || !isExactOwner(api, event.senderId)) {
         api.logger.info(`Warframe personal command denied: isGroup=${Boolean(event.isGroup)}`);
@@ -393,7 +604,7 @@ const warframeToolSchema = {
     operation: {
       type: 'string',
       enum: ['command', 'lookup', 'subscription', 'subscription_diagnosis'],
-      description: 'command=生成既有查询/个人/周常卡；lookup=查底层白名单资料；subscription=管理订阅；subscription_diagnosis=查订阅检查、匹配和提醒审计。',
+      description: 'command=生成既有查询/愿望单/个人/周常卡；lookup=查底层白名单资料；subscription=管理订阅；subscription_diagnosis=查订阅检查、匹配和提醒审计。',
     },
     query: {
       type: 'string',
@@ -500,7 +711,7 @@ function createWarframeTool(api: any, ctx: any): any {
     label: 'Warframe Assistant',
     description: [
       '处理所有 Warframe/星际战甲事实查询与操作。凡用户在问实时状态、价格、遗物、裂缝、掉落、配方、商人、库存、紫卡、周报/周常或订阅，都应先调用本工具，不要凭模型记忆回答。',
-      'operation=command 时 query 必须是现有规范命令，例如：wm 物品、遗物 Axi A22、获取 Prime部件、购买 物品、裂缝、赏金、仲裁、警报、入侵、活动、突击、钢铁侵袭、虚空商人、我的库存 物品、我的遗物 代号、我的紫卡 武器、周报、完成 深层科研、开遗物、精炼推荐、杜卡德推荐、奸商推荐、商店、本周好货、轮换日历。用户说“哪里刷/怎么刷/哪里买/在哪换”时，提取实体后改写为获取/购买规范命令。',
+      'operation=command 时 query 必须是现有规范命令，例如：愿望 商品 价格、愿望单、已购/改价/暂停/继续/取消 短编号，以及 wm 物品、遗物 Axi A22、获取 Prime部件、购买 物品、裂缝、赏金、仲裁、警报、入侵、活动、突击、钢铁侵袭、虚空商人、我的库存 物品、我的遗物 代号、我的紫卡 武器、周报、完成 深层科研、开遗物、精炼推荐、杜卡德推荐、奸商推荐、商店、本周好货、轮换日历。用户说“哪里刷/怎么刷/哪里买/在哪换”时，提取实体后改写为获取/购买规范命令。',
       'operation=lookup 用于不适合卡片的底层资料，query 格式只能是：worldstate 板块、vendor 商人、dict 词、drops 关键词、recipe 名字、bounties、sp-incursions、item /Lotus/...。问某武器灵化安装材料时直接用 recipe <武器名>灵化之源，不要逐步试探多个查询。',
       'operation=subscription 用于用户明确要求新增、取消、暂停、恢复或列出订阅，query 使用规范订阅命令。个人数据和写操作会由可信会话身份强制鉴权。可为一个复合问题多次调用。',
       'operation=subscription_diagnosis 用于“为什么没提醒、上次提醒后又出现过吗、多久没轮换到、是不是漏推送”等历史/故障问题；query 只传物品或订阅条件。不得用静态 drops 查询替代。',
@@ -513,6 +724,24 @@ function createWarframeTool(api: any, ctx: any): any {
       if (!query || query.length > 300) return jsonToolResult({ ok: false, error: 'query 不能为空且最多 300 字。' });
 
       if (operation === 'command') {
+        if (isWishlistCommand(query)) {
+          if (channel && channel !== 'qqbot') return jsonToolResult({ ok: false, error: '愿望单只允许从 QQ 会话发起。' });
+          if (!target || !sender) return jsonToolResult({ ok: false, error: '当前会话缺少可信 QQ 身份，不能修改愿望单。' });
+          const result = await runJsonScript(wishlistScript, [
+            'manage', '--state', wishlistState, '--message', query, '--target', target, '--owner', sender,
+            '--owner-name', sender, '--card-dir', cardDir,
+          ], 30_000);
+          try {
+            if (result.cronAction === 'ensure') await ensureWishlistCron(api, target);
+            else if (result.cronAction === 'remove') await removeWishlistCron(api, target);
+          } catch (error) {
+            result.warning = `愿望已保存，但低频校准任务同步失败：${String(error)}`;
+          }
+          await wishlistGatewayRefresh?.();
+          const mediaUrl = String(result?.mediaUrl || '').trim();
+          const mediaDelivered = mediaUrl ? await sendToolMedia(api, ctx, mediaUrl) : false;
+          return jsonToolResult(decorateToolResult(result, mediaDelivered, operation, query));
+        }
         if (/^(?:周常|当前周常|周常清单|周常列表|本周周常|周报|周常帮助|清空周常|完成\s|撤销\s|跳过\s|取消跳过\s)/u.test(query) && !personalAllowed) {
           return jsonToolResult({ ok: false, error: '周报和周常核销只允许用户本人在 QQ 私聊中操作。' });
         }
@@ -540,6 +769,26 @@ function createWarframeTool(api: any, ctx: any): any {
       }
 
       if (operation === 'subscription') {
+        // 兼容旧模型仍把「愿望 商品 价格」标成 subscription；愿望单
+        // 使用自己的 ledger 与单例 gateway，不进入世界状态订阅解析器。
+        if (isWishlistCommand(query)) {
+          if (channel && channel !== 'qqbot') return jsonToolResult({ ok: false, error: '愿望单只允许从 QQ 会话发起。' });
+          if (!target || !sender) return jsonToolResult({ ok: false, error: '当前会话缺少可信 QQ 身份，不能修改愿望单。' });
+          const result = await runJsonScript(wishlistScript, [
+            'manage', '--state', wishlistState, '--message', query, '--target', target, '--owner', sender,
+            '--owner-name', sender, '--card-dir', cardDir,
+          ], 30_000);
+          try {
+            if (result.cronAction === 'ensure') await ensureWishlistCron(api, target);
+            else if (result.cronAction === 'remove') await removeWishlistCron(api, target);
+          } catch (error) {
+            result.warning = `愿望已保存，但低频校准任务同步失败：${String(error)}`;
+          }
+          await wishlistGatewayRefresh?.();
+          const mediaUrl = String(result?.mediaUrl || '').trim();
+          const mediaDelivered = mediaUrl ? await sendToolMedia(api, ctx, mediaUrl) : false;
+          return jsonToolResult(decorateToolResult(result, mediaDelivered, operation, query));
+        }
         if (channel && channel !== 'qqbot') return jsonToolResult({ ok: false, error: '订阅写操作只允许从 QQ 会话发起。' });
         if (!target || !sender) return jsonToolResult({ ok: false, error: '当前会话缺少可信 QQ 身份，不能修改订阅。' });
         const result = await runJsonScript(subscriptionScript, [
@@ -582,6 +831,12 @@ export default definePluginEntry({
   description: 'Read-only Warframe market, relic, fissure, local account snapshot and persistent subscription commands for QQ.',
   register(api) {
     api.registerTool((ctx) => createWarframeTool(api, ctx), { name: 'warframe_assistant' });
+    api.on('gateway_start', async () => {
+      await startWishlistGateway(api);
+    });
+    api.on('gateway_stop', async () => {
+      await stopWishlistGateway();
+    });
     // 对时效/订阅故障问句做每轮确定性约束。只注入“必须走哪类工具”，
     // 物品和参数仍由模型从自然语言提取，避免退化成关键词命令表。
     api.on('before_prompt_build', async (event, ctx) => {
@@ -600,7 +855,7 @@ export default definePluginEntry({
     api.on('before_tool_call', async (event) => {
       if (event.toolName !== 'exec') return;
       const command = String(event.params?.command || '');
-      if (!/warframe-assistant[\\/].*scripts[\\/](?:dispatch|shortcuts|lookup|subscriptions|weekly|alecaframe|warframe)\.mjs/iu.test(command)) return;
+      if (!/warframe-assistant[\\/].*scripts[\\/](?:dispatch|shortcuts|lookup|subscriptions|weekly|alecaframe|wishlist|warframe)\.mjs/iu.test(command)) return;
       return {
         block: true,
         blockReason: 'Warframe 查询脚本不得通过 exec 直接运行；请改用 warframe_assistant 结构化工具，以确保 QQ 卡片可靠投递和个人权限校验。',
@@ -628,6 +883,14 @@ export default definePluginEntry({
         });
         if (!reply) throw new Error('matched command produced no reply');
         await sendDirectQQReply(api, event, ctx, reply);
+        if (wishlistNeedsImmediateCalibration(reply.raw)) {
+          const target = qqTarget({
+            isGroup: event.isGroup,
+            conversationId: ctx.conversationId,
+            senderId: event.senderId || ctx.senderId,
+          });
+          if (target) await calibrateWishlistNow(api, target);
+        }
         const personalAllowed = !Boolean(event.isGroup || agentContextIsGroup(ctx)) && isExactOwner(api, event.senderId || ctx.senderId);
         rememberShortCommandContext(event, ctx, reply.raw, personalAllowed);
         api.logger.info(`Warframe short command delivered before model: ${content.trim()}`);
