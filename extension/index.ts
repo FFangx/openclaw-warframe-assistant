@@ -20,6 +20,7 @@ const subscriptionScript = path.resolve(pluginDir, '..', '..', '..', 'skills', '
 const wishlistScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'wishlist.mjs');
 const dropsScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'drops.mjs');
 const weeklyScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'weekly.mjs');
+const weeklyUsecaseScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'weekly-usecase.mjs');
 const alecaScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'alecaframe.mjs');
 const subscriptionState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-subscriptions.json');
 const wishlistState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-wishlist.json');
@@ -525,29 +526,20 @@ async function handleFastCommand(api: any, event: any): Promise<any | undefined>
       };
     }
     if (isWeeklyCommand(event.content)) {
-      if (event.isGroup || !isExactOwner(api, event.senderId)) {
-        api.logger.info(`Warframe weekly command denied: isGroup=${Boolean(event.isGroup)}`);
-        return {
-          text: '周常数据只允许用户本人在 QQ 私聊中查询或修改。',
-          replyToId: event.messageId,
-          isError: true,
-        };
-      }
       const target = qqTarget(event);
       const ownerId = String(event.senderId || '').trim().toLowerCase();
-      if (!target || !ownerId) throw new Error('missing QQ target or sender id');
-      const { stdout } = await execFileAsync(process.execPath, [
-        weeklyScript, 'manage', '--state', weeklyState,
-        '--message', event.content, '--target', target, '--owner', ownerId,
-        '--owner-name', String(event.senderName || event.senderUsername || ownerId),
-        '--card-dir', cardDir,
-      ], {
-        timeout: 45_000,
-        windowsHide: true,
-        maxBuffer: 2 * 1024 * 1024,
-        encoding: 'utf8',
+      const outcome = await runWeeklyCommandUseCase(api, {
+        source: 'fast-command',
+        text: event.content,
+        channel: event.channel,
+        target,
+        actorId: ownerId,
+        actorDisplayName: String(event.senderName || event.senderUsername || ownerId),
+        personalAllowed: !event.isGroup && isExactOwner(api, event.senderId),
+        isGroup: Boolean(event.isGroup),
+        cardDir,
       });
-      const result = JSON.parse(stdout);
+      const result = outcome.result;
       return {
         text: result.text || '周常状态已更新。',
         ...(result.mediaUrl ? { mediaUrl: result.mediaUrl, trustedLocalMedia: true } : {}),
@@ -729,6 +721,20 @@ async function runSubscriptionCommandUseCase(api: any, request: any): Promise<an
   });
 }
 
+async function runWeeklyCommandUseCase(api: any, request: any): Promise<any> {
+  const { executeWeeklyUseCase } = await import(pathToFileURL(weeklyUsecaseScript).href);
+  return executeWeeklyUseCase(request, {
+    manage: (command: any) => runJsonScript(weeklyScript, [
+      'manage', '--state', weeklyState,
+      '--message', command.text, '--target', command.target, '--owner', command.actorId,
+      '--owner-name', command.actorDisplayName, '--card-dir', command.cardDir || cardDir,
+    ], 45_000),
+    log: (_level: string, message: string, error: unknown) => {
+      api.logger.error(`Warframe ${message}: ${String(error)}`);
+    },
+  });
+}
+
 function toolTarget(ctx: any): string | null {
   const sender = String(ctx?.requesterSenderId || '').trim().toLowerCase();
   const rawTo = String(ctx?.deliveryContext?.to || '').trim().toLowerCase();
@@ -836,6 +842,24 @@ function createWarframeTool(api: any, ctx: any): any {
     return jsonToolResult(decorateToolResult(outcome.result, false, 'subscription', query));
   }
 
+  async function runWeeklyToolUseCase(query: string): Promise<any> {
+    const outcome = await runWeeklyCommandUseCase(api, {
+      source: 'tool-command',
+      text: query,
+      channel,
+      target,
+      actorId: sender,
+      actorDisplayName: sender,
+      personalAllowed,
+      isGroup: toolIsGroup(ctx),
+      cardDir,
+    });
+    const result = outcome.result;
+    const mediaUrl = String(result?.mediaUrl || '').trim();
+    const mediaDelivered = mediaUrl ? await sendToolMedia(api, ctx, mediaUrl) : false;
+    return jsonToolResult(decorateToolResult(result, mediaDelivered, 'command', query));
+  }
+
   return {
     name: 'warframe_assistant',
     label: 'Warframe Assistant',
@@ -860,8 +884,8 @@ function createWarframeTool(api: any, ctx: any): any {
         if (isSubscriptionCommand(query)) {
           return runSubscriptionToolUseCase(query, operation);
         }
-        if (isWeeklyCommand(query) && !personalAllowed) {
-          return jsonToolResult({ ok: false, error: '周报和周常核销只允许用户本人在 QQ 私聊中操作。' });
+        if (isWeeklyCommand(query)) {
+          return runWeeklyToolUseCase(query);
         }
         const result = await runJsonScript(dispatchScript, [
           'run', query,

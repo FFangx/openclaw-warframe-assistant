@@ -21,6 +21,7 @@ import {
   matchWeeklyCommand,
   matchWishlistCommand,
 } from './command-registry.mjs';
+import { executeWeeklyUseCase } from './weekly-usecase.mjs';
 
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 // scripts → warframe-assistant → skills → workspace（与插件的路径解析保持同一根）
@@ -78,13 +79,37 @@ export async function dispatchCommand(message, options = {}) {
   }
 
   if (matchWeeklyCommand(text)) {
-    if (!personalAllowed) {
-      return { handled: true, ok: false, kind: 'weekly-denied', text: '周常数据只允许用户本人在 QQ 私聊中查询或修改。' };
-    }
-    const { manageWeekly } = await import('./weekly.mjs');
-    const context = { target: options.target || 'model:fallback', ownerId: options.owner || 'owner', ownerName: options.ownerName || '' };
-    const result = await manageWeekly(text, context, options.weeklyState || DEFAULT_WEEKLY_STATE, cardDir);
-    return { handled: true, ok: result.ok !== false, kind: 'weekly', mediaUrl: result.mediaUrl || null, text: result.text || '', ...evidenceMeta(result) };
+    const target = String(options.target || '').trim().toLowerCase();
+    const outcome = await executeWeeklyUseCase({
+      source: 'dispatch-fallback',
+      text,
+      channel: String(options.channel || (/^qqbot:/u.test(target) ? 'qqbot' : '')).trim().toLowerCase(),
+      target,
+      actorId: options.owner,
+      actorDisplayName: options.ownerName,
+      personalAllowed,
+      isGroup: options.isGroup === true || /^qqbot:group:/u.test(target),
+      cardDir,
+      statePath: options.weeklyState || DEFAULT_WEEKLY_STATE,
+    }, {
+      manage: async (command) => {
+        const { manageWeekly } = await import('./weekly.mjs');
+        return manageWeekly(command.text, {
+          target: command.target,
+          ownerId: command.actorId,
+          ownerName: command.actorDisplayName,
+        }, command.statePath, command.cardDir);
+      },
+    });
+    const result = outcome.result;
+    return {
+      handled: true,
+      ok: result.ok !== false,
+      kind: result.kind || 'weekly',
+      mediaUrl: result.mediaUrl || null,
+      text: result.text || '',
+      ...evidenceMeta(result),
+    };
   }
 
   if (matchArbitrationCommand(text)) {
@@ -155,6 +180,7 @@ async function main() {
         personalAllowed: args['personal-allowed'],
         target: args.target,
         owner: args.owner,
+        ownerName: args['owner-name'],
         cardDir: args['card-dir'],
       });
       process.stdout.write(`${JSON.stringify(result, stripDataUriReplacer)}\n`);

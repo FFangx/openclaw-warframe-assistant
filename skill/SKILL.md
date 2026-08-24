@@ -38,7 +38,7 @@ Node 内置 fetch。`{baseDir}` = 本 skill 目录。装机自检：`node {baseD
 ```bash
 # 统一调度器（模型路由唯一执行口）：任何模板命令都从这里跑
 node {baseDir}/scripts/dispatch.mjs run "<规范命令>"            # 如 "仲裁"、"wm 悟空p 满级"、"购买 裂罅破解器"
-node {baseDir}/scripts/dispatch.mjs run "周常" --target <会话> --owner <发送者>
+node {baseDir}/scripts/dispatch.mjs run "周常" --personal-allowed true --target <QQ私聊会话> --owner <发送者>
 node {baseDir}/scripts/dispatch.mjs run "奸商推荐" --personal-allowed true   # 仅确认用户本人私聊时才传
 node {baseDir}/scripts/dispatch.mjs run "杜卡德 600 保留1" --personal-allowed true
 node {baseDir}/scripts/dispatch.mjs list                        # 意图→模板目录
@@ -60,7 +60,7 @@ node {baseDir}/scripts/warframe.mjs monitor --platform pc --state <绝对路径>
 # 订阅/周常/个人快照（插件正常时无需模型直跑；细节见 references/operations.md）
 node {baseDir}/scripts/subscriptions.mjs manage --state <路径> --message "订阅 仲裁 生存" --target <会话> --owner <发送者>
 # 愿望写操作必须调用 `warframe_assistant` 工具，由插件统一处理身份、cron、Gateway 与即时行情检查；不得直跑愿望管理脚本。
-node {baseDir}/scripts/weekly.mjs manage --state <路径> --message "周常" --target <会话> --owner <发送者> --card-dir <路径>
+# 周常查询与写操作必须走 warframe_assistant/dispatch 的共享用例；weekly.mjs remind 仅供受管 cron 使用。
 node {baseDir}/scripts/alecaframe.mjs parse "我的账号"
 ```
 
@@ -87,7 +87,7 @@ node {baseDir}/scripts/alecaframe.mjs parse "我的账号"
   3. **上网检索（最后手段）**：模板和 lookup 都不覆盖（版本新闻、机制考证、攻略）才上网；优先 wiki.warframe.com 与 warframe.huijiwiki.com；**必须标注来源站点**；查不到如实说。**实时价格与世界状态永远不许用网页替代脚本**。**来源标注必须真实：本轮实际调用了 lookup 或上网工具才许写「来源：xxx」；凭记忆作答不得挂任何来源——伪造引用比答错更严重**
   4. **闲聊**：与 Warframe 无关 → 正常聊，不调工具
   5. **追问**：对刚发的卡片/回答追问时基于上一轮已有数据接着答，不重发卡、不重复调同一命令；数据不够才重新走决策树。⚠ 只有**工具返回的数据**算「已有数据」——追问对象若是上一轮凭记忆写的说法，必须回决策树查证
-- 周常类消息若插件没接住落到你这里：跑 weekly.mjs 时 `--message` 一律用标准词「周常」，回复用 `<qqimg>路径</qqimg>` 而非 message 工具（agent 发图管线会把长卡压糊）
+- 周常类消息若插件没接住落到你这里：调用 `warframe_assistant operation=command`，query 使用规范周常命令；工具未能直投时按 `presentation` 返回的 `<qqimg>` 路径兜底，禁止直跑 `weekly.mjs manage`
 - 用户要求「测试/跑一下」并给出明确命令时直接运行返回结果，不反问
 
 ## 截图分析

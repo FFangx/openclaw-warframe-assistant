@@ -87,6 +87,27 @@ test('普通订阅裸入口与两条模型工具路径只保留共享用例编�
   assert.doesNotMatch(entry, /let cronWarning = ''/u);
 });
 
+test('周常快捷入口、模型工具与调度器 fallback 共用周常用例', async () => {
+  const [entry, dispatch, skill] = await Promise.all([
+    readFile(new URL('./index.ts', import.meta.url), 'utf8'),
+    readInstalledOrSourceDispatch(),
+    readInstalledOrSourceSkill(),
+  ]);
+  assert.match(entry, /weeklyUsecaseScript = path\.resolve/u);
+  assert.match(entry, /runWeeklyCommandUseCase\(api,/u);
+  assert.match(entry, /source: 'fast-command'/u);
+  assert.match(entry, /source: 'tool-command'/u);
+  assert.match(entry, /return runWeeklyToolUseCase\(query\)/u);
+  assert.equal((entry.match(/weeklyScript, \[\s*'manage'/gu) || []).length, 1,
+    'weekly manage CLI 只能在共享用例端口绑定一次');
+  assert.doesNotMatch(entry, /if \(isWeeklyCommand\(query\) && !personalAllowed\)/u);
+  assert.match(dispatch, /import \{ executeWeeklyUseCase \} from '\.\/weekly-usecase\.mjs'/u);
+  assert.match(dispatch, /source: 'dispatch-fallback'/u);
+  assert.doesNotMatch(dispatch, /kind: 'weekly-denied'.*周常数据只允许用户本人/us);
+  assert.doesNotMatch(skill, /^\s*node\s+\{baseDir\}\/scripts\/weekly\.mjs\s+manage\b/mu);
+  assert.match(skill, /禁止直跑 `weekly\.mjs manage`/u);
+});
+
 test('strict documented commands stay on the deterministic fast path', () => {
   for (const input of [
     'wm 高压电流', '遗物 Axi A22', '获取 Caliban p', '普通裂缝', '赏金 尖刃弹头', '购买 诡文枭主',
@@ -157,8 +178,8 @@ test('扩展路由从唯一注册表加载，且用户可见权限口径统一',
   assert.equal(isPersonalAccountCommand('我的库存 延几草'), true);
   assert.equal(isPersonalAccountCommand('我有这些遗物吗'), false);
   assert.match(entry, /if \(isWeeklyCommand\(event\.content\)\)/u);
-  assert.match(entry, /周常数据只允许用户本人/u);
-  assert.match(entry, /if \(isWeeklyCommand\(query\) && !personalAllowed\)/u);
+  assert.match(entry, /personalAllowed: !event\.isGroup && isExactOwner/u);
+  assert.match(entry, /if \(isWeeklyCommand\(query\)\)/u);
   assert.doesNotMatch(entry, /周常\|当前周常\|周常清单/u);
   assert.match(routing, /createRequire\(import\.meta\.url\)\(registryPath\)/u);
   assert.doesNotMatch(routing, /await\s+import/u);
