@@ -234,18 +234,48 @@ function wishlistNeedsImmediateCalibration(result: any): boolean {
   return ['create', 'createMany', 'reprice', 'resume'].includes(String(result?.command || ''));
 }
 
-async function calibrateWishlistNow(api: any, target: string): Promise<void> {
+function wishlistMarketCommand(wish: any): string {
+  const name = String(wish?.zhName || wish?.itemName || wish?.slug || '').trim();
+  const rank = wish?.rankMode === 'max' ? ' 满级'
+    : wish?.rankMode === 'exact' && wish?.rank != null ? ` 等级 ${Number(wish.rank)}` : '';
+  return `wm ${name}${rank}`.trim();
+}
+
+async function inspectCurrentWishlistNow(api: any, target: string, manageResult: any): Promise<any> {
   try {
     const module = await import(pathToFileURL(wishlistScript).href);
     const result = await module.monitorWishlist(target, wishlistState, subscriptionCardDir, false, {
       forceRest: true,
       skipWebSocket: true,
+      ownerId: String(manageResult?.wish?.ownerId || '').trim().toLowerCase(),
+      render: false,
     });
-    if (Number(result?.data?.hitCount || 0) > 0) await sendWishlistGatewayResult(api, { ...result, target });
+    const hits = Array.isArray(result?.data?.hits) ? result.data.hits : [];
+    if (!hits.length) return { ok: true, hitCount: 0, marketCards: 0 };
+    const shortcuts = await import(pathToFileURL(shortcutScript).href);
+    const uniqueWishes = [...new Map(hits.map((hit: any) => [String(hit?.wishId || hit?.wish?.id || ''), hit?.wish])).values()].filter(Boolean);
+    let marketCards = 0;
+    for (const wish of uniqueWishes as any[]) {
+      const market = await shortcuts.runShortcut(wishlistMarketCommand(wish), { cardDir: subscriptionCardDir });
+      const qualifying = (market?.data?.sell || []).filter((order: any) => {
+        const perTrade = Math.max(1, Number(order?.perTrade) || 1);
+        return Number(order?.platinum) / perTrade <= Number(wish.maxPrice);
+      });
+      if (!market?.ok || !market?.mediaUrl || !qualifying.length) continue;
+      const contact = String(market?.data?.contactTemplate || '').trim();
+      const text = [
+        `当前已有 ${qualifying.length} 条卖单符合愿望 ${String(wish.id || '')}（≤${Number(wish.maxPrice)}p），直接给你最新市场行情。愿望仍会继续监控。`,
+        contact,
+      ].filter(Boolean).join('\n');
+      await sendWishlistGatewayResult(api, { target, mediaUrl: market.mediaUrl, text });
+      marketCards += 1;
+    }
+    return { ok: true, hitCount: hits.length, marketCards };
   } catch (error) {
     // The wish is already durable and the singleton websocket remains active.
     // The 10-minute calibration cron will retry current listings later.
     api.logger.warn?.(`Warframe wishlist immediate calibration failed: ${String(error)}`);
+    return { ok: false, hitCount: 0, marketCards: 0 };
   }
 }
 
@@ -740,6 +770,7 @@ function createWarframeTool(api: any, ctx: any): any {
           await wishlistGatewayRefresh?.();
           const mediaUrl = String(result?.mediaUrl || '').trim();
           const mediaDelivered = mediaUrl ? await sendToolMedia(api, ctx, mediaUrl) : false;
+          if (wishlistNeedsImmediateCalibration(result)) result.currentMarket = await inspectCurrentWishlistNow(api, target, result);
           return jsonToolResult(decorateToolResult(result, mediaDelivered, operation, query));
         }
         if (/^(?:周常|当前周常|周常清单|周常列表|本周周常|周报|周常帮助|清空周常|完成\s|撤销\s|跳过\s|取消跳过\s)/u.test(query) && !personalAllowed) {
@@ -787,6 +818,7 @@ function createWarframeTool(api: any, ctx: any): any {
           await wishlistGatewayRefresh?.();
           const mediaUrl = String(result?.mediaUrl || '').trim();
           const mediaDelivered = mediaUrl ? await sendToolMedia(api, ctx, mediaUrl) : false;
+          if (wishlistNeedsImmediateCalibration(result)) result.currentMarket = await inspectCurrentWishlistNow(api, target, result);
           return jsonToolResult(decorateToolResult(result, mediaDelivered, operation, query));
         }
         if (channel && channel !== 'qqbot') return jsonToolResult({ ok: false, error: '订阅写操作只允许从 QQ 会话发起。' });
@@ -889,7 +921,7 @@ export default definePluginEntry({
             conversationId: ctx.conversationId,
             senderId: event.senderId || ctx.senderId,
           });
-          if (target) await calibrateWishlistNow(api, target);
+          if (target) reply.raw.currentMarket = await inspectCurrentWishlistNow(api, target, reply.raw);
         }
         const personalAllowed = !Boolean(event.isGroup || agentContextIsGroup(ctx)) && isExactOwner(api, event.senderId || ctx.senderId);
         rememberShortCommandContext(event, ctx, reply.raw, personalAllowed);

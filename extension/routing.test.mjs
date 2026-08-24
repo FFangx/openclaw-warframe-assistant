@@ -37,6 +37,18 @@ test('订阅 cron 使用脚本直投 QQ 原图并关闭 runner announce 压缩�
   assert.match(subscriptionBlock, /'--timeout-seconds', '120'/u);
 });
 
+test('愿望创建后的当前行情检查覆盖裸命令与两条模型工具路径', async () => {
+  const entry = await readFile(new URL('./index.ts', import.meta.url), 'utf8');
+  assert.match(entry, /async function inspectCurrentWishlistNow/u);
+  assert.match(entry, /forceRest:\s*true/u);
+  assert.match(entry, /render:\s*false/u);
+  assert.match(entry, /runShortcut\(wishlistMarketCommand\(wish\)/u);
+  assert.match(entry, /Number\(order\?\.platinum\) \/ perTrade <= Number\(wish\.maxPrice\)/u);
+  assert.match(entry, /当前已有[^`]+最新市场行情/u);
+  assert.equal((entry.match(/currentMarket\s*=\s*await inspectCurrentWishlistNow/gu) || []).length, 3,
+    'before_dispatch、operation=command、兼容 operation=subscription 都必须立即查当前行情');
+});
+
 test('strict documented commands stay on the deterministic fast path', () => {
   for (const input of [
     'wm 高压电流', '遗物 Axi A22', '获取 Caliban p', '普通裂缝', '赏金 尖刃弹头', '购买 诡文枭主',

@@ -504,7 +504,7 @@ export function applyWishlistOrders(ledgerInput, orders, { source = 'ws', now = 
         const id = orderIdentity(order);
         if (notifyInitial && !wish.seenOrderIds.includes(id) && matchesWishlistOrder(wish, order)) {
           wish.lastMatchAt = asIso(now);
-          hits.push({ wishId: wish.id, wish: { id: wish.id, itemId: wish.itemId, itemName: wish.itemName, zhName: wish.zhName, slug: wish.slug, maxPrice: wish.maxPrice, ownerName: wish.ownerName }, order });
+          hits.push({ wishId: wish.id, wish: { id: wish.id, itemId: wish.itemId, itemName: wish.itemName, zhName: wish.zhName, slug: wish.slug, maxPrice: wish.maxPrice, rank: wish.rank, rankMode: wish.rankMode, maxRank: wish.maxRank, ownerName: wish.ownerName }, order });
         }
         wish.seenOrderIds.push(id);
       }
@@ -519,7 +519,7 @@ export function applyWishlistOrders(ledgerInput, orders, { source = 'ws', now = 
       if (!seen) wish.seenOrderIds.push(id);
       if (!seen && matchesWishlistOrder(wish, order) && (source === 'ws' || source === 'rest')) {
         wish.lastMatchAt = asIso(now);
-      hits.push({ wishId: wish.id, wish: { id: wish.id, itemId: wish.itemId, itemName: wish.itemName, zhName: wish.zhName, slug: wish.slug, maxPrice: wish.maxPrice, ownerName: wish.ownerName }, order });
+      hits.push({ wishId: wish.id, wish: { id: wish.id, itemId: wish.itemId, itemName: wish.itemName, zhName: wish.zhName, slug: wish.slug, maxPrice: wish.maxPrice, rank: wish.rank, rankMode: wish.rankMode, maxRank: wish.maxRank, ownerName: wish.ownerName }, order });
       }
     }
     wish.seenOrderIds = [...new Set(wish.seenOrderIds)].slice(-MAX_SEEN_PER_WISH);
