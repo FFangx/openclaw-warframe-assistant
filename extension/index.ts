@@ -8,6 +8,7 @@ import { commandToolSummary, directIntelType, isArbitrationShortcut, isPersonalA
 import { buildEvidenceEnvelope, STATE_ASSERTION_POLICY } from './evidence.mjs';
 import { classifyNaturalWarframeQuery, DYNAMIC_QUERY_POLICY } from './intent-policy.mjs';
 import { createContextBridge } from './context-bridge.mjs';
+import { executeWishlistUseCase, wishlistNeedsImmediateInspection } from './wishlist-usecase.mjs';
 
 const execFileAsync = promisify(execFile);
 const pluginDir = path.dirname(fileURLToPath(import.meta.url));
@@ -230,10 +231,6 @@ async function sendWishlistGatewayResult(api: any, result: any): Promise<void> {
   }
 }
 
-function wishlistNeedsImmediateCalibration(result: any): boolean {
-  return ['create', 'createMany', 'reprice', 'resume'].includes(String(result?.command || ''));
-}
-
 function wishlistMarketCommand(wish: any): string {
   const name = String(wish?.zhName || wish?.itemName || wish?.slug || '').trim();
   const rank = wish?.rankMode === 'max' ? ' 满级'
@@ -251,10 +248,11 @@ async function inspectCurrentWishlistNow(api: any, target: string, manageResult:
       render: false,
     });
     const hits = Array.isArray(result?.data?.hits) ? result.data.hits : [];
-    if (!hits.length) return { ok: true, hitCount: 0, marketCards: 0 };
+    if (!hits.length) return { ok: true, hitCount: 0, marketCards: 0, deliveries: [] };
     const shortcuts = await import(pathToFileURL(shortcutScript).href);
     const uniqueWishes = [...new Map(hits.map((hit: any) => [String(hit?.wishId || hit?.wish?.id || ''), hit?.wish])).values()].filter(Boolean);
     let marketCards = 0;
+    const deliveries = [];
     for (const wish of uniqueWishes as any[]) {
       const market = await shortcuts.runShortcut(wishlistMarketCommand(wish), { cardDir: subscriptionCardDir });
       const qualifying = (market?.data?.sell || []).filter((order: any) => {
@@ -267,16 +265,43 @@ async function inspectCurrentWishlistNow(api: any, target: string, manageResult:
         `当前已有 ${qualifying.length} 条卖单符合愿望 ${String(wish.id || '')}（≤${Number(wish.maxPrice)}p），直接给你最新市场行情。愿望仍会继续监控。`,
         contact,
       ].filter(Boolean).join('\n');
-      await sendWishlistGatewayResult(api, { target, mediaUrl: market.mediaUrl, text });
+      deliveries.push({ target, mediaUrl: market.mediaUrl, text });
       marketCards += 1;
     }
-    return { ok: true, hitCount: hits.length, marketCards };
+    return { ok: true, hitCount: hits.length, marketCards, deliveries };
   } catch (error) {
     // The wish is already durable and the singleton websocket remains active.
     // The 10-minute calibration cron will retry current listings later.
     api.logger.warn?.(`Warframe wishlist immediate calibration failed: ${String(error)}`);
     return { ok: false, hitCount: 0, marketCards: 0 };
   }
+}
+
+async function syncWishlistCronAction(api: any, target: string, action: string): Promise<void> {
+  if (action === 'ensure') await ensureWishlistCron(api, target);
+  else if (action === 'remove') await removeWishlistCron(api, target);
+}
+
+async function runWishlistCommandUseCase(api: any, request: any, enqueuePrimary: (result: any) => Promise<any>): Promise<any> {
+  return executeWishlistUseCase(request, {
+    manage: (command: any) => runJsonScript(wishlistScript, [
+      'manage', '--state', wishlistState, '--message', command.text,
+      '--target', command.target, '--owner', command.actorId,
+      '--owner-name', command.actorDisplayName, '--card-dir', command.cardDir || cardDir,
+    ], 30_000),
+    syncCron: (target: string, action: string) => syncWishlistCronAction(api, target, action),
+    refreshGateway: async () => { await wishlistGatewayRefresh?.(); },
+    enqueuePrimary,
+    inspectCurrent: (target: string, result: any) => inspectCurrentWishlistNow(api, target, result),
+    enqueueFollowups: async (deliveries: any[]) => {
+      for (const delivery of deliveries) await sendWishlistGatewayResult(api, delivery);
+    },
+    log: (level: string, message: string, error: unknown) => {
+      const output = `Warframe ${message}: ${String(error)}`;
+      if (level === 'error') api.logger.error(output);
+      else api.logger.warn?.(output);
+    },
+  });
 }
 
 // gateway_start owns exactly one public WFM subscription for the whole plugin.
@@ -439,37 +464,10 @@ function hasWarframeContext(prompt: string, messages: any[]): boolean {
 
 async function handleFastCommand(api: any, event: any): Promise<any | undefined> {
   if (!isQQChannel(event.channel) || (!isShortcut(event.content) && !isSubscriptionCommand(event.content))) return;
+  // Wishlist owns delivery ordering (primary feedback before immediate market
+  // follow-up), so every ingress hook routes it through the shared use case.
+  if (isWishlistCommand(event.content)) return;
   try {
-    if (isWishlistCommand(event.content)) {
-      const target = qqTarget(event);
-      const ownerId = String(event.senderId || '').trim().toLowerCase();
-      if (!target || !ownerId) throw new Error('missing QQ target or sender id');
-      const { stdout } = await execFileAsync(process.execPath, [
-        wishlistScript, 'manage', '--state', wishlistState,
-        '--message', event.content, '--target', target, '--owner', ownerId,
-        '--owner-name', String(event.senderName || event.senderUsername || ownerId),
-        '--card-dir', subscriptionCardDir,
-      ], {
-        timeout: 30_000, windowsHide: true, maxBuffer: 2 * 1024 * 1024, encoding: 'utf8',
-      });
-      const result = JSON.parse(stdout);
-      let cronWarning = '';
-      try {
-        if (result.cronAction === 'ensure') await ensureWishlistCron(api, target);
-        else if (result.cronAction === 'remove') await removeWishlistCron(api, target);
-      } catch (error) {
-        api.logger.error(`Warframe wishlist calibration cron sync failed: ${String(error)}`);
-        cronWarning = '\n⚠️ 愿望已保存，但低频校准任务同步失败；实时监控仍会在网关恢复后继续。';
-      }
-      await wishlistGatewayRefresh?.();
-      return {
-        text: `${result.text || '愿望单已更新。'}${cronWarning}`,
-        ...(result.mediaUrl ? { mediaUrl: result.mediaUrl, trustedLocalMedia: true } : {}),
-        replyToId: event.messageId,
-        isError: result.ok === false || Boolean(cronWarning),
-        raw: result,
-      };
-    }
     if (isPersonalAccountCommand(event.content)) {
       if (event.isGroup || !isExactOwner(api, event.senderId)) {
         api.logger.info(`Warframe personal command denied: isGroup=${Boolean(event.isGroup)}`);
@@ -636,6 +634,44 @@ async function sendDirectQQReply(api: any, event: any, ctx: any, reply: any): Pr
   if (result?.error) throw new Error(`QQ delivery failed: ${String(result.error)}`);
 }
 
+async function runWishlistIngressUseCase(api: any, event: any, ctx: any, source: string): Promise<any> {
+  const target = qqTarget({
+    isGroup: event.isGroup,
+    conversationId: ctx?.conversationId || event.conversationId,
+    senderId: event.senderId || ctx?.senderId,
+  });
+  const actorId = String(event.senderId || ctx?.senderId || '').trim().toLowerCase();
+  const outcome = await runWishlistCommandUseCase(api, {
+    source,
+    text: String(event.content || event.body || event.cleanedBody || ''),
+    channel: 'qqbot',
+    target,
+    actorId,
+    actorDisplayName: String(event.senderName || event.senderUsername || ctx?.channelContext?.sender?.name || actorId),
+    isGroup: Boolean(event.isGroup || agentContextIsGroup(ctx)),
+    cardDir: subscriptionCardDir,
+  }, async (result: any) => {
+    const warning = String(result?.warning || '').trim();
+    await sendDirectQQReply(api, event, ctx, {
+      text: result?.text || '愿望单已更新。',
+      ...(result?.mediaUrl ? { mediaUrl: result.mediaUrl, trustedLocalMedia: true } : {}),
+      replyToId: event.messageId,
+      isError: result?.ok === false || Boolean(warning),
+      raw: result,
+    });
+    if (warning) {
+      await sendDirectQQReply(api, event, ctx, {
+        text: `⚠️ ${warning}`,
+        replyToId: event.messageId,
+        isError: true,
+      });
+    }
+    return { accepted: true, mediaDelivered: Boolean(result?.mediaUrl) };
+  });
+  if (!outcome.delivery.accepted) throw new Error(outcome.result?.text || 'wishlist primary delivery failed');
+  return outcome;
+}
+
 const warframeToolSchema = {
   type: 'object',
   properties: {
@@ -745,24 +781,31 @@ function createWarframeTool(api: any, ctx: any): any {
   const personalAllowed = channel === 'qqbot' && !toolIsGroup(ctx)
     && (ctx?.senderIsOwner === true || isExactOwner(api, sender));
 
-  async function executeWishlistTool(query: string, operation: string): Promise<any> {
-    if (channel && channel !== 'qqbot') return jsonToolResult({ ok: false, error: '愿望单只允许从 QQ 会话发起。' });
-    if (!target || !sender) return jsonToolResult({ ok: false, error: '当前会话缺少可信 QQ 身份，不能修改愿望单。' });
-    const result = await runJsonScript(wishlistScript, [
-      'manage', '--state', wishlistState, '--message', query, '--target', target, '--owner', sender,
-      '--owner-name', sender, '--card-dir', cardDir,
-    ], 30_000);
-    try {
-      if (result.cronAction === 'ensure') await ensureWishlistCron(api, target);
-      else if (result.cronAction === 'remove') await removeWishlistCron(api, target);
-    } catch (error) {
-      result.warning = `愿望已保存，但低频校准任务同步失败：${String(error)}`;
-    }
-    await wishlistGatewayRefresh?.();
-    const mediaUrl = String(result?.mediaUrl || '').trim();
-    const mediaDelivered = mediaUrl ? await sendToolMedia(api, ctx, mediaUrl) : false;
-    if (wishlistNeedsImmediateCalibration(result)) result.currentMarket = await inspectCurrentWishlistNow(api, target, result);
-    return jsonToolResult(decorateToolResult(result, mediaDelivered, operation, query));
+  async function runWishlistToolUseCase(query: string, operation: string): Promise<any> {
+    const outcome = await runWishlistCommandUseCase(api, {
+      source: `tool-${operation}`,
+      text: query,
+      channel,
+      target,
+      actorId: sender,
+      actorDisplayName: sender,
+      isGroup: toolIsGroup(ctx),
+      cardDir,
+    }, async (result: any) => {
+      const mediaUrl = String(result?.mediaUrl || '').trim();
+      const mediaDelivered = mediaUrl ? await sendToolMedia(api, ctx, mediaUrl) : false;
+      // The model fallback is returned only after this use case completes. If
+      // an action needs an immediate market follow-up, require the primary card
+      // to be accepted now so a follow-up can never overtake it.
+      const accepted = wishlistNeedsImmediateInspection(result) ? mediaDelivered : true;
+      return { accepted, mediaDelivered };
+    });
+    return jsonToolResult(decorateToolResult(
+      outcome.result,
+      outcome.delivery.mediaDelivered,
+      operation,
+      query,
+    ));
   }
 
   return {
@@ -784,7 +827,7 @@ function createWarframeTool(api: any, ctx: any): any {
 
       if (operation === 'command') {
         if (isWishlistCommand(query)) {
-          return executeWishlistTool(query, operation);
+          return runWishlistToolUseCase(query, operation);
         }
         if (isWeeklyCommand(query) && !personalAllowed) {
           return jsonToolResult({ ok: false, error: '周报和周常核销只允许用户本人在 QQ 私聊中操作。' });
@@ -816,7 +859,7 @@ function createWarframeTool(api: any, ctx: any): any {
         // 兼容旧模型仍把「愿望 商品 价格」标成 subscription；愿望单
         // 使用自己的 ledger 与单例 gateway，不进入世界状态订阅解析器。
         if (isWishlistCommand(query)) {
-          return executeWishlistTool(query, operation);
+          return runWishlistToolUseCase(query, operation);
         }
         if (channel && channel !== 'qqbot') return jsonToolResult({ ok: false, error: '订阅写操作只允许从 QQ 会话发起。' });
         if (!target || !sender) return jsonToolResult({ ok: false, error: '当前会话缺少可信 QQ 身份，不能修改订阅。' });
@@ -900,7 +943,7 @@ export default definePluginEntry({
       if (!isShortcut(content) && !isSubscriptionCommand(content)) return;
       api.logger.info(`Warframe before_dispatch matched: ${content.trim()}`);
       try {
-        const reply = await handleFastCommand(api, {
+        const ingressEvent = {
           channel: 'qqbot',
           content,
           conversationId: ctx.conversationId,
@@ -909,17 +952,17 @@ export default definePluginEntry({
           senderUsername: event.senderUsername || ctx.channelContext?.sender?.username,
           isGroup: Boolean(event.isGroup || agentContextIsGroup(ctx)),
           messageId: event.replyToId || ctx.replyToId,
+        };
+        if (isWishlistCommand(content)) {
+          await runWishlistIngressUseCase(api, ingressEvent, ctx, 'before_dispatch');
+          api.logger.info(`Warframe wishlist delivered before model: ${content.trim()}`);
+          return { handled: true };
+        }
+        const reply = await handleFastCommand(api, {
+          ...ingressEvent,
         });
         if (!reply) throw new Error('matched command produced no reply');
         await sendDirectQQReply(api, event, ctx, reply);
-        if (wishlistNeedsImmediateCalibration(reply.raw)) {
-          const target = qqTarget({
-            isGroup: event.isGroup,
-            conversationId: ctx.conversationId,
-            senderId: event.senderId || ctx.senderId,
-          });
-          if (target) reply.raw.currentMarket = await inspectCurrentWishlistNow(api, target, reply.raw);
-        }
         const personalAllowed = !Boolean(event.isGroup || agentContextIsGroup(ctx)) && isExactOwner(api, event.senderId || ctx.senderId);
         rememberShortCommandContext(event, ctx, reply.raw, personalAllowed);
         api.logger.info(`Warframe short command delivered before model: ${content.trim()}`);
@@ -931,6 +974,16 @@ export default definePluginEntry({
     }, { priority: 2000, timeoutMs: 50_000 });
 
     api.on('inbound_claim', async (event) => {
+      if (isQQChannel(event.channel) && isWishlistCommand(event.content)) {
+        try {
+          await runWishlistIngressUseCase(api, event, event, 'inbound_claim');
+          api.logger.info(`Warframe wishlist claimed by inbound_claim: ${String(event.content || '').trim()}`);
+          return { handled: true };
+        } catch (error) {
+          api.logger.error(`Warframe wishlist inbound_claim failed closed: ${String(error)}`);
+          return { handled: true, reply: { text: 'Warframe 愿望单暂时无法更新，请稍后重试。', isError: true } };
+        }
+      }
       const reply = await handleFastCommand(api, event);
       if (!reply) return;
       api.logger.info(`Warframe short command claimed by inbound_claim: ${String(event.content || '').trim()}`);
@@ -949,7 +1002,7 @@ export default definePluginEntry({
       api.logger.info(
         `Warframe before_agent_reply matched: channel=${String(channel || 'unknown')} command=${content.trim()}`,
       );
-      const reply = await handleFastCommand(api, {
+      const ingressEvent = {
         channel: 'qqbot',
         content,
         conversationId: ctx.channelId || ctx.chatId,
@@ -957,6 +1010,19 @@ export default definePluginEntry({
         senderName: ctx.channelContext?.sender?.name,
         senderUsername: ctx.channelContext?.sender?.username,
         isGroup: agentContextIsGroup(ctx),
+      };
+      if (isWishlistCommand(content)) {
+        try {
+          await runWishlistIngressUseCase(api, ingressEvent, ctx, 'before_agent_reply');
+          api.logger.info(`Warframe wishlist hard-intercepted before model: ${content.trim()}`);
+          return { handled: true, reason: 'warframe-wishlist-command' };
+        } catch (error) {
+          api.logger.error(`Warframe wishlist before_agent_reply failed closed: ${String(error)}`);
+          return { handled: true, reply: { text: 'Warframe 愿望单暂时无法更新，请稍后重试。', isError: true }, reason: 'warframe-wishlist-command-error' };
+        }
+      }
+      const reply = await handleFastCommand(api, {
+        ...ingressEvent,
       });
       api.logger.info(`Warframe short command hard-intercepted before model: ${content.trim()}`);
       return { handled: true, reply: reply || { text: 'Warframe 快捷命令未能生成结果。', isError: true }, reason: 'warframe-fast-command' };

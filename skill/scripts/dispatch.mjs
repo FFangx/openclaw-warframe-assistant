@@ -27,7 +27,6 @@ const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const workspaceDir = path.resolve(scriptsDir, '..', '..', '..');
 const DEFAULT_SUBSCRIPTION_STATE = path.join(workspaceDir, 'state', 'warframe-subscriptions.json');
 const DEFAULT_WEEKLY_STATE = path.join(workspaceDir, 'state', 'warframe-weekly.json');
-const DEFAULT_WISHLIST_STATE = path.join(workspaceDir, 'state', 'warframe-wishlist.json');
 const DEFAULT_CARD_DIR = path.join(workspaceDir, '.cache', 'warframe-cards');
 
 // 模板目录由唯一命令注册表生成；保留旧字段兼容 `dispatch list` 的调用者。
@@ -56,14 +55,15 @@ export async function dispatchCommand(message, options = {}) {
   const personalAllowed = options.personalAllowed === true || options.personalAllowed === 'true';
 
   if (matchWishlistCommand(text)) {
-    const target = String(options.target || '').trim().toLowerCase();
-    const ownerId = String(options.owner || '').trim().toLowerCase();
-    if (!target || !ownerId) return { handled: true, ok: false, kind: 'wishlist', text: '当前会话缺少可信 QQ 身份，不能修改愿望单。' };
-    const { manageWishlist } = await import('./wishlist.mjs');
-    const result = await manageWishlist(text, {
-      target, ownerId, ownerName: options.ownerName || ownerId,
-    }, options.wishlistState || DEFAULT_WISHLIST_STATE, { cardDir });
-    return { handled: true, ok: result.ok !== false, kind: 'wishlist', mediaUrl: result.mediaUrl || null, text: result.text || '', ...evidenceMeta(result), ...(result.wish ? { wish: result.wish } : {}) };
+    // Wishlist mutations require plugin-owned cron, gateway refresh, ordered
+    // QQ delivery and immediate market inspection. Refuse a partial CLI write
+    // instead of changing the ledger without completing those follow-up steps.
+    return {
+      handled: true,
+      ok: false,
+      kind: 'wishlist-orchestration-required',
+      text: '愿望单必须从可信 QQ 会话执行；当前入口不会修改愿望单。',
+    };
   }
 
   // 个人数据门：非用户私聊一律拒绝，不区分具体命令（与插件行为一致）

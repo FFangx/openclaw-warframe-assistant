@@ -37,18 +37,22 @@ test('订阅 cron 使用脚本直投 QQ 原图并关闭 runner announce 压缩�
   assert.match(subscriptionBlock, /'--timeout-seconds', '120'/u);
 });
 
-test('愿望创建后的当前行情检查覆盖裸命令与两条模型工具路径', async () => {
-  const entry = await readFile(new URL('./index.ts', import.meta.url), 'utf8');
-  assert.match(entry, /async function inspectCurrentWishlistNow/u);
-  assert.match(entry, /forceRest:\s*true/u);
-  assert.match(entry, /render:\s*false/u);
-  assert.match(entry, /runShortcut\(wishlistMarketCommand\(wish\)/u);
-  assert.match(entry, /Number\(order\?\.platinum\) \/ perTrade <= Number\(wish\.maxPrice\)/u);
-  assert.match(entry, /当前已有[^`]+最新市场行情/u);
-  assert.equal((entry.match(/currentMarket\s*=\s*await inspectCurrentWishlistNow/gu) || []).length, 2,
-    '裸命令与共享模型工具执行器都必须立即查当前行情');
-  assert.equal((entry.match(/return executeWishlistTool\(query, operation\)/gu) || []).length, 2,
-    'operation=command 与兼容 operation=subscription 必须共用同一愿望执行器');
+test('愿望裸入口与两条模型工具路径只保留共享用例编排', async () => {
+  const [entry, dispatch] = await Promise.all([
+    readFile(new URL('./index.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../skill/scripts/dispatch.mjs', import.meta.url), 'utf8'),
+  ]);
+  assert.match(entry, /import \{ executeWishlistUseCase, wishlistNeedsImmediateInspection \} from '\.\/wishlist-usecase\.mjs'/u);
+  assert.match(entry, /source:\s*`tool-\$\{operation\}`/u);
+  assert.match(entry, /runWishlistIngressUseCase\(api, ingressEvent, ctx, 'before_dispatch'\)/u);
+  assert.match(entry, /runWishlistIngressUseCase\(api, event, event, 'inbound_claim'\)/u);
+  assert.match(entry, /runWishlistIngressUseCase\(api, ingressEvent, ctx, 'before_agent_reply'\)/u);
+  assert.equal((entry.match(/return runWishlistToolUseCase\(query, operation\)/gu) || []).length, 2,
+    'operation=command 与兼容 operation=subscription 必须共用同一愿望用例');
+  assert.doesNotMatch(entry, /wishlistNeedsImmediateCalibration/u);
+  assert.doesNotMatch(entry, /async function executeWishlistTool/u);
+  assert.doesNotMatch(dispatch, /manageWishlist/u);
+  assert.match(dispatch, /当前入口不会修改愿望单/u);
 });
 
 test('strict documented commands stay on the deterministic fast path', () => {
