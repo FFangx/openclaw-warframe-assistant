@@ -3,10 +3,10 @@
 // 统一模板调度器：模型意图识别后的唯一执行口。
 // 「AI 只做翻译官，判断全在脚本」——模型把用户话术归一成规范短命令交给这里，
 // 本脚本复用各模块的确定性查询/渲染，返回 {handled, mediaUrl, text}；
-// 个人数据命令必须显式 --personal-allowed true 才放行（与插件同一条门）。
+// 个人数据命令必须同时提供 personal-allowed、匹配的 QQ 私聊 target 与 owner（与插件同一条门）。
 //
 // 用法：
-//   node dispatch.mjs run "<规范命令>" [--personal-allowed true] [--target <会话>] [--owner <发送者>] [--card-dir <目录>]
+//   node dispatch.mjs run "<规范命令>" [--personal-allowed true] [--target qqbot:c2c:<发送者>] [--owner <发送者>] [--card-dir <目录>]
 //   node dispatch.mjs list        # 输出模板目录（机器可读）
 
 import path from 'node:path';
@@ -22,6 +22,7 @@ import {
   matchWishlistCommand,
 } from './command-registry.mjs';
 import { executeWeeklyUseCase } from './weekly-usecase.mjs';
+import { executePersonalUseCase } from './personal-usecase.mjs';
 
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 // scripts → warframe-assistant → skills → workspace（与插件的路径解析保持同一根）
@@ -69,12 +70,25 @@ export async function dispatchCommand(message, options = {}) {
 
   // 个人数据门：非用户私聊一律拒绝，不区分具体命令（与插件行为一致）
   if (isUserPrivateCommand(text)) {
-    if (!personalAllowed) {
-      return { handled: true, ok: false, kind: 'personal-denied', text: '这是个人账号命令，只在用户本人私聊里可用。' };
-    }
-    const { runAlecaMessage } = await import('./alecaframe.mjs');
-    const result = await runAlecaMessage(text, { cardDir });
-    if (result.handled) return { handled: true, ok: result.ok !== false, kind: result.command || 'account', mediaUrl: result.mediaUrl || null, text: result.text || '', followupText: result.followupText || null, ...evidenceMeta(result) };
+    const target = String(options.target || '').trim().toLowerCase();
+    const outcome = await executePersonalUseCase({
+      source: 'dispatch-fallback',
+      text,
+      channel: String(options.channel || (/^qqbot:/u.test(target) ? 'qqbot' : '')).trim().toLowerCase(),
+      target,
+      actorId: options.owner,
+      actorDisplayName: options.ownerName,
+      personalAllowed,
+      isGroup: options.isGroup === true || /^qqbot:group:/u.test(target),
+      cardDir,
+    }, {
+      execute: async (command) => {
+        const { runAlecaMessage } = await import('./alecaframe.mjs');
+        return runAlecaMessage(command.text, { cardDir: command.cardDir });
+      },
+    });
+    const result = outcome.result;
+    if (result.handled !== false) return { handled: true, ok: result.ok !== false, kind: result.kind || result.command || outcome.commandId || 'account', commandId: outcome.commandId, mediaUrl: result.mediaUrl || null, text: result.text || '', followupText: result.followupText || null, ...evidenceMeta(result) };
     return { handled: false, reason: 'personal-unparsed' };
   }
 
@@ -181,6 +195,8 @@ async function main() {
         target: args.target,
         owner: args.owner,
         ownerName: args['owner-name'],
+        channel: args.channel,
+        isGroup: String(args['is-group']).toLowerCase() === 'true',
         cardDir: args['card-dir'],
       });
       process.stdout.write(`${JSON.stringify(result, stripDataUriReplacer)}\n`);

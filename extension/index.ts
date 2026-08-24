@@ -22,6 +22,7 @@ const dropsScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warfram
 const weeklyScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'weekly.mjs');
 const weeklyUsecaseScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'weekly-usecase.mjs');
 const alecaScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'alecaframe.mjs');
+const personalUsecaseScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'personal-usecase.mjs');
 const subscriptionState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-subscriptions.json');
 const wishlistState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-wishlist.json');
 const dropsState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-drops.json');
@@ -478,22 +479,20 @@ async function handleFastCommand(api: any, event: any): Promise<any | undefined>
   if (isWishlistCommand(event.content)) return;
   try {
     if (isPersonalAccountCommand(event.content)) {
-      if (event.isGroup || !isExactOwner(api, event.senderId)) {
-        api.logger.info(`Warframe personal command denied: isGroup=${Boolean(event.isGroup)}`);
-        return {
-          text: '个人账号数据只允许用户本人在 QQ 私聊中查询。',
-          replyToId: event.messageId,
-          isError: true,
-        };
-      }
-      const { stdout } = await execFileAsync(process.execPath, [alecaScript, 'parse', event.content], {
-        timeout: 60_000,
-        windowsHide: true,
-        maxBuffer: 4 * 1024 * 1024,
-        encoding: 'utf8',
-        env: { ...process.env, WARFRAME_CARD_DIR: cardDir },
+      const target = qqTarget(event);
+      const ownerId = String(event.senderId || '').trim().toLowerCase();
+      const outcome = await runPersonalCommandUseCase(api, {
+        source: 'fast-command',
+        text: event.content,
+        channel: event.channel,
+        target,
+        actorId: ownerId,
+        actorDisplayName: String(event.senderName || event.senderUsername || ownerId),
+        personalAllowed: !event.isGroup && isExactOwner(api, event.senderId),
+        isGroup: Boolean(event.isGroup),
+        cardDir,
       });
-      const result = JSON.parse(stdout);
+      const result = outcome.result;
       return {
         text: result.followupText || result.text || '账号快照查询完成。',
         ...(result.mediaUrl ? { mediaUrl: result.mediaUrl, trustedLocalMedia: true } : {}),
@@ -735,6 +734,16 @@ async function runWeeklyCommandUseCase(api: any, request: any): Promise<any> {
   });
 }
 
+async function runPersonalCommandUseCase(api: any, request: any): Promise<any> {
+  const { executePersonalUseCase } = await import(pathToFileURL(personalUsecaseScript).href);
+  return executePersonalUseCase(request, {
+    execute: (command: any) => runJsonScript(alecaScript, ['parse', command.text], 60_000),
+    log: (_level: string, message: string, error: unknown) => {
+      api.logger.error(`Warframe ${message}: ${String(error)}`);
+    },
+  });
+}
+
 function toolTarget(ctx: any): string | null {
   const sender = String(ctx?.requesterSenderId || '').trim().toLowerCase();
   const rawTo = String(ctx?.deliveryContext?.to || '').trim().toLowerCase();
@@ -860,6 +869,24 @@ function createWarframeTool(api: any, ctx: any): any {
     return jsonToolResult(decorateToolResult(result, mediaDelivered, 'command', query));
   }
 
+  async function runPersonalToolUseCase(query: string): Promise<any> {
+    const outcome = await runPersonalCommandUseCase(api, {
+      source: 'tool-command',
+      text: query,
+      channel,
+      target,
+      actorId: sender,
+      actorDisplayName: sender,
+      personalAllowed,
+      isGroup: toolIsGroup(ctx),
+      cardDir,
+    });
+    const result = outcome.result;
+    const mediaUrl = String(result?.mediaUrl || '').trim();
+    const mediaDelivered = mediaUrl ? await sendToolMedia(api, ctx, mediaUrl) : false;
+    return jsonToolResult(decorateToolResult(result, mediaDelivered, 'command', query));
+  }
+
   return {
     name: 'warframe_assistant',
     label: 'Warframe Assistant',
@@ -886,6 +913,9 @@ function createWarframeTool(api: any, ctx: any): any {
         }
         if (isWeeklyCommand(query)) {
           return runWeeklyToolUseCase(query);
+        }
+        if (isPersonalAccountCommand(query)) {
+          return runPersonalToolUseCase(query);
         }
         const result = await runJsonScript(dispatchScript, [
           'run', query,

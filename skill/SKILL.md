@@ -39,8 +39,8 @@ Node 内置 fetch。`{baseDir}` = 本 skill 目录。装机自检：`node {baseD
 # 统一调度器（模型路由唯一执行口）：任何模板命令都从这里跑
 node {baseDir}/scripts/dispatch.mjs run "<规范命令>"            # 如 "仲裁"、"wm 悟空p 满级"、"购买 裂罅破解器"
 node {baseDir}/scripts/dispatch.mjs run "周常" --personal-allowed true --target <QQ私聊会话> --owner <发送者>
-node {baseDir}/scripts/dispatch.mjs run "奸商推荐" --personal-allowed true   # 仅确认用户本人私聊时才传
-node {baseDir}/scripts/dispatch.mjs run "杜卡德 600 保留1" --personal-allowed true
+node {baseDir}/scripts/dispatch.mjs run "奸商推荐" --personal-allowed true --target qqbot:c2c:<发送者> --owner <发送者>
+node {baseDir}/scripts/dispatch.mjs run "杜卡德 600 保留1" --personal-allowed true --target qqbot:c2c:<发送者> --owner <发送者>
 node {baseDir}/scripts/dispatch.mjs list                        # 意图→模板目录
 
 # 查询手册（无模板的数据问题；输出 JSON 含 source 供标注来源）
@@ -61,7 +61,7 @@ node {baseDir}/scripts/warframe.mjs monitor --platform pc --state <绝对路径>
 node {baseDir}/scripts/subscriptions.mjs manage --state <路径> --message "订阅 仲裁 生存" --target <会话> --owner <发送者>
 # 愿望写操作必须调用 `warframe_assistant` 工具，由插件统一处理身份、cron、Gateway 与即时行情检查；不得直跑愿望管理脚本。
 # 周常查询与写操作必须走 warframe_assistant/dispatch 的共享用例；weekly.mjs remind 仅供受管 cron 使用。
-node {baseDir}/scripts/alecaframe.mjs parse "我的账号"
+# 个人账号查询必须走 warframe_assistant/dispatch 的共享用例；禁止直跑 alecaframe.mjs parse。
 ```
 
 输出 UTF-8 JSON 含 `fetchedAt`，由你格式化为中文回答；PowerShell 中文乱码先 `chcp 65001`。

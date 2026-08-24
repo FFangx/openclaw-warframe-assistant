@@ -108,6 +108,27 @@ test('周常快捷入口、模型工具与调度器 fallback 共用周常用例'
   assert.match(skill, /禁止直跑 `weekly\.mjs manage`/u);
 });
 
+test('个人账号快捷入口、模型工具与调度器 fallback 共用个人账号用例', async () => {
+  const [entry, dispatch, skill] = await Promise.all([
+    readFile(new URL('./index.ts', import.meta.url), 'utf8'),
+    readInstalledOrSourceDispatch(),
+    readInstalledOrSourceSkill(),
+  ]);
+  assert.match(entry, /personalUsecaseScript = path\.resolve/u);
+  assert.match(entry, /runPersonalCommandUseCase\(api,/u);
+  assert.match(entry, /source: 'fast-command'/u);
+  assert.match(entry, /source: 'tool-command'/u);
+  assert.match(entry, /return runPersonalToolUseCase\(query\)/u);
+  assert.equal((entry.match(/runJsonScript\(alecaScript, \['parse', command\.text\]/gu) || []).length, 1,
+    'AlecaFrame 个人命令 CLI 只能在共享用例端口绑定一次');
+  assert.doesNotMatch(entry, /Warframe personal command denied/u);
+  assert.match(dispatch, /import \{ executePersonalUseCase \} from '\.\/personal-usecase\.mjs'/u);
+  assert.match(dispatch, /source: 'dispatch-fallback'/u);
+  assert.doesNotMatch(dispatch, /kind: 'personal-denied'.*这是个人账号命令/us);
+  assert.doesNotMatch(skill, /^\s*node\s+\{baseDir\}\/scripts\/alecaframe\.mjs\s+parse\b/mu);
+  assert.match(skill, /禁止直跑 alecaframe\.mjs parse/u);
+});
+
 test('strict documented commands stay on the deterministic fast path', () => {
   for (const input of [
     'wm 高压电流', '遗物 Axi A22', '获取 Caliban p', '普通裂缝', '赏金 尖刃弹头', '购买 诡文枭主',
