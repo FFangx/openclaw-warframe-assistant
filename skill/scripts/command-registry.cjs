@@ -15,18 +15,18 @@ const command = (value) => freeze(value);
 
 const COMMAND_REGISTRY_SCHEMA_VERSION = 1;
 
-// Help sections are stable machine identifiers.  User-visible titles are labels,
-// not routing keys, so changing a title cannot silently break `帮助 <分区>`.
+// Help section ids and helpQuery values are stable keys. User-visible titles are
+// also accepted as convenience aliases, while the overview always prints helpQuery.
 const HELP_SECTION_REGISTRY = freeze([
-  { id: 'basics', title: '基础使用', aliases: ['基础', '入门', '使用'], order: 0 },
-  { id: 'market', title: '查价 · warframe.market', aliases: ['查价', '市场', '行情'], order: 10 },
-  { id: 'relics', title: '遗物 & 裂缝', aliases: ['遗物', '裂缝', '遗物与裂缝', '遗物裂缝'], order: 20 },
-  { id: 'worldstate', title: '世界状态', aliases: ['情报'], order: 30 },
-  { id: 'weekly', title: '周常', aliases: ['周报'], order: 40 },
-  { id: 'shop', title: '商店', aliases: ['商店命令'], order: 50 },
-  { id: 'account', title: '我的账号', aliases: ['账号', '个人'], order: 60 },
-  { id: 'subscription', title: '订阅提醒', aliases: ['提醒'], order: 70 },
-  { id: 'wishlist', title: '愿望单 · 市场盯价', aliases: ['愿望单', '市场盯价'], order: 80 },
+  { id: 'basics', title: '基础使用', helpQuery: '基础', summary: '查看帮助入口和使用方式', aliases: ['基础', '入门', '使用'], order: 0 },
+  { id: 'market', title: '查价 · warframe.market', helpQuery: '查价', summary: '市场查价、挂单与近期行情', aliases: ['查价', '市场', '行情'], order: 10 },
+  { id: 'relics', title: '遗物 & 裂缝', helpQuery: '遗物', summary: '遗物奖励、来源、裂缝与开启建议', aliases: ['遗物', '裂缝', '遗物与裂缝', '遗物裂缝'], order: 20 },
+  { id: 'worldstate', title: '世界状态', helpQuery: '世界状态', summary: '仲裁、警报、入侵、活动与每日轮换', aliases: ['情报'], order: 30 },
+  { id: 'weekly', title: '周常', helpQuery: '周常', summary: '本周任务清单、完成与撤销记录', aliases: ['周报'], order: 40 },
+  { id: 'shop', title: '商店', helpQuery: '商店', summary: '各类商店、好货、奸商建议与购买来源', aliases: ['商店命令'], order: 50 },
+  { id: 'account', title: '我的账号', helpQuery: '账号', summary: '库存、遗物、赋能、紫卡与杜卡德规划', aliases: ['账号', '个人'], order: 60 },
+  { id: 'subscription', title: '订阅提醒', helpQuery: '订阅', summary: '事件、商品、轮换和掉落提醒管理', aliases: ['订阅', '提醒'], order: 70 },
+  { id: 'wishlist', title: '愿望单 · 市场盯价', helpQuery: '愿望单', summary: '目标价格盯盘与愿望状态管理', aliases: ['愿望单', '市场盯价'], order: 80 },
 ]);
 
 const COMMAND_REGISTRY = freeze([
@@ -40,7 +40,6 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'shortcuts.runShortcut',
     helpSectionId: 'basics',
-    featured: true,
     helpTitle: '功能总览',
     helpSummary: '查看全部公开、用户私聊和订阅入口',
     helpExamples: ['帮助'],
@@ -59,10 +58,13 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'shortcuts.runShortcut',
     helpSectionId: 'market',
-    featured: true,
     helpTitle: '查价',
     helpSummary: '最低卖单·买单·90天行情',
-    helpExamples: ['wm 悟空p', 'wm 赋能充沛 满级', '悟空p多少钱'],
+    helpExamples: [
+      { command: 'wm 悟空p', description: '查看最低卖单、买单和 90 天行情' },
+      { command: 'wm 赋能充沛 满级', description: '按赋能等级查询对应市场价格' },
+      { command: '悟空p多少钱', description: '自然语言问价也会进入同一查价流程' },
+    ],
     nextActions: [],
     matchers: [
       { routes: ['shortcut-parser', 'shortcut-gate'], kind: 'regex', pattern: '^wm(?![a-z])\\s*(?<query>[\\s\\S]*)$', flags: 'iu' },
@@ -78,10 +80,12 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'shortcuts.runShortcut',
     helpSectionId: 'relics',
-    featured: true,
     helpTitle: '遗物',
     helpSummary: '正查奖励与价格，反查物品来源',
-    helpExamples: ['遗物 前x1', '遗物 战刃'],
+    helpExamples: [
+      { command: '遗物 前x1', description: '正查遗物奖励、价格、精炼期望与来源' },
+      { command: '遗物 战刃', description: '反查物品由哪些遗物产出' },
+    ],
     nextActions: ['获取 <物品>'],
     matchers: [
       { routes: ['shortcut-parser'], kind: 'startsWith', pattern: '遗物', capture: 'query' },
@@ -98,7 +102,6 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'shortcuts.runShortcut',
     helpSectionId: 'relics',
-    featured: true,
     helpTitle: '获取',
     helpSummary: '库存优先·当前赏金·常驻掉点获取路线',
     helpExamples: ['获取 Prime部件'],
@@ -117,7 +120,6 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'shortcuts.runShortcut',
     helpSectionId: 'relics',
-    featured: true,
     helpTitle: '裂缝',
     helpSummary: '全部普通/钢铁任务与筛选；用户私聊逐任务配库存遗物',
     helpExamples: ['裂缝 [筛选]'],
@@ -138,7 +140,6 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'subscriptions.queryArbitration',
     helpSectionId: 'worldstate',
-    featured: true,
     helpTitle: '仲裁',
     helpSummary: '当前仲裁任务',
     helpExamples: ['仲裁'],
@@ -157,7 +158,6 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'subscriptions.queryIntel(alert)',
     helpSectionId: 'worldstate',
-    featured: false,
     helpTitle: '警报',
     helpSummary: '当前警报',
     helpExamples: ['警报'],
@@ -177,7 +177,6 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'subscriptions.queryIntel(invasion)',
     helpSectionId: 'worldstate',
-    featured: false,
     helpTitle: '入侵',
     helpSummary: '当前入侵与稀有奖励',
     helpExamples: ['入侵'],
@@ -197,7 +196,6 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'subscriptions.queryIntel(event)',
     helpSectionId: 'worldstate',
-    featured: false,
     helpTitle: '活动',
     helpSummary: '当前特殊活动',
     helpExamples: ['活动'],
@@ -217,7 +215,6 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'subscriptions.queryIntel(sortie)',
     helpSectionId: 'worldstate',
-    featured: false,
     helpTitle: '突击',
     helpSummary: '今日三段任务与词缀',
     helpExamples: ['突击'],
@@ -237,7 +234,6 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'subscriptions.queryIntel(incursion)',
     helpSectionId: 'worldstate',
-    featured: false,
     helpTitle: '钢铁侵袭',
     helpSummary: '今日六节点钢铁精华任务',
     helpExamples: ['钢铁侵袭'],
@@ -257,7 +253,6 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'shortcuts.runShortcut',
     helpSectionId: 'worldstate',
-    featured: false,
     helpTitle: '赏金',
     helpSummary: '六区索引、单区奖池和当前奖励反查',
     helpExamples: ['赏金 火卫二'],
@@ -276,7 +271,6 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'subscriptions.queryIntel(trader)',
     helpSectionId: 'worldstate',
-    featured: true,
     helpTitle: '虚空商人',
     helpSummary: '到离时间与公开货单；用户私聊可进入购物建议',
     helpExamples: ['虚空商人'],
@@ -296,10 +290,13 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'weekly.manage',
     helpSectionId: 'weekly',
-    featured: true,
     helpTitle: '周常',
     helpSummary: '本周清单与打卡；只在用户私聊中操作',
-    helpExamples: ['周常', '完成 1 3 / 撤销 2', '跳过 5 / 取消跳过 5'],
+    helpExamples: [
+      { command: '周常', description: '查看本周任务清单和当前完成状态' },
+      { command: '完成 1 3 / 撤销 2', description: '标记完成或撤销完成；仅用户私聊' },
+      { command: '跳过 5 / 取消跳过 5', description: '隐藏暂不处理的任务或恢复显示' },
+    ],
     nextActions: [],
     matchers: [
       { routes: ['weekly', 'shortcut-gate'], kind: 'exact', pattern: '(?:周常|当前周常|周常清单|周常列表|本周周常|周报|周常帮助|清空周常)' },
@@ -316,10 +313,12 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'alecaframe.runAlecaMessage',
     helpSectionId: 'account',
-    featured: false,
     helpTitle: '账号',
     helpSummary: '账号、库存、遗物、赋能和紫卡快照只读查询',
-    helpExamples: ['我的账号 / 我的库存 X', '我的遗物 前N11 / 账号周常'],
+    helpExamples: [
+      { command: '我的账号 / 我的库存 X', description: '查看账号概览或按分类、物品检索库存' },
+      { command: '我的遗物 前N11 / 账号周常', description: '查看个人遗物、赋能或账号周常快照' },
+    ],
     nextActions: [],
     matchers: [
       { routes: ['user-account', 'shortcut-gate'], kind: 'exact', pattern: '(?:我的账号|账号状态|我的状态|账号周常|我的周常状态|周常同步状态|刷新账号|刷新库存)' },
@@ -337,10 +336,12 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'alecaframe.runAlecaMessage',
     helpSectionId: 'relics',
-    featured: false,
     helpTitle: '开遗物',
     helpSummary: '按库存、目标和队伍偏好推荐遗物；可同步 WFInfo',
-    helpExamples: ['开遗物 [条件] 🔒', '开遗物 商品名 🔒'],
+    helpExamples: [
+      { command: '开遗物 [条件] 🔒', description: '按库存、目标、裂缝和队伍偏好推荐' },
+      { command: '开遗物 商品名 🔒', description: '围绕当前奸商商品保本线规划' },
+    ],
     nextActions: [],
     matchers: [
       { routes: ['user-account', 'shortcut-gate'], kind: 'regex', pattern: '^(?:开遗物|遗物推荐|开什么遗物|开什么)(?:\\s+.*)?$', flags: 'u' },
@@ -356,7 +357,6 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'alecaframe.runAlecaMessage',
     helpSectionId: 'relics',
-    featured: false,
     helpTitle: '精炼推荐',
     helpSummary: '哪些遗物值得花光体；可切换单人口径',
     helpExamples: ['精炼推荐 🔒'],
@@ -375,7 +375,6 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'alecaframe.runAlecaMessage',
     helpSectionId: 'account',
-    featured: false,
     helpTitle: '杜卡德',
     helpSummary: '按持有状态生成兑换和保留方案',
     helpExamples: ['杜卡德 / 杜卡德 600'],
@@ -394,8 +393,6 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'alecaframe.runAlecaMessage',
     helpSectionId: 'shop',
-    featured: false,
-    helpTopicAliases: ['奸商'],
     helpTitle: '奸商推荐',
     helpSummary: '货单×库存×余额购物建议',
     helpExamples: ['奸商推荐 🔒'],
@@ -414,10 +411,12 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'alecaframe.runAlecaMessage',
     helpSectionId: 'shop',
-    featured: true,
     helpTitle: '商店',
     helpSummary: '九家总览、单家货单和已购标记',
-    helpExamples: ['商店 🔒', '商店 1 / 商店 泰辛'],
+    helpExamples: [
+      { command: '商店 🔒', description: '查看全部支持商店与当前轮换概况' },
+      { command: '商店 1 / 商店 泰辛', description: '按编号或名称展开单家货单' },
+    ],
     nextActions: [],
     matchers: [
       { routes: ['user-account', 'shortcut-gate'], kind: 'regex', pattern: '^商店(?:\\s+\\S+)?$', flags: 'u' },
@@ -433,7 +432,6 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'alecaframe.runAlecaMessage',
     helpSectionId: 'shop',
-    featured: false,
     helpTitle: '本周好货',
     helpSummary: '泰辛/圣言者周货与瓦奇娅复刻精选',
     helpExamples: ['本周好货 🔒'],
@@ -452,7 +450,6 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'alecaframe.runAlecaMessage',
     helpSectionId: 'shop',
-    featured: false,
     helpTitle: '轮换日历',
     helpSummary: '未来 8 周回廊、泰辛和瓦奇娅排期',
     helpExamples: ['轮换日历 🔒'],
@@ -471,7 +468,6 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'alecaframe.runAlecaMessage',
     helpSectionId: 'account',
-    featured: false,
     helpTitle: '紫卡',
     helpSummary: '词条等级、神卡判定和行情估价',
     helpExamples: ['我的紫卡 / 紫卡 3'],
@@ -490,7 +486,6 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'shortcuts.runShortcut',
     helpSectionId: 'shop',
-    featured: false,
     helpTitle: '购买',
     helpSummary: '反查全商人货源；自然语言买/换问法统一到这里',
     helpExamples: ['购买 裂罅破解器'],
@@ -509,10 +504,23 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'subscriptions.manage',
     helpSectionId: 'subscription',
-    featured: false,
     helpTitle: '订阅',
-    helpSummary: '13 类事件、商品上架和轮换提醒；由 QQ 会话保存',
-    helpExamples: ['订阅 裂缝 钢铁 生存', '我的订阅', '暂停/恢复/取消订阅 <编号>'],
+    helpSummary: '14 类事件、商品上架和轮换提醒；由 QQ 会话保存',
+    helpExamples: [
+      { command: '订阅 裂缝 [筛选]', description: '普通/钢铁裂缝；可筛任务、纪元、全能等' },
+      { command: '订阅 仲裁 [任务词]', description: '仲裁轮换；“仲裁推荐”只推 S/A 好场地' },
+      { command: '订阅 警报/入侵/活动 [词]', description: '按奖励或事件词筛选；不带词则订阅全部' },
+      { command: '订阅 突击/钢铁侵袭 [词]', description: '每日刷新后推送，可按任务或星球筛选' },
+      { command: '订阅 赏金 <物品|任务词>', description: '赏金轮换命中目标时推送；必须带筛选词' },
+      { command: '订阅 虚空商人/重要情报', description: '商人到离提醒；重要情报合并四类事件' },
+      { command: '订阅 轮换/复刻 <名称>', description: '回廊、泰辛或瓦奇娅到点提醒一次' },
+      { command: '订阅 周常', description: '每周刷新后推送周常清单与本周好货' },
+      { command: '订阅 商店 [泰辛|圣言者]', description: '周货更新与轮换前未购提醒；仅用户私聊' },
+      { command: '订阅 商品 <物品>', description: '可算上架预告或商人到货对账提醒' },
+      { command: '订阅 掉落 [全部|物品]', description: '账号新增掉落提醒；仅用户私聊' },
+      { command: '我的订阅', description: '查看当前会话内自己建立的全部订阅' },
+      { command: '暂停/恢复/取消订阅 <编号|全部>', description: '编号以“我的订阅”当前列表为准' },
+    ],
     nextActions: [],
     guideOnly: true,
     matchers: [
@@ -529,10 +537,14 @@ const COMMAND_REGISTRY = freeze([
     modelCallable: true,
     executor: 'wishlist.manage',
     helpSectionId: 'wishlist',
-    featured: false,
     helpTitle: '愿望单',
     helpSummary: '现有合价单立即出市场卡；之后秒级提醒',
-    helpExamples: ['愿望 商品 价格', '愿望单 / 已购 W3K7', '改价/暂停/继续/已购/取消 <短编号>'],
+    helpExamples: [
+      { command: '愿望 商品 价格', description: '建立目标价；已有合价单时立即返回行情' },
+      { command: '愿望单', description: '查看全部愿望、状态、目标价与短编号' },
+      { command: '改价/暂停/继续 <短编号>', description: '调整目标价或暂时停用、恢复盯价' },
+      { command: '已购/取消 <短编号>', description: '标记已购或删除愿望' },
+    ],
     nextActions: [],
     matchers: [
       { routes: ['wishlist', 'shortcut-gate'], kind: 'exact', pattern: '(?:愿望单|我的愿望单|愿望列表)' },
@@ -570,9 +582,9 @@ function getHelpSection(sectionId) {
 }
 
 function helpSectionTopicTokens(section) {
-  return [section.id, section.title, ...(section.aliases || [])]
+  return [...new Set([section.id, section.title, section.helpQuery, ...(section.aliases || [])]
     .map((value) => normalizeCommandText(value))
-    .filter(Boolean);
+    .filter(Boolean))];
 }
 
 function commandTopicTokens(entry) {
@@ -586,22 +598,17 @@ function resolveHelpTopic(value) {
   const text = normalizeCommandText(value);
   if (!text) return { kind: 'main', sectionId: null, commandId: null, text };
 
-  // A section title/alias wins over an overlapping command alias.  This makes
-  // `帮助 遗物` mean the complete 遗物 & 裂缝 section, while `帮助 wm` still
-  // resolves to the market command because it is not a section topic.
+  // Help has two levels only: the complete module directory and a module's
+  // complete command list. Command aliases are convenience jumps to modules,
+  // never a third single-command help page.
   for (const section of HELP_SECTION_REGISTRY) {
     if (helpSectionTopicTokens(section).includes(text)) {
       return { kind: 'section', sectionId: section.id, commandId: null, text };
     }
   }
   for (const entry of COMMAND_REGISTRY) {
-    if ((entry.helpTopicAliases || []).map(normalizeCommandText).includes(text)) {
-      return { kind: 'command', sectionId: entry.helpSectionId, commandId: entry.commandId, text };
-    }
-  }
-  for (const entry of COMMAND_REGISTRY) {
     if (commandTopicTokens(entry).includes(text)) {
-      return { kind: 'command', sectionId: entry.helpSectionId, commandId: entry.commandId, text };
+      return { kind: 'section', sectionId: entry.helpSectionId, commandId: null, text };
     }
   }
   return null;
@@ -679,28 +686,22 @@ function buildTemplateCatalog() {
   }));
 }
 
-function buildHelpSections({ sectionId = null, commandId = null, featuredOnly = true } = {}) {
+function buildHelpSections({ sectionId = null } = {}) {
   const sections = [];
   const selectedSections = listHelpSections().filter((section) => {
     if (sectionId && section.id !== sectionId) return false;
     return true;
   });
   for (const section of selectedSections) {
-    const entries = COMMAND_REGISTRY.filter((entry) => entry.helpSectionId === section.id
-      && (!commandId || entry.commandId === commandId)
-      && (sectionId || commandId || !featuredOnly || entry.featured)
-      && entry.helpExamples?.length);
+    const entries = COMMAND_REGISTRY.filter((entry) => entry.helpSectionId === section.id && entry.helpExamples?.length);
     if (!entries.length) continue;
-    const commands = entries.flatMap((entry) => {
-      const examples = featuredOnly && !sectionId && !commandId ? entry.helpExamples.slice(0, 1) : entry.helpExamples;
-      return examples.map((example) => ({
+    const commands = entries.flatMap((entry) => entry.helpExamples.map((example) => ({
       commandId: entry.commandId,
       title: entry.helpTitle,
-      command: example,
-      description: entry.helpSummary,
+      command: typeof example === 'string' ? example : example.command,
+      description: typeof example === 'string' ? entry.helpSummary : example.description,
       privacyScope: entry.privacyScope,
-      }));
-    });
+    })));
     sections.push({ id: section.id, title: section.title, commands });
   }
   return sections;
@@ -718,12 +719,13 @@ function registryContractErrors() {
   const seen = new Set();
   const sectionIds = new Set();
   const sectionTopics = new Map();
-  let featuredCommands = 0;
   for (const section of HELP_SECTION_REGISTRY) {
     if (!section || !/^[a-z][a-z0-9-]+$/u.test(String(section.id || ''))) errors.push('help section id is invalid');
     if (sectionIds.has(section.id)) errors.push(`duplicate help section id: ${section.id}`);
     sectionIds.add(section.id);
     if (!section.title) errors.push(`${section.id || '<missing>'}.title is required`);
+    if (!section.helpQuery) errors.push(`${section.id || '<missing>'}.helpQuery is required`);
+    if (!section.summary) errors.push(`${section.id || '<missing>'}.summary is required`);
     if (!Array.isArray(section.aliases) || section.aliases.length === 0) errors.push(`${section.id}.aliases must be non-empty`);
     const sectionAliases = new Set();
     for (const alias of section.aliases || []) {
@@ -743,14 +745,11 @@ function registryContractErrors() {
     }
   }
   const commandTopics = new Map();
-  const explicitHelpTopics = new Map();
   for (const entry of COMMAND_REGISTRY) {
     for (const field of ['commandId', 'canonicalSyntax', 'argumentSchema', 'privacyScope', 'executor', 'helpSectionId', 'helpTitle', 'helpSummary']) {
       if (!entry[field]) errors.push(`${entry.commandId || '<missing>'}.${field} is required`);
     }
     if (entry.helpSectionId && !sectionIds.has(entry.helpSectionId)) errors.push(`${entry.commandId}.helpSectionId is unknown: ${entry.helpSectionId}`);
-    if (typeof entry.featured !== 'boolean') errors.push(`${entry.commandId}.featured must be boolean`);
-    if (entry.featured) featuredCommands += 1;
     if (seen.has(entry.commandId)) errors.push(`duplicate commandId: ${entry.commandId}`);
     seen.add(entry.commandId);
     if (!Array.isArray(entry.aliases) || entry.aliases.length === 0) errors.push(`${entry.commandId}.aliases must be non-empty`);
@@ -762,29 +761,29 @@ function registryContractErrors() {
       aliases.add(normalized);
     }
     if (!Array.isArray(entry.helpExamples) || entry.helpExamples.length === 0) errors.push(`${entry.commandId}.helpExamples must be non-empty`);
+    for (const example of entry.helpExamples || []) {
+      if (typeof example === 'string') {
+        if (!normalizeCommandText(example)) errors.push(`${entry.commandId}.helpExamples must not contain empty strings`);
+      } else if (!example || typeof example !== 'object' || !normalizeCommandText(example.command) || !normalizeCommandText(example.description)) {
+        errors.push(`${entry.commandId}.helpExamples object requires command and description`);
+      }
+    }
     if (!Array.isArray(entry.nextActions)) errors.push(`${entry.commandId}.nextActions must be an array`);
     if (!Array.isArray(entry.matchers)) errors.push(`${entry.commandId}.matchers must be an array`);
-    if (entry.helpTopicAliases !== undefined && !Array.isArray(entry.helpTopicAliases)) errors.push(`${entry.commandId}.helpTopicAliases must be an array`);
     if (!['public', 'session', 'userPrivate'].includes(entry.privacyScope)) errors.push(`${entry.commandId}.privacyScope is invalid`);
     if (typeof entry.fastPath !== 'boolean') errors.push(`${entry.commandId}.fastPath must be boolean`);
     if (typeof entry.modelCallable !== 'boolean') errors.push(`${entry.commandId}.modelCallable must be boolean`);
     for (const topic of commandTopicTokens(entry)) {
       const previous = commandTopics.get(topic);
       if (previous && previous !== entry.commandId) errors.push(`command topic belongs to multiple commands: ${topic}`);
+      const sectionOwner = sectionTopics.get(topic);
+      if (sectionOwner && sectionOwner !== entry.helpSectionId) errors.push(`command topic resolves to a different help section: ${entry.commandId}.${topic} -> ${sectionOwner}`);
       commandTopics.set(topic, entry.commandId);
-    }
-    for (const alias of entry.helpTopicAliases || []) {
-      const topic = normalizeCommandText(alias);
-      if (!topic) errors.push(`${entry.commandId}.helpTopicAliases must not contain empty values`);
-      const previous = explicitHelpTopics.get(topic);
-      if (previous && previous !== entry.commandId) errors.push(`explicit help topic belongs to multiple commands: ${topic}`);
-      explicitHelpTopics.set(topic, entry.commandId);
     }
     for (const matcher of entry.matchers || []) {
       try { matcherPattern(matcher); } catch (error) { errors.push(`${entry.commandId} matcher invalid: ${String(error?.message || error)}`); }
     }
   }
-  if (featuredCommands === 0) errors.push('at least one command must be featured');
   for (const section of HELP_SECTION_REGISTRY) {
     if (!COMMAND_REGISTRY.some((entry) => entry.helpSectionId === section.id)) errors.push(`help section has no commands: ${section.id}`);
   }

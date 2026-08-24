@@ -39,13 +39,13 @@ export function renderCommandDirectory() {
       const section = sections.get(entry.helpSectionId);
       const aliases = entry.aliases.length ? entry.aliases.join('、') : '—';
       const privacy = entry.privacyScope === 'userPrivate' ? '用户本人私聊' : entry.privacyScope === 'session' ? '当前会话' : '公开';
-      return `| ${markdown(entry.commandId)} | ${markdown(section.title)} | ${markdown(entry.canonicalSyntax)} | ${markdown(aliases)} | ${markdown(entry.helpSummary)} | ${markdown(privacy)} |`;
+      return `| ${markdown(entry.commandId)} | ${markdown(section.title)} | ${markdown(`帮助 ${section.helpQuery}`)} | ${markdown(entry.canonicalSyntax)} | ${markdown(aliases)} | ${markdown(entry.helpSummary)} | ${markdown(privacy)} |`;
     });
   return [
     BEGIN,
     `<!-- command-registry-schema: ${markdown(COMMAND_REGISTRY_SCHEMA_VERSION)} -->`,
-    '| commandId | 分区 | 正式语法 | 常用别名 | 用途 | 权限 |',
-    '| --- | --- | --- | --- | --- | --- |',
+    '| commandId | 模块 | 帮助入口 | 正式语法 | 常用别名 | 用途 | 权限 |',
+    '| --- | --- | --- | --- | --- | --- | --- |',
     ...rows,
     END,
   ].join('\n');

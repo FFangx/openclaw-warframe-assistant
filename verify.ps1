@@ -172,9 +172,14 @@ if (-not $SourceOnly) {
       $sectionHelp = & node $dispatch run '帮助 世界状态' 2>&1
       if ($LASTEXITCODE -ne 0) { throw "partition help command failed: $($sectionHelp -join "`n")" }
       $sectionData = ($sectionHelp -join "`n") | ConvertFrom-Json
-      if (-not $sectionData.ok -or -not $sectionData.handled -or -not $sectionData.mediaUrl -or -not (Test-Path -LiteralPath $sectionData.mediaUrl -PathType Leaf)) { throw 'partition help did not render a verifiable card result' }
-      if ([string]$sectionData.query -ne '世界状态') { throw "partition help query was not preserved: $($sectionData.query)" }
-      Write-Host 'dispatch catalog, main help-card, and partition help-card rendering are healthy'
+      if (-not $sectionData.ok -or -not $sectionData.handled -or -not $sectionData.mediaUrl -or -not (Test-Path -LiteralPath $sectionData.mediaUrl -PathType Leaf)) { throw 'module help did not render a verifiable card result' }
+      if ([string]$sectionData.query -ne '世界状态') { throw "module help query was not preserved: $($sectionData.query)" }
+      $subscriptionHelp = & node $dispatch run '帮助 订阅' 2>&1
+      if ($LASTEXITCODE -ne 0) { throw "subscription module help command failed: $($subscriptionHelp -join "`n")" }
+      $subscriptionData = ($subscriptionHelp -join "`n") | ConvertFrom-Json
+      if (-not $subscriptionData.ok -or -not $subscriptionData.handled -or -not $subscriptionData.mediaUrl -or -not (Test-Path -LiteralPath $subscriptionData.mediaUrl -PathType Leaf)) { throw 'subscription module help did not render a verifiable card result' }
+      if ([string]$subscriptionData.query -ne '订阅') { throw "subscription module help query was not preserved: $($subscriptionData.query)" }
+      Write-Host 'dispatch catalog, main help-card, and module help-card rendering are healthy'
     }
     Invoke-Checked 'runtime reward-zh AI cron contract' {
       $jobsRaw = & openclaw.cmd cron list --json 2>&1

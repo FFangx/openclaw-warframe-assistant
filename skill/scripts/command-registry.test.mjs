@@ -38,13 +38,13 @@ test('R1 注册表字段完整且 commandId 唯一', () => {
 test('路由、帮助和工具目录都来自同一注册表', () => {
   const catalog = buildTemplateCatalog();
   assert.deepEqual(catalog.map((item) => item.commandId), COMMAND_REGISTRY.map((item) => item.commandId));
-  const helpIds = buildHelpSections({ featuredOnly: false }).flatMap(({ commands }) => commands.map((row) => row.commandId));
+  const helpIds = buildHelpSections().flatMap(({ commands }) => commands.map((row) => row.commandId));
   for (const entry of COMMAND_REGISTRY.filter((item) => item.helpExamples.length > 0)) assert.ok(helpIds.includes(entry.commandId), entry.commandId);
   const summary = buildToolCommandSummary();
   for (const entry of COMMAND_REGISTRY.filter((item) => item.modelCallable && !item.guideOnly)) assert.match(summary, new RegExp(entry.canonicalSyntax.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
 });
 
-test('帮助分区 schema、别名和 featured 命令主帮助覆盖合同', () => {
+test('帮助模块 schema 与全部命令覆盖合同', () => {
   assert.ok(HELP_SECTION_REGISTRY.length >= 5);
   const sectionIds = new Set(HELP_SECTION_REGISTRY.map((section) => section.id));
   assert.equal(sectionIds.size, HELP_SECTION_REGISTRY.length);
@@ -52,8 +52,11 @@ test('帮助分区 schema、别名和 featured 命令主帮助覆盖合同', () 
   for (const section of HELP_SECTION_REGISTRY) {
     assert.match(section.id, /^[a-z][a-z0-9-]+$/u);
     assert.equal(typeof section.title, 'string');
+    assert.equal(typeof section.helpQuery, 'string');
+    assert.equal(typeof section.summary, 'string');
     assert.ok(Array.isArray(section.aliases));
     assert.ok(section.aliases.length > 0);
+    assert.equal(resolveHelpTopic(section.helpQuery)?.sectionId, section.id, section.helpQuery);
     for (const topic of [section.id, section.title, ...section.aliases]) {
       const normalized = String(topic).normalize('NFKC').trim();
       assert.ok(normalized);
@@ -64,29 +67,35 @@ test('帮助分区 schema、别名和 featured 命令主帮助覆盖合同', () 
     assert.ok(COMMAND_REGISTRY.some((entry) => entry.helpSectionId === section.id), section.id);
   }
   for (const entry of COMMAND_REGISTRY) {
-    assert.equal(typeof entry.featured, 'boolean', entry.commandId);
+    assert.equal(Object.hasOwn(entry, 'featured'), false, entry.commandId);
+    assert.equal(Object.hasOwn(entry, 'helpTopicAliases'), false, entry.commandId);
     const aliases = entry.aliases.map((alias) => String(alias).normalize('NFKC').trim());
     assert.ok(aliases.every(Boolean), entry.commandId);
     assert.equal(new Set(aliases).size, aliases.length, `duplicate command alias: ${entry.commandId}`);
   }
-  const allRows = buildHelpSections({ featuredOnly: false }).flatMap(({ commands }) => commands);
+  const allRows = buildHelpSections().flatMap(({ commands }) => commands);
   assert.deepEqual(new Set(allRows.map((row) => row.commandId)), new Set(COMMAND_REGISTRY.map((entry) => entry.commandId)));
-  const featuredRows = buildHelpSections().flatMap(({ commands }) => commands);
-  assert.equal(featuredRows.length, new Set(featuredRows.map((row) => row.commandId)).size);
-  assert.ok(featuredRows.some((row) => row.commandId === 'help'));
-  assert.ok(featuredRows.some((row) => row.commandId === 'market'));
-  assert.ok(!featuredRows.some((row) => row.commandId === 'account'));
-  assert.ok(!featuredRows.some((row) => row.commandId === 'subscription'));
-  assert.ok(featuredRows.every((row) => COMMAND_REGISTRY.find((entry) => entry.commandId === row.commandId)?.featured));
 });
 
 test('帮助主题按分区优先、命令别名次之，未知主题确定性拒绝', () => {
   assert.deepEqual(resolveHelpTopic('世界状态'), { kind: 'section', sectionId: 'worldstate', commandId: null, text: '世界状态' });
   assert.deepEqual(resolveHelpTopic('基础'), { kind: 'section', sectionId: 'basics', commandId: null, text: '基础' });
   assert.deepEqual(resolveHelpTopic('裂缝'), { kind: 'section', sectionId: 'relics', commandId: null, text: '裂缝' });
-  assert.deepEqual(resolveHelpTopic('奸商'), { kind: 'command', sectionId: 'shop', commandId: 'trader-shopping', text: '奸商' });
-  assert.deepEqual(resolveHelpTopic('wm'), { kind: 'command', sectionId: 'market', commandId: 'market', text: 'wm' });
+  assert.deepEqual(resolveHelpTopic('奸商'), { kind: 'section', sectionId: 'worldstate', commandId: null, text: '奸商' });
+  assert.deepEqual(resolveHelpTopic('奸商推荐'), { kind: 'section', sectionId: 'shop', commandId: null, text: '奸商推荐' });
+  assert.deepEqual(resolveHelpTopic('wm'), { kind: 'section', sectionId: 'market', commandId: null, text: 'wm' });
+  assert.deepEqual(resolveHelpTopic('订阅帮助'), { kind: 'section', sectionId: 'subscription', commandId: null, text: '订阅帮助' });
   assert.equal(resolveHelpTopic('不存在的主题'), null);
+});
+
+test('每个命令主题都跳转到该命令所属帮助模块', () => {
+  for (const entry of COMMAND_REGISTRY) {
+    const canonicalHead = String(entry.canonicalSyntax).match(/^[^\s｜|[<]+/u)?.[0] || '';
+    for (const topic of [entry.commandId, entry.helpTitle, canonicalHead, ...entry.aliases]) {
+      if (!String(topic).trim()) continue;
+      assert.equal(resolveHelpTopic(topic)?.sectionId, entry.helpSectionId, `${entry.commandId}: ${topic}`);
+    }
+  }
 });
 
 test('注册表匹配定义覆盖短命令、用户私聊、周常、订阅和愿望单入口', () => {
