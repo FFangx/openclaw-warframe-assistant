@@ -10,6 +10,7 @@ import { classifyNaturalWarframeQuery, DYNAMIC_QUERY_POLICY } from './intent-pol
 import { createContextBridge } from './context-bridge.mjs';
 import { executeSubscriptionUseCase } from './subscription-usecase.mjs';
 import { executeWishlistUseCase, wishlistNeedsImmediateInspection } from './wishlist-usecase.mjs';
+import { createGatewayWishlistMailer } from './wishlist-gateway-mailer.mjs';
 
 const execFileAsync = promisify(execFile);
 const pluginDir = path.dirname(fileURLToPath(import.meta.url));
@@ -27,6 +28,9 @@ const subscriptionState = path.resolve(pluginDir, '..', '..', '..', 'state', 'wa
 const wishlistState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-wishlist.json');
 const dropsState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-drops.json');
 const weeklyState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-weekly.json');
+// 愿望命中通知与掉落/世界状态/周报共用同一个 R3 通知 Outbox（业务键前缀区分）
+const notificationOutboxScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'notification-outbox.mjs');
+const wishlistOutboxPath = path.resolve(path.dirname(wishlistState), 'warframe-delivery-outbox.json');
 const cardDir = path.resolve(pluginDir, '..', '..', '..', '.cache', 'warframe-cards');
 const subscriptionCardDir = path.resolve(pluginDir, '..', '..', '..', 'media', 'qqbot', 'warframe-cards');
 const shortCommandContext = createContextBridge();
@@ -218,6 +222,56 @@ type WishlistGatewayState = {
 let wishlistGateway: WishlistGatewayState | null = null;
 let wishlistGatewayRefresh: (() => Promise<void>) | null = null;
 
+// —— 愿望命中通知 Outbox（R3 第四片）——
+// Gateway 单例 WebSocket 的命中通知按「先入 Outbox → 提交 wishlist ledger →
+// 锁外逐 part 投递」事务链走：WebSocket 一笔订单可能命中多个 QQ target，
+// 每个 target 独立业务键与投递状态；注入的 QQ outbound mailer 让 Outbox 自己
+// 逐 part 持久化结果，不在账本提交后再裸循环发送（下面 sendWishlistGatewayResult
+// 只保留给「建立后立即行情卡」等交互用例顺序）。
+let wishlistOutbox: any = null;
+async function wishlistOutboxInstance(): Promise<any> {
+  if (!wishlistOutbox) {
+    const { createOutbox } = await import(pathToFileURL(notificationOutboxScript).href);
+    wishlistOutbox = createOutbox({ filePath: wishlistOutboxPath });
+  }
+  return wishlistOutbox;
+}
+
+// adapter 结果 → 固定脱敏类别（服务端明确接受/拒绝/异常；原始异常不落盘）
+async function wishlistGatewayMailer(api: any, target: string): Promise<((part: any) => Promise<any>) | null> {
+  const adapter = await api.runtime.channel.outbound.loadAdapter('qqbot');
+  if (!adapter) return null;
+  return createGatewayWishlistMailer(adapter, target, { cfg: api.config, mediaLocalRoots: [subscriptionCardDir, cardDir] });
+}
+
+// 恢复/投递指定 target 的愿望通知 pending（只投本链业务键前缀；Outbox 逐 part
+// 持久化 + 跨进程锁：与 REST 校准 cron 并发也不会重复 send 或互相覆盖）。
+async function flushWishlistTargetPending(api: any, target: string): Promise<void> {
+  const mailer = await wishlistGatewayMailer(api, target);
+  if (!mailer) {
+    api.logger.warn?.('Warframe wishlist outbound adapter unavailable; pending stays for next event');
+    return;
+  }
+  const summary = await (await wishlistOutboxInstance()).deliverPending({ target, mailer, keyPrefix: 'wishlist:' });
+  if (Number(summary?.sentParts || 0) > 0) {
+    api.logger.info?.(`Warframe wishlist delivered pending parts: ${summary.sentParts}`);
+  }
+}
+
+// 启动时先恢复相关 target 的 pending（上次投递失败/进程被杀留下的欠账）
+async function restoreWishlistPending(api: any): Promise<void> {
+  try {
+    const module = await import(pathToFileURL(wishlistScript).href);
+    const ledger = await module.readWishlistLedger(wishlistState);
+    const targets = [...new Set((ledger.wishes || [])
+      .map((wish: any) => String(wish.target || '').trim().toLowerCase())
+      .filter(Boolean))];
+    for (const target of targets) await flushWishlistTargetPending(api, target);
+  } catch (error) {
+    api.logger.warn?.(`Warframe wishlist pending restore failed: ${String(error)}`);
+  }
+}
+
 async function sendWishlistGatewayResult(api: any, result: any): Promise<void> {
   const target = String(result?.target || '').trim();
   if (!target) return;
@@ -366,8 +420,18 @@ async function startWishlistGateway(api: any): Promise<void> {
         const itemId = String(order?.itemId || order?.item?.id || '').trim();
         if (!itemId || !state.itemIds.has(itemId)) return;
         try {
-          const results = await (await wishlistModule()).processWishlistLiveOrder(order, wishlistState, subscriptionCardDir);
-          for (const result of results || []) await sendWishlistGatewayResult(api, result);
+          // 注入共享 Outbox：所有命中 target 全部入队成功后才一次性提交 wishlist
+          // ledger（目标间互不吞提醒），随后逐 target 由注入 mailer 让 Outbox
+          // 自己逐 part 持久化投递结果——不在账本提交后再裸循环发送。
+          const outbox = await wishlistOutboxInstance();
+          const results = await (await wishlistModule()).processWishlistLiveOrder(order, wishlistState, subscriptionCardDir, { outbox });
+          for (const result of results || []) {
+            if (result?.outbox === true && result.target) {
+              await flushWishlistTargetPending(api, String(result.target));
+            } else {
+              api.logger.warn?.('Warframe wishlist live order result without outbox, skipped');
+            }
+          }
         } catch (error) {
           api.logger.error(`Warframe wishlist live order failed: ${String(error)}`);
         }
@@ -384,6 +448,8 @@ async function startWishlistGateway(api: any): Promise<void> {
       scheduleReconnect();
     }
   };
+  // 启动先恢复相关 target 的 wishlist pending，再刷新索引并连接
+  await restoreWishlistPending(api);
   await refresh();
   state.refreshTimer = setInterval(refresh, 30_000);
 }

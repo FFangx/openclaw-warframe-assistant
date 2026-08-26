@@ -1,11 +1,57 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { attachPrices, describeDrop, marketDisplayImagePath, withLock } from './drops.mjs';
+import {
+  attachPrices, defaultOutboxPath, describeDrop, marketDisplayImagePath, monitorDrops, withLock,
+} from './drops.mjs';
+import { targetKeyOf } from './notification-outbox.mjs';
 import { buildDropsAlertCard } from './warframe-cards.mjs';
+
+const TARGET = 'qqbot:c2c:tester';
+const ITEM = '/Lotus/Types/Items/MiscItems/OrokinCell';
+// oid 前 8 位是 Unix 时间戳：快照 syncedAt 由此推导，与 drops.mjs readSnapshot 同口径
+const SYNCED_AT = new Date(Number.parseInt('64a00000', 16) * 1000).toISOString();
+
+async function writeSnapshot(alecaDir, count, mtimeMs) {
+  const snapshotPath = path.join(alecaDir, 'lastData.dat');
+  await writeFile(snapshotPath, JSON.stringify({
+    LastInventorySync: { $oid: '64a000000000000000000001' },
+    MiscItems: [{ ItemType: ITEM, ItemCount: count }],
+  }), 'utf8');
+  const at = new Date(mtimeMs);
+  await utimes(snapshotPath, at, at);
+  return snapshotPath;
+}
+
+async function fixture(dir, { count, mtimeMs, ledger = true } = {}) {
+  const alecaDir = path.join(dir, 'aleca');
+  await mkdir(path.join(alecaDir, 'cachedData', 'json'), { recursive: true });
+  const snapshotPath = await writeSnapshot(alecaDir, count, mtimeMs);
+  const ledgerPath = path.join(dir, 'subscriptions.json');
+  if (ledger) {
+    await writeFile(ledgerPath, JSON.stringify({
+      subscriptions: [{ id: 'sub-1', target: TARGET, enabled: true, type: 'drops', filter: '全部', createdAt: SYNCED_AT }],
+    }), 'utf8');
+  }
+  return { alecaDir, snapshotPath, ledgerPath };
+}
+
+function monitorOptions(dir, overrides = {}) {
+  return {
+    statePath: path.join(dir, 'drops.json'),
+    ledgerPath: path.join(dir, 'subscriptions.json'),
+    target: TARGET,
+    cardDir: null,
+    alecaDir: path.join(dir, 'aleca'),
+    dryRun: false,
+    attachOptions: { slugs: new Map(), quoteFetcher: async () => null, priceIndex: {} },
+    skipIcons: true,
+    ...overrides,
+  };
+}
 
 test('掉落监测会自动回收被超时进程遗留的陈旧锁', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'warframe-drops-lock-'));
@@ -134,4 +180,183 @@ test('战甲强化 Mod 不被 /Powersuits/ 路径误判为战甲，显示官方�
     if (previous == null) delete process.env.WARFRAME_OFFLINE;
     else process.env.WARFRAME_OFFLINE = previous;
   }
+});
+
+// ---------- 通知 Outbox 集成（R3 第一片：掉落通知链） ----------
+// Offline 包装：禁止目录/lang 在线兜底和真实缓存读写，保证测试不触碰真实状态。
+
+function testOffline(name, fn) {
+  test(name, async () => {
+    const previous = process.env.WARFRAME_OFFLINE;
+    process.env.WARFRAME_OFFLINE = '1';
+    try { await fn(); }
+    finally {
+      if (previous == null) delete process.env.WARFRAME_OFFLINE;
+      else process.env.WARFRAME_OFFLINE = previous;
+    }
+  });
+}
+
+testOffline('掉落新情报：先入统一 Outbox 再投递，业务键=同步事件，输出恒为 NO_REPLY', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'warframe-drops-outbox-flow-'));
+  const t1 = Date.now() - 120_000;
+  const t2 = Date.now();
+  await fixture(dir, { count: 3, mtimeMs: t1 });
+
+  const first = await monitorDrops(monitorOptions(dir));
+  assert.equal(first.output, 'NO_REPLY\n');
+  assert.equal(first.data.reason, 'baseline_created');
+
+  const calls = [];
+  await writeSnapshot(path.join(dir, 'aleca'), 6, t2);
+  const second = await monitorDrops(monitorOptions(dir, {
+    mailer: async (part) => { calls.push(part); return { ok: true }; },
+  }));
+  assert.equal(second.output, 'NO_REPLY\n');
+  assert.equal(second.data.ok, true);
+  assert.equal(second.data.delivered, 'direct');
+  assert.equal(second.data.matched.length, 1);
+  // 文字兜底链路：只发一个文字 part；内容包含掉落名称与数量
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].kind, 'text');
+  assert.match(calls[0].value, /Orokin Cell/u);
+  assert.match(calls[0].value, /×3/u);
+  // Outbox 记录：schemaVersion/业务键/内容哈希/parts/时间/尝试/结果/终态齐全
+  const outboxPath = defaultOutboxPath(monitorOptions(dir).statePath);
+  const store = JSON.parse(await readFile(outboxPath, 'utf8'));
+  assert.equal(store.schemaVersion, 1);
+  assert.equal(store.entries.length, 1);
+  const entry = store.entries[0];
+  assert.equal(entry.businessKey, `drops:${targetKeyOf(TARGET)}:${SYNCED_AT}`);
+  assert.equal(entry.target, undefined);
+  assert.equal(entry.targetKey, targetKeyOf(TARGET));
+  assert.match(entry.contentHash, /^[0-9a-f]{64}$/u);
+  assert.equal(entry.status, 'delivered');
+  assert.equal(entry.outcome, 'delivered');
+  assert.equal(entry.parts[0].status, 'sent');
+  assert.equal(entry.parts[0].attempts, 1);
+  assert.ok(entry.createdAt && entry.expiresAt && entry.deliveredAt);
+  assert.equal(store.tombstones[entry.businessKey], entry.deliveredAt);
+  // 状态文件：版本升 2，旧欠账字段不再出现
+  const dropsState = JSON.parse(await readFile(monitorOptions(dir).statePath, 'utf8'));
+  assert.equal(dropsState.version, 2);
+  assert.equal(dropsState.pendingDelivery, undefined);
+  assert.ok(dropsState.baseline[ITEM]);
+});
+
+testOffline('投递失败留在 Outbox 欠账，快照未变的下轮仍补投且不重发已成功 part', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'warframe-drops-outbox-retry-'));
+  const t1 = Date.now() - 120_000;
+  const t2 = Date.now();
+  await fixture(dir, { count: 3, mtimeMs: t1 });
+  await monitorDrops(monitorOptions(dir));
+
+  await writeSnapshot(path.join(dir, 'aleca'), 6, t2);
+  const failCalls = [];
+  const failed = await monitorDrops(monitorOptions(dir, {
+    mailer: async (part) => { failCalls.push(part); return { ok: false, category: 'timeout' }; },
+  }));
+  assert.equal(failed.data.delivered, 'queued');
+  let store = JSON.parse(await readFile(defaultOutboxPath(monitorOptions(dir).statePath), 'utf8'));
+  assert.equal(store.entries[0].status, 'pending');
+  assert.equal(store.entries[0].outcome, 'failed');
+  assert.equal(store.entries[0].parts[0].attempts, 1);
+  assert.deepEqual(store.entries[0].attemptsLog.map((item) => item.category), ['failed']);
+  assert.equal(store.entries[0].attemptsLog[0].resultCode, 'timeout');
+
+  // 快照没有新变化（等价 Gateway 重启后的下一轮）：补投发生在 mtime 闸门之前
+  const okCalls = [];
+  const recovered = await monitorDrops(monitorOptions(dir, {
+    mailer: async (part) => { okCalls.push(part); return { ok: true }; },
+  }));
+  assert.equal(recovered.output, 'NO_REPLY\n');
+  assert.equal(recovered.data.reason, 'unchanged');
+  assert.equal(okCalls.length, 1); // 只有欠账那条文字
+  assert.equal(okCalls[0].kind, 'text');
+  store = JSON.parse(await readFile(defaultOutboxPath(monitorOptions(dir).statePath), 'utf8'));
+  assert.equal(store.entries[0].status, 'delivered');
+  assert.equal(store.entries[0].parts[0].attempts, 2);
+});
+
+testOffline('入队后基线写失败的恢复（同业务键重复）：不重复入队、不重复投递', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'warframe-drops-outbox-dedupe-'));
+  const t1 = Date.now() - 120_000;
+  const t2 = Date.now();
+  await fixture(dir, { count: 3, mtimeMs: t1 });
+  await monitorDrops(monitorOptions(dir));
+  const baselineAfterFirst = JSON.parse(await readFile(monitorOptions(dir).statePath, 'utf8'));
+
+  await writeSnapshot(path.join(dir, 'aleca'), 6, t2);
+  await monitorDrops(monitorOptions(dir, {
+    mailer: async () => ({ ok: false, category: 'network' }),
+  }));
+
+  // 模拟崩溃窗口：Outbox 已入队（pending），但状态文件仍停留在旧基线（基线写丢失）
+  await writeFile(monitorOptions(dir).statePath, JSON.stringify(baselineAfterFirst), 'utf8');
+
+  const calls = [];
+  await monitorDrops(monitorOptions(dir, {
+    mailer: async (part) => { calls.push(part); return { ok: true }; },
+  }));
+  const store = JSON.parse(await readFile(defaultOutboxPath(monitorOptions(dir).statePath), 'utf8'));
+  assert.equal(store.entries.length, 1); // 同一业务键只入队一次
+  assert.equal(store.entries[0].status, 'delivered');
+  assert.equal(store.entries[0].parts[0].attempts, 2); // 断网 1 次 + 恢复 1 次
+  assert.equal(calls.length, 1); // 恢复轮只补投一次
+  // 基线最终收敛到最新
+  const state = JSON.parse(await readFile(monitorOptions(dir).statePath, 'utf8'));
+  assert.equal(state.baseline[ITEM], 6);
+});
+
+testOffline('旧 pendingDelivery 兼容迁移：不丢欠账、TTL 48h 保持、超期丢弃、状态收敛 v2', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'warframe-drops-outbox-migrate-'));
+  const t1 = Date.now() - 120_000;
+  await fixture(dir, { count: 3, mtimeMs: t1 });
+  const snapshotPath = path.join(dir, 'aleca', 'lastData.dat');
+  const { mtimeMs } = await stat(snapshotPath);
+  const legacyQueue = [
+    { id: 'old-1', message: 'MEDIA:C:\\legacy\\drops.png\n补充说明', queuedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString() },
+    { id: 'old-2', message: '早该过期的欠账', queuedAt: new Date(Date.now() - 49 * 60 * 60 * 1000).toISOString() },
+  ];
+  await writeFile(monitorOptions(dir).statePath, JSON.stringify({
+    version: 1, updatedAt: new Date().toISOString(),
+    baseline: { [ITEM]: 3 }, lastMtimeMs: mtimeMs, lastSyncedAt: SYNCED_AT,
+    pendingDelivery: legacyQueue,
+  }), 'utf8');
+
+  const calls = [];
+  const result = await monitorDrops(monitorOptions(dir, {
+    mailer: async (part) => { calls.push(part); return { ok: true }; },
+  }));
+  assert.equal(result.output, 'NO_REPLY\n');
+  // 媒体 + 文字两个 part 逐项投递（迁移后立即补投）
+  assert.deepEqual(calls.map((part) => part.kind), ['media', 'text']);
+  assert.equal(calls[0].value, 'C:\\legacy\\drops.png');
+  assert.equal(calls[1].value, '补充说明');
+
+  const outboxPath = defaultOutboxPath(monitorOptions(dir).statePath);
+  const store = JSON.parse(await readFile(outboxPath, 'utf8'));
+  assert.equal(store.entries.length, 1);
+  const entry = store.entries[0];
+  assert.equal(entry.businessKey, `legacy:${targetKeyOf(TARGET)}:old-1`);
+  assert.equal(entry.status, 'delivered');
+  // TTL 保持：按原 queuedAt 起算 48h，不因迁移重置
+  assert.equal(entry.expiresAt, new Date(Date.parse(legacyQueue[0].queuedAt) + 48 * 60 * 60 * 1000).toISOString());
+  const dropsState = JSON.parse(await readFile(monitorOptions(dir).statePath, 'utf8'));
+  assert.equal(dropsState.version, 2);
+  assert.equal(dropsState.pendingDelivery, undefined);
+
+  // 幂等：再次运行同一旧文件（若写回丢失）不会产生重复记录
+  const secondCalls = [];
+  await writeFile(monitorOptions(dir).statePath, JSON.stringify({
+    version: 1, updatedAt: new Date().toISOString(),
+    baseline: { [ITEM]: 3 }, lastMtimeMs: mtimeMs, lastSyncedAt: SYNCED_AT,
+    pendingDelivery: legacyQueue,
+  }), 'utf8');
+  await monitorDrops(monitorOptions(dir, {
+    mailer: async (part) => { secondCalls.push(part); return { ok: true }; },
+  }));
+  const storeAfterSecond = JSON.parse(await readFile(outboxPath, 'utf8'));
+  assert.equal(storeAfterSecond.entries.length, 1);
+  assert.equal(secondCalls.length, 0); // 去重命中：不再补投
 });

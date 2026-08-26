@@ -2,7 +2,7 @@
 
 // Persistent, deterministic Warframe subscriptions for OpenClaw/QQ.
 // The command path only edits a local JSON ledger. The monitor path reads the
-// public PC world-state endpoint and prints NO_REPLY or one MEDIA directive.
+// public PC world-state endpoint; production deliver uses the shared Outbox.
 
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -22,6 +22,7 @@ import { nextReset as weeklyNextReset, renderWeeklyDetailCardFor, weekStart as w
 import { getArbyTiers, getBountyZhMaps, getOracleEventMap, stripDataUriReplacer } from './wfdata.mjs';
 import { applyRewardAliases, learnReward, mergeLearnedRewards, queuePendingReward } from './reward-zh-fallback.mjs';
 import { loadWorldState } from './worldstate-source.mjs';
+import { createOutbox, parseLegacyMessage, targetKeyOf } from './notification-outbox.mjs';
 
 const MARKET_ITEMS_URL = 'https://api.warframe.market/v2/items';
 const ARBITRATION_SCHEDULE_URL = 'https://browse.wf/arbys.txt';
@@ -39,6 +40,9 @@ const TRADER_SOURCE_STALE_MS = 10 * 60 * 1000;
 const TRADER_TRANSITION_RETRY_MS = 2 * 60 * 1000;
 const TRADER_TRANSITION_GRACE_MS = 5 * 60 * 1000;
 const TRADER_SCHEDULE_POLICY_VERSION = 2;
+// 世界状态聚合通知没有有效业务 expiry 时的保守默认 TTL：时效类事件（裂缝/警报/入侵）常在
+// 数小时内过期，逾期通知宁可不补发；Outbox 对每条记录再按默认 TTL（48h）封顶。
+const WORLD_STATE_FALLBACK_TTL_MS = 6 * 60 * 60 * 1000;
 const AUDIT_LIMIT = 1200;
 const AUDIT_PER_SUBSCRIPTION_LIMIT = 120;
 const execFileAsync = promisify(execFile);
@@ -58,12 +62,13 @@ export function monitorDeliveryParts(result) {
 }
 
 async function sendQQDirect(target, args) {
-  await execFileAsync(process.execPath, [openclawCli, 'message', 'send', '--channel', 'qqbot', '--target', target, ...args, '--json'], {
+  const { stdout } = await execFileAsync(process.execPath, [openclawCli, 'message', 'send', '--channel', 'qqbot', '--target', target, ...args, '--json'], {
     timeout: 45_000,
     windowsHide: true,
     maxBuffer: 4 * 1024 * 1024,
     encoding: 'utf8',
   });
+  return stdout;
 }
 
 export async function deliverMonitorResult(result, target, send = sendQQDirect, sendLossless = sendQQLosslessLocalImage) {
@@ -80,6 +85,139 @@ export async function deliverMonitorResult(result, target, send = sendQQDirect, 
     sent += 1;
   }
   return sent;
+}
+
+// ---------- 通知 Outbox（R3 第二片：世界状态订阅 deliver 路径；第三片：weekly 主动周报） ----------
+// 订阅/掉落/周报状态同目录，Outbox 文件共用（业务键前缀不同，按 targetKey 过滤）。
+
+// Outbox 默认路径：与订阅状态同目录（warframe-delivery-outbox.json）
+function defaultOutboxPath(statePath) {
+  return path.join(path.dirname(String(statePath)), 'warframe-delivery-outbox.json');
+}
+
+// 业务幂等键：脱敏 targetKey + 稳定「事件 × 命中订阅」集合（fresh 与 closing 区分）。
+// subscriptionId 只进入 SHA-256 摘要、不原文落盘；同一事件后来被新建订阅再次命中时
+// 会得到新业务键，避免被旧 tombstone 误吞。入队成功但账本提交失败的下轮仍命中同键。
+export function worldStateBusinessKey(target, fresh, closing) {
+  const stableItem = (item) => ({
+    id: String(item?.id || ''),
+    subscriptions: [...new Set((item?.matches || []).map((match) => String(match?.subscriptionId || '')).filter(Boolean))].sort(),
+  });
+  const stableItems = (items) => (items || [])
+    .map(stableItem)
+    .filter((item) => item.id)
+    .sort((a, b) => a.id.localeCompare(b.id) || JSON.stringify(a.subscriptions).localeCompare(JSON.stringify(b.subscriptions)));
+  const stable = {
+    fresh: stableItems(fresh),
+    closing: stableItems(closing),
+  };
+  const digest = createHash('sha256').update(JSON.stringify(stable)).digest('hex');
+  return `worldstate:${targetKeyOf(target)}:${digest}`;
+}
+
+// 聚合通知的业务过期：取本次卡片（fresh+closing）中最早的有效事件 expiry——
+// 裂缝/警报等短时效事件过期后不再盲目补投；全部无有效 expiry 时用保守的明确默认（6h）。
+export function earliestBusinessExpiry(items, nowMs = Date.now()) {
+  const times = (items || []).map((item) => Date.parse(item?.expiry)).filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
+  return new Date(times[0] ?? nowMs + WORLD_STATE_FALLBACK_TTL_MS).toISOString();
+}
+
+// ---------- 周常通知 Outbox（R3 第三片：weekly 主动周报） ----------
+
+// 业务幂等键：脱敏 targetKey + weeklyId + 本次待推送 weekly 订阅 id 集合的哈希语义（集合语义、顺序无关）。
+// subscriptionId 与 weeklyId 都只进入 SHA-256 摘要、不原文落盘；同周新建订阅会使集合变化 →
+// 新业务键，不会被已投递的旧 tombstone 吞掉；入队成功但账本写失败下轮仍命中同键去重。
+export function weeklyBusinessKey(target, weeklyId, subscriptionIds = []) {
+  const ids = [...new Set((subscriptionIds || []).map((value) => String(value || '')).filter(Boolean))].sort();
+  const digest = createHash('sha256').update(JSON.stringify({
+    weekly: String(weeklyId || ''),
+    subscriptions: ids,
+  })).digest('hex');
+  return `weekly:${targetKeyOf(target)}:${digest}`;
+}
+
+// 周常业务过期：本周下次重置边界（过周不补发旧周报）；Outbox 入队时再按 48h 默认 TTL 封顶。
+export function weeklyDeliveryExpiry(nowMs = Date.now()) {
+  return weeklyNextReset(new Date(nowMs));
+}
+
+// 周报结果 → Outbox parts：主周报无损原图（transport=lossless，QQ /files + srv_send_msg=true），
+// 好货卡普通 --media，文字降级 --message；与 monitor 输出的 MEDIA: 行内容保持一致。
+export function weeklyPartsFor(result) {
+  const mediaUrl = String(result?.data?.mediaUrl || '');
+  if (mediaUrl) {
+    const parts = [{ kind: 'media', value: mediaUrl, transport: 'lossless' }];
+    const dealsMediaUrl = String(result?.data?.dealsMediaUrl || '');
+    if (dealsMediaUrl) parts.push({ kind: 'media', value: dealsMediaUrl });
+    return parts;
+  }
+  return [{ kind: 'text', value: String(result?.output || '').trim() }];
+}
+
+// 周报双卡默认渲染链：主卡保持与手动「周常」相同的单张完整原始 PNG；好货卡可选，
+// 任一环节挂了都静默降级只发周报。测试通过 options.weeklyRender 整体注入，生产默认不变。
+async function defaultWeeklyRender(weeklyStatePath, context, state, cardDir) {
+  const { mediaUrl } = await renderWeeklyDetailCardFor(weeklyStatePath, context, state, cardDir);
+  // 第二张：本周好货卡（2026-08-06 用户拍板周一双卡）
+  let dealsMediaUrl = null;
+  if (cardDir) {
+    try {
+      const [{ readSnapshot }, shop, shopCard] = await Promise.all([
+        import('./alecaframe.mjs'), import('./vendor-shop.mjs'), import('./vendor-shop-card.mjs'),
+      ]);
+      let inventory = null;
+      try { ({ inventory } = await readSnapshot()); } catch { inventory = null; }
+      const shopContext = await shop.loadShopContext({ inventory });
+      const deals = await shop.buildWeeklyDeals(shopContext);
+      if (deals.sections.length || deals.varzia) {
+        dealsMediaUrl = await renderWarframeCard(shopCard.buildWeeklyDealsCard(deals), cardDir);
+      }
+    } catch { dealsMediaUrl = null; }
+  }
+  return { mediaUrl, dealsMediaUrl };
+}
+
+// 通知输出 → Outbox parts（与 monitorDeliveryParts 同一 MEDIA: 解析语义：MEDIA: 行转媒体 part，其余为文字 part）
+function partsForResult(result) {
+  const parts = parseLegacyMessage(String(result?.output || ''));
+  if (!parts.length) throw new Error('订阅通知结果缺少可投递内容（无媒体也无文字）');
+  return parts;
+}
+
+export function classifyQQSendOutput(stdout) {
+  const text = String(stdout || '');
+  const start = text.search(/[[{]/u);
+  if (start < 0) return { ok: false, category: 'invalid_response' };
+  try {
+    const payload = JSON.parse(text.slice(start));
+    if (payload?.messageId && !payload?.error) return { ok: true, category: null };
+    return { ok: false, category: payload?.error ? 'provider_rejected' : 'missing_message_id' };
+  } catch {
+    return { ok: false, category: 'invalid_response' };
+  }
+}
+
+// 自己发消息并确认结果（与 deliverMonitorResult 的 sendQQDirect 同路）：媒体 part 走 --media，文字 part 走 --message；
+// 无损 part（transport=lossless，周报主卡）走 sendQQLosslessLocalImage（QQ /files + srv_send_msg=true 一步原图直发）。
+// 抛错按固定脱敏类别返回，原始异常不落盘。send/sendLossless 为测试注入端口，生产默认不变。
+export function createSubscriptionsMailer(target, { send = sendQQDirect, sendLossless = sendQQLosslessLocalImage } = {}) {
+  return async function mailer(part) {
+    if (part?.transport === 'lossless') {
+      try {
+        await sendLossless(target, part.value);
+        return { ok: true, category: null };
+      } catch (error) {
+        return { ok: false, category: error?.code === 'ETIMEDOUT' ? 'timeout' : 'process_error' };
+      }
+    }
+    const args = part.kind === 'media' ? ['--media', part.value] : ['--message', part.value];
+    try {
+      const stdout = await send(target, args);
+      return classifyQQSendOutput(stdout);
+    } catch (error) {
+      return { ok: false, category: error?.code === 'ETIMEDOUT' ? 'timeout' : 'process_error' };
+    }
+  };
 }
 
 const REWARD_ZH = Object.freeze({
@@ -1128,7 +1266,7 @@ function futureIso(values, fallbackMs) {
   return new Date((times[0] || now + fallbackMs) + 10_000).toISOString();
 }
 
-function updateSchedule(ledger, target, state, activeTypes) {
+function updateSchedule(ledger, target, state, activeTypes, weeklyId = `weekly:${weeklyWeekStart()}`) {
   const now = Date.now();
   const previous = ledger.schedules[target] || {};
   const next = { ...previous, lastFetchAt: new Date(now).toISOString() };
@@ -1170,7 +1308,6 @@ function updateSchedule(ledger, target, state, activeTypes) {
   }
   if (activeTypes.has('weekly')) {
     // 本周清单还没推完就每分钟重试，推完后蹲下周一 00:00 UTC
-    const weeklyId = `weekly:${weeklyWeekStart()}`;
     const pending = ledger.subscriptions.some((item) => item.target === target && item.enabled && item.type === 'weekly' && !(item.seen || []).includes(weeklyId));
     next.weekly = pending ? new Date(now + 60_000).toISOString() : new Date(Date.parse(weeklyNextReset()) + 10_000).toISOString();
   }
@@ -1539,21 +1676,43 @@ function closingLabel(item) {
   return null;
 }
 
-async function monitorTarget(target, statePath, cardDir, dryRun = false, directDeliver = null) {
-  return withLedgerLock(statePath, async () => {
+// options: { outboxPath?, mailer?, now?, worldStateFetcher?, weeklyRender? }
+// 后几项为测试/诊断注入：outboxPath 默认与订阅状态同目录；mailer 默认走 openclaw CLI；
+// now 控制 Outbox 时钟；worldStateFetcher 默认 loadWorldState('pc')；
+// weeklyRender 默认走周报双卡真实渲染链（主图无损 + 好货卡），测试可整体注入替换。
+// 只有 directDeliver 非空（deliver 子命令）时启用 Outbox 事务链：
+// 先补投欠账 → 新通知先原子入队 → 再提交 seen/一次性消费/调度/审计 → 再逐 part 投递。
+// monitor（announce）路径保持原有「先记账再输出」行为与输出格式不变。
+async function monitorTarget(target, statePath, cardDir, dryRun = false, directDeliver = null, options = {}) {
+  const { outboxPath = defaultOutboxPath(statePath), mailer = null, now, worldStateFetcher = null, weeklyRender = null } = options;
+  const outbox = createOutbox({ filePath: outboxPath, now });
+  const effectiveMailer = mailer || createSubscriptionsMailer(target);
+  const stateLoader = worldStateFetcher || fetchWorldState;
+  const renderWeekly = weeklyRender || defaultWeeklyRender;
+  // Outbox 仅在 deliver 路径启用；Outbox 自带跨进程锁，不依赖账本锁。
+  const useOutbox = directDeliver != null && !dryRun;
+  // 1) 先补投欠账：账本已提交但投递失败（或入队后进程被杀）的 pending，not_due 轮也先补投
+  let flushSummary = null;
+  if (useOutbox) flushSummary = await outbox.deliverPending({ target, mailer: effectiveMailer });
+  // 本轮新通知的入队结果：账本锁内只入队+提交，锁外再逐 part 投递——
+  // 账本锁不被 QQ 发送窗口占用（cron 120s 强杀时不会遗留账本锁）。
+  let deferredDelivery = null;
+  let outcome = await withLedgerLock(statePath, async () => {
+    // Outbox 路径的返回值统一挂上本轮补投汇总（not_due 等早退轮也可能补投了欠账）
+    const withFlush = (data) => (useOutbox ? { ...data, outbox: true, delivery: flushSummary } : data);
     const ledger = await readLedger(statePath);
     // drops 由 drops.mjs 的本地监测器处理，这里只管联网类事件
     const subscriptions = ledger.subscriptions.filter((item) => item.target === target && item.enabled && item.type !== 'drops');
-    if (!subscriptions.length) return { output: 'NO_REPLY\n', data: { ok: true, reason: 'no_subscriptions' } };
+    if (!subscriptions.length) return { output: 'NO_REPLY\n', data: withFlush({ ok: true, reason: 'no_subscriptions' }) };
     const activeTypes = new Set(subscriptions.map((item) => item.type));
     if (!dryRun && !monitorIsDue(ledger.schedules[target], activeTypes)) {
-      return { output: 'NO_REPLY\n', data: { ok: true, reason: 'not_due', schedule: ledger.schedules[target] } };
+      return { output: 'NO_REPLY\n', data: withFlush({ ok: true, reason: 'not_due', schedule: ledger.schedules[target] }) };
     }
 
     let state;
     try {
       [state] = await Promise.all([
-        fetchWorldState(),
+        stateLoader(),
         activeTypes.has('alert') || activeTypes.has('invasion') ? primeRewardTranslations() : Promise.resolve(false),
         activeTypes.has('event') ? primeOracleEventMap() : Promise.resolve(false),
       ]);
@@ -1659,53 +1818,63 @@ async function monitorTarget(target, statePath, cardDir, dryRun = false, directD
       ledger.subscriptions = ledger.subscriptions.filter((item) => !(item.meta?.once && onceConsumed.has(item.id)));
     }
     updateSchedule(ledger, target, state, activeTypes);
-    await writeLedger(statePath, ledger);
 
     const fresh = [...freshById.values()];
     const closing = [...closingById.values()];
+    // monitor/dryRun 路径保持原有顺序：先提交账本（seen/一次性消费/调度/审计）再返回输出
+    if (!useOutbox) await writeLedger(statePath, ledger);
     if (dryRun) return { output: `${JSON.stringify({ ok: true, target, fresh, closing, schedule: ledger.schedules[target] }, null, 2)}\n`, data: { ok: true, fresh, closing } };
     if (!fresh.length && !closing.length) {
       // 周常推送优先级最低：只在本轮没有其他推送时进行，被挤占就下一分钟重试
-      const weeklyId = `weekly:${weeklyWeekStart()}`;
+      const nowMs = typeof now === 'function' ? now() : Date.now();
+      const weeklyId = `weekly:${weeklyWeekStart(new Date(nowMs))}`;
       const pendingWeekly = subscriptions.filter((item) => item.type === 'weekly' && !(item.seen || []).includes(weeklyId));
-      if (pendingWeekly.length) {
-        const weeklyStatePath = path.join(path.dirname(statePath), 'warframe-weekly.json');
-        const first = pendingWeekly[0];
-        // 多人同会话只渲染一张（当前只服务私聊；群聊多人完成度拆分待后续需求）
-        const { mediaUrl } = await renderWeeklyDetailCardFor(weeklyStatePath, { target, ownerId: first.ownerId, ownerName: first.ownerName }, state, cardDir);
-        // 第二张：本周好货卡（2026-08-06 用户拍板周一双卡）。任一环节挂了都静默降级只发周报
-        let dealsMediaUrl = null;
-        if (cardDir) {
-          try {
-            const [{ readSnapshot }, shop, shopCard] = await Promise.all([
-              import('./alecaframe.mjs'), import('./vendor-shop.mjs'), import('./vendor-shop-card.mjs'),
-            ]);
-            let inventory = null;
-            try { ({ inventory } = await readSnapshot()); } catch { inventory = null; }
-            const context = await shop.loadShopContext({ inventory });
-            const deals = await shop.buildWeeklyDeals(context);
-            if (deals.sections.length || deals.varzia) {
-              dealsMediaUrl = await renderWarframeCard(shopCard.buildWeeklyDealsCard(deals), cardDir);
-            }
-          } catch { dealsMediaUrl = null; }
-        }
-        // 多行 MEDIA：运行时 MEDIA_TOKEN_RE 带 g 标志逐条捕获，两张图独立投递（源码实证）
-        const weeklyMediaUrls = mediaUrl ? [mediaUrl] : [];
-        const weeklyResult = mediaUrl
-          ? { output: `MEDIA:${mediaUrl}\n${dealsMediaUrl ? `MEDIA:${dealsMediaUrl}\n` : ''}`, data: { ok: true, weekly: weeklyId, mediaUrl, weeklyMediaUrls, losslessMediaUrls: [mediaUrl], dealsMediaUrl } }
-          : { output: '📅 本周周常已刷新，发送“周常”查看详细清单。\n', data: { ok: true, weekly: weeklyId } };
-        // 周报保持与手动“周常”相同的单张原始 PNG；定时主动消息走 /files
-        // srv_send_msg 一步链路，避免 file_info + msg_type=7 把超长图压成约 2048px。
-        // 发送成功后才核销，避免上传失败却永久吞掉本周提醒。
-        if (directDeliver) await directDeliver(weeklyResult);
-        for (const item of pendingWeekly) item.seen = [...new Set([...(item.seen || []), weeklyId])].slice(-600);
-        updateSchedule(ledger, target, state, activeTypes);
-        await writeLedger(statePath, ledger);
-        return directDeliver
-          ? { output: 'NO_REPLY\n', data: { ...weeklyResult.data, directDelivered: true } }
-          : weeklyResult;
+      if (!pendingWeekly.length) {
+        // 周常无欠账：账本（本轮审计/调度）照旧提交，没有新推送
+        if (useOutbox) await writeLedger(statePath, ledger);
+        return { output: 'NO_REPLY\n', data: withFlush({ ok: true, reason: 'no_fresh' }) };
       }
-      return { output: 'NO_REPLY\n', data: { ok: true, reason: 'no_fresh' } };
+      const weeklyStatePath = path.join(path.dirname(statePath), 'warframe-weekly.json');
+      const first = pendingWeekly[0];
+      // 多人同会话只渲染一张（当前只服务私聊；群聊多人完成度拆分待后续需求）
+      const { mediaUrl, dealsMediaUrl } = await renderWeekly(weeklyStatePath, { target, ownerId: first.ownerId, ownerName: first.ownerName }, state, cardDir);
+      // 多行 MEDIA：运行时 MEDIA_TOKEN_RE 带 g 标志逐条捕获，两张图独立投递（源码实证）
+      const weeklyMediaUrls = mediaUrl ? [mediaUrl] : [];
+      const weeklyResult = mediaUrl
+        ? { output: `MEDIA:${mediaUrl}\n${dealsMediaUrl ? `MEDIA:${dealsMediaUrl}\n` : ''}`, data: { ok: true, weekly: weeklyId, mediaUrl, weeklyMediaUrls, losslessMediaUrls: [mediaUrl], dealsMediaUrl } }
+        : { output: '📅 本周周常已刷新，发送“周常”查看详细清单。\n', data: { ok: true, weekly: weeklyId } };
+      for (const item of pendingWeekly) item.seen = [...new Set([...(item.seen || []), weeklyId])].slice(-600);
+      updateSchedule(ledger, target, state, activeTypes, weeklyId);
+      if (!useOutbox) {
+        // monitor（announce）路径保持原样：先提交账本再返回输出（MEDIA 行交给 announce）
+        await writeLedger(statePath, ledger);
+        return weeklyResult;
+      }
+      // —— 周常 Outbox 事务链（R3 第三片）——
+      // 周报保持与手动「周常」相同的单张原始 PNG；主动推送的媒体 part 持久化投递模式：
+      // 主周报 transport=lossless（QQ /files + srv_send_msg=true 一步直发，避免 file_info +
+      // msg_type=7 把超长图压成约 2048px）、好货卡普通 --media、文字降级 --message。
+      // 事务顺序：结果确定后先原子入队，再提交 weekly seen/调度账本，再锁外逐 part 投递——
+      // 入队成功但账本写失败下轮同业务键去重；账本已提交但投递失败下轮 not_due 前先补投。
+      const businessKey = weeklyBusinessKey(target, weeklyId, pendingWeekly.map((item) => item.id));
+      const enqueued = await outbox.enqueue({
+        businessKey,
+        target,
+        parts: weeklyPartsFor(weeklyResult),
+        expiresAt: weeklyDeliveryExpiry(nowMs),
+      });
+      await writeLedger(statePath, ledger);
+      // 去重命中但记录仍 pending（上次入队后账本写失败被恢复）时交给锁外补投
+      if (enqueued.created || enqueued.entry?.status === 'pending') deferredDelivery = enqueued.entry.id;
+      return {
+        output: 'NO_REPLY\n',
+        data: withFlush({
+          ...weeklyResult.data,
+          outbox: true,
+          businessKey,
+          delivered: (flushSummary?.sentParts || 0) > 0 ? 'direct' : 'queued',
+        }),
+      };
     }
 
     // 私聊只有一个订阅人，不显示名字；群聊里昵称缺失会回退成 openid，
@@ -1736,23 +1905,75 @@ async function monitorTarget(target, statePath, cardDir, dryRun = false, directD
       : `订阅命中 · ${all.length} 条更新`;
     const cardSource = notificationSource(all);
     const card = buildIntelCard({ title, items: all, fetchedAt: state.timestamp || new Date().toISOString(), source: cardSource });
+    let result = null;
     if (cardDir) {
       try {
         const mediaUrl = await renderWarframeCard(card, cardDir);
-        if (mediaUrl) return { output: `MEDIA:${mediaUrl}\n`, data: { ok: true, fresh, closing, mediaUrl } };
+        if (mediaUrl) result = { output: `MEDIA:${mediaUrl}\n`, data: { ok: true, fresh, closing, mediaUrl } };
       } catch { /* text fallback below */ }
     }
-    const lines = ['🎯 星际战甲订阅提醒', ...all.map((item) => {
-      if (item.type === 'fissure') return `• ${TIER_ZH[item.tier] || item.tier} ${item.mission} · ${item.planet} ${item.node} · ${item.subscriptionDetail}`;
-      if (item.type === 'arbitration') return `• 仲裁 ${item.mission} · ${item.planet} ${item.node} · ${item.subscriptionDetail}`;
-      if (item.type === 'sortie') return `• 突击 ${item.boss} · ${item.variants.map((variant) => variant.mission).join('→')} · ${item.subscriptionDetail}`;
-      if (item.type === 'incursion') return `• 钢铁侵袭 ${(item.nodes || []).map((node) => node.mission).join('/')} · ${item.subscriptionDetail}`;
-      if (item.type === 'bounty') return `• 赏金命中 ${item.matchedTarget || item.subscriptionDetail} · ${item.placeZh} ${item.jobZh}${item.topReward ? `（奖池代表奖励：${item.topReward}）` : ''}`;
-      if (item.type === 'rotation') return `• 轮换到点 ${item.label}（一次性提醒已自动取消）· ${item.subscriptionDetail}`;
-      return `• ${TYPE_LABEL[item.type]} · ${item.description || item.reward || item.location || item.node || ''} · ${item.subscriptionDetail}`;
-    }), `来源：${cardSource.includes('browse.wf') ? (cardSource.includes('warframestat') ? '世界状态＋仲裁排期' : '仲裁排期') : '世界状态'}`];
-    return { output: `${lines.join('\n')}\n`, data: { ok: true, fresh, closing } };
+    if (!result) {
+      const lines = ['🎯 星际战甲订阅提醒', ...all.map((item) => {
+        if (item.type === 'fissure') return `• ${TIER_ZH[item.tier] || item.tier} ${item.mission} · ${item.planet} ${item.node} · ${item.subscriptionDetail}`;
+        if (item.type === 'arbitration') return `• 仲裁 ${item.mission} · ${item.planet} ${item.node} · ${item.subscriptionDetail}`;
+        if (item.type === 'sortie') return `• 突击 ${item.boss} · ${item.variants.map((variant) => variant.mission).join('→')} · ${item.subscriptionDetail}`;
+        if (item.type === 'incursion') return `• 钢铁侵袭 ${(item.nodes || []).map((node) => node.mission).join('/')} · ${item.subscriptionDetail}`;
+        if (item.type === 'bounty') return `• 赏金命中 ${item.matchedTarget || item.subscriptionDetail} · ${item.placeZh} ${item.jobZh}${item.topReward ? `（奖池代表奖励：${item.topReward}）` : ''}`;
+        if (item.type === 'rotation') return `• 轮换到点 ${item.label}（一次性提醒已自动取消）· ${item.subscriptionDetail}`;
+        return `• ${TYPE_LABEL[item.type]} · ${item.description || item.reward || item.location || item.node || ''} · ${item.subscriptionDetail}`;
+      }), `来源：${cardSource.includes('browse.wf') ? (cardSource.includes('warframestat') ? '世界状态＋仲裁排期' : '仲裁排期') : '世界状态'}`];
+      result = { output: `${lines.join('\n')}\n`, data: { ok: true, fresh, closing } };
+    }
+    if (!useOutbox) return result;
+
+    // —— Outbox 事务链（R3 第二片）：通知结果确定后先原子入队，再提交账本，再逐 part 投递 ——
+    // 业务键：脱敏 targetKey + 稳定事件集合（fresh/closing 区分）；入队成功但账本写失败时，
+    // 下轮同业务键命中去重，不会重复入队；账本已提交但投递失败时，上方的补投会在 not_due 轮先投。
+    const businessKey = worldStateBusinessKey(target, fresh, closing);
+    const expiresAt = earliestBusinessExpiry(all, typeof now === 'function' ? now() : Date.now());
+    const enqueued = await outbox.enqueue({ businessKey, target, parts: partsForResult(result), expiresAt });
+    await writeLedger(statePath, ledger);
+    // 去重命中但记录仍 pending（上次入队后账本写失败被恢复）时交给锁外补投
+    if (enqueued.created || enqueued.entry?.status === 'pending') deferredDelivery = enqueued.entry.id;
+    // 输出恒为 NO_REPLY：投递由 Outbox 逐 part 完成，cron 不再经 announce 二次投递
+    return {
+      output: 'NO_REPLY\n',
+      data: {
+        ok: true,
+        fresh,
+        closing,
+        outbox: true,
+        delivered: (flushSummary?.sentParts || 0) > 0 ? 'direct' : 'queued',
+        delivery: {
+          attempted: flushSummary?.attempted || 0,
+          sentParts: flushSummary?.sentParts || 0,
+          failedParts: flushSummary?.failedParts || 0,
+          deliveredIds: [...(flushSummary?.deliveredIds || [])],
+          pendingIds: [...(flushSummary?.pendingIds || [])],
+          expiredIds: [...(flushSummary?.expiredIds || [])],
+        },
+        businessKey,
+      },
+    };
   });
+  // 账本锁已释放，再逐 part 投递本轮新通知（同一事务顺序：入队 → 提交账本 → 投递；
+  // 被打断时下轮由顶部补投恢复，不重发已成功 part）
+  if (deferredDelivery) {
+    const summary = await outbox.deliverPending({ target, mailer: effectiveMailer, ids: [deferredDelivery] });
+    const delivery = {
+      attempted: (flushSummary?.attempted || 0) + summary.attempted,
+      sentParts: (flushSummary?.sentParts || 0) + summary.sentParts,
+      failedParts: (flushSummary?.failedParts || 0) + summary.failedParts,
+      deliveredIds: [...(flushSummary?.deliveredIds || []), ...summary.deliveredIds],
+      pendingIds: [...(flushSummary?.pendingIds || []), ...summary.pendingIds],
+      expiredIds: [...(flushSummary?.expiredIds || []), ...summary.expiredIds],
+    };
+    outcome = {
+      ...outcome,
+      data: { ...outcome.data, delivery, delivered: delivery.sentParts > 0 ? 'direct' : 'queued' },
+    };
+  }
+  return outcome;
 }
 
 async function seedDefaults(context, statePath) {
@@ -1792,9 +2013,12 @@ async function main() {
     const target = normalizeId(args.target);
     let sent = 0;
     const deliver = async (result) => { sent += await deliverMonitorResult(result, target); };
-    const result = await monitorTarget(target, statePath, args['card-dir'] ? path.resolve(String(args['card-dir'])) : null, false, deliver);
-    if (result.output.trim() !== 'NO_REPLY') await deliver(result);
-    process.stdout.write(sent > 0 ? `DIRECT_DELIVERED:${sent}\n` : 'NO_REPLY\n');
+    const outboxPath = args['outbox-path'] ? path.resolve(String(args['outbox-path'])) : defaultOutboxPath(statePath);
+    const result = await monitorTarget(target, statePath, args['card-dir'] ? path.resolve(String(args['card-dir'])) : null, false, deliver, { outboxPath });
+    // 兜底：罕有路径仍返回媒体/文字输出（不经过 Outbox）时按旧合同直投一次
+    if (result.output.trim() !== 'NO_REPLY' && !result.data?.outbox) await deliver(result);
+    const total = sent + Number(result.data?.delivery?.sentParts || 0);
+    process.stdout.write(total > 0 ? `DIRECT_DELIVERED:${total}\n` : 'NO_REPLY\n');
     return;
   }
   if (command === 'diagnose') {
@@ -1819,7 +2043,7 @@ async function main() {
   process.exitCode = 1;
 }
 
-export { manageCommand, monitorTarget, diagnoseSubscriptions, parseSubscriptionSpec, queryArbitration, queryIntel, seedDefaults, closingLabel, translateEventName, translateRewardName, primeRewardTranslations, primeOracleEventMap, refreshArbitrationCache, refreshIncursionsCache, scheduledIncursions, arbitrationMatches, allCandidates, currentNotificationMatches, appendFreshMatches, matchedBountyTarget, notificationSource, monitorIsDue, traderEffectivelyActive, traderWindow, updateSchedule, worldStateIsStale };
+export { manageCommand, monitorTarget, diagnoseSubscriptions, parseSubscriptionSpec, queryArbitration, queryIntel, seedDefaults, closingLabel, translateEventName, translateRewardName, primeRewardTranslations, primeOracleEventMap, refreshArbitrationCache, refreshIncursionsCache, scheduledIncursions, arbitrationMatches, allCandidates, currentNotificationMatches, appendFreshMatches, matchedBountyTarget, notificationSource, monitorIsDue, traderEffectivelyActive, traderWindow, updateSchedule, worldStateIsStale, defaultOutboxPath };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {

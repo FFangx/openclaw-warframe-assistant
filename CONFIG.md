@@ -34,7 +34,8 @@
 
 - `state/warframe-subscriptions.json`——订阅账本+去重记录
 - `state/warframe-weekly.json`——周常打卡与电波采样
-- `state/warframe-drops.json`——掉落监测基线
+- `state/warframe-drops.json`——掉落监测基线（v2；旧版欠账字段已迁入 Outbox）
+- `state/warframe-delivery-outbox.json`——通知 Outbox 四个切片：当前接入掉落提醒、世界状态订阅通知（裂缝/仲裁/警报/活动/商人/突击/侵袭/赏金/商店/商品/轮换的 deliver 路径）、weekly 主动周报（主周报无损原图 + 可选好货卡，逐 part 持久化 transport）与愿望单主动命中通知（REST 校准 deliver + Gateway 实时命中双源同键去重、10 分钟业务 TTL、`redactOnTerminal` 终态擦除敏感 payload），保存待投递/已投递通知、欠账补投、脱敏投递审计与幂等键墓碑（逾期与墓碑有界自动清理）
 - `state/warframe-arbitration-cache.json` / `warframe-incursions-cache.json`——排期缓存（删了会自动重建）
 
 ## 部署标识与备份

@@ -21,6 +21,7 @@ import { pathToFileURL } from 'node:url';
 import { getMarketPriceIndex, stripDataUriReplacer } from './wfdata.mjs';
 import { promisify } from 'node:util';
 import { buildDropsAlertCard, renderWarframeCard } from './warframe-cards.mjs';
+import { createOutbox, migrateLegacyDeliveryQueue, parseLegacyMessage, targetKeyOf } from './notification-outbox.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -32,8 +33,7 @@ const MAX_CARD_ROWS = 12;
 // 查价覆盖卡片实际展示的全部行，但固定限并发，避免一次性请求打爆市场 API。
 const MAX_PRICED_ITEMS = MAX_CARD_ROWS;
 const PRICE_CONCURRENCY = 3;
-// 投递欠账保留 48 小时：网络恢复后自动补投，超期丢弃防无限堆积
-const PENDING_TTL_MS = 48 * 60 * 60 * 1000;
+// 投递欠账保留 48 小时（通知 Outbox 的 DEFAULT_TTL_MS）：网络恢复后自动补投，超期丢弃防无限堆积
 // cron 最长运行 120 秒；超过两分钟的锁不可能再属于正常任务，可安全回收。
 // 防止进程被 cron 强制终止后遗留 .lock，令后续监测永久报“状态正忙”。
 const LOCK_STALE_MS = 2 * 60 * 1000;
@@ -370,15 +370,25 @@ async function attachPrices(drops, options = {}) {
 }
 
 // ---------- 基线状态 ----------
+// version 2：欠账队列（pendingDelivery）已迁入统一通知 Outbox（notification-outbox.mjs），
+// 本文件只保留监测基线；旧 v1 文件仍可读，旧欠账走兼容迁移不丢债。
+
+const STATE_VERSION = 2;
 
 function emptyState() {
-  return { version: 1, updatedAt: null, baseline: null, lastMtimeMs: 0, lastSyncedAt: null, pendingDelivery: [] };
+  return { version: STATE_VERSION, updatedAt: null, baseline: null, lastMtimeMs: 0, lastSyncedAt: null };
 }
 
 async function readState(statePath) {
   try {
     const parsed = JSON.parse(await readFile(statePath, 'utf8'));
-    return { ...emptyState(), ...parsed };
+    const state = { ...emptyState(), ...parsed };
+    // 旧 v1 文件：没有或已清空的欠账字段视为已收敛（读入即归一，写回不再复活旧字段）
+    if (!Array.isArray(state.pendingDelivery) || state.pendingDelivery.length === 0) {
+      delete state.pendingDelivery;
+      state.version = STATE_VERSION;
+    }
+    return state;
   } catch (error) {
     if (error?.code === 'ENOENT') return emptyState();
     throw error;
@@ -439,48 +449,84 @@ async function activeDropSubscriptions(ledgerPath, target) {
   }
 }
 
-// ---------- 直接投递与欠账补投 ----------
+// ---------- 统一通知 Outbox 投递（R3） ----------
+// 先原子写待发送事件（businessKey/contentHash/parts/expiresAt），再由逐 part 投递器
+// 发送；每个 part 的结果立即持久化，重试只补投未发送的 part（图片成功文字失败
+// 不会重发图片）；进程重启后 pending 从磁盘恢复，同一业务键不会重复入队。
 
-// 自己发消息并确认结果（cron announce 是 best-effort，失败即丢）；有 messageId 才算送达
-async function sendDirect(target, message) {
-  try {
-    const { stdout } = await execFileAsync(process.execPath, [OPENCLAW_CLI, 'message', 'send',
-      '--channel', 'qqbot', '--target', target, '--message', message, '--json',
-    ], { timeout: 60_000, windowsHide: true, maxBuffer: 1024 * 1024, encoding: 'utf8' });
-    const start = stdout.search(/[[{]/u);
-    if (start < 0) return false;
-    const payload = JSON.parse(stdout.slice(start));
-    return Boolean(payload?.messageId) && !payload?.error;
-  } catch {
-    return false;
-  }
+function defaultOutboxPath(statePath) {
+  return path.join(path.dirname(String(statePath)), 'warframe-delivery-outbox.json');
 }
 
-// 逐条补投欠账；成功/过期移除，仍失败的留到下轮。返回队列是否有变化
-async function flushPending(state, target) {
+// 自己发消息并确认结果（cron announce 是 best-effort，失败即丢）；有 messageId 才算送达。
+// 媒体 part 走 --media（与订阅直投同路），文字 part 走 --message。
+function createCliMailer(target) {
+  return async function mailer(part) {
+    const args = part.kind === 'media'
+      ? ['--media', part.value]
+      : ['--message', part.value];
+    try {
+      const { stdout } = await execFileAsync(process.execPath, [OPENCLAW_CLI, 'message', 'send',
+        '--channel', 'qqbot', '--target', target, ...args, '--json',
+      ], { timeout: 60_000, windowsHide: true, maxBuffer: 1024 * 1024, encoding: 'utf8' });
+      const start = stdout.search(/[[{]/u);
+      if (start < 0) return { ok: false, category: 'invalid_response' };
+      const payload = JSON.parse(stdout.slice(start));
+      if (payload?.messageId && !payload?.error) return { ok: true };
+      return { ok: false, category: payload?.error ? 'provider_rejected' : 'missing_message_id' };
+    } catch (error) {
+      return { ok: false, category: error?.code === 'ETIMEDOUT' ? 'timeout' : 'process_error' };
+    }
+  };
+}
+
+// 消息字符串 → Outbox parts（MEDIA: 行转媒体 part，其余为文字 part）
+function partsForMessage(message) {
+  const parts = parseLegacyMessage(message);
+  return parts.length ? parts : [{ kind: 'text', value: String(message ?? '') }];
+}
+
+// 旧欠账（pendingDelivery）一次性迁移：幂等、不丢债、TTL 保持 48h（按 queuedAt 起算）。
+// 迁移结果由 Outbox 的 businessKey（legacy:<targetKey>:<id>）去重保证：
+// 重复迁移不会有重复记录，不同订阅目标也不会互相去重；
+// 只要旧字段还存在就把状态文件升到 v2 并清空该字段（写回即完成收敛）。
+async function migrateLegacyDebt(state, outbox, target, dryRun, now) {
   const queue = Array.isArray(state.pendingDelivery) ? state.pendingDelivery : [];
-  if (!queue.length) return false;
-  const kept = [];
-  for (const entry of queue) {
-    if (Date.now() - Date.parse(entry.queuedAt) > PENDING_TTL_MS) continue;
-    if (await sendDirect(target, entry.message)) continue;
-    kept.push(entry);
-  }
-  const changed = kept.length !== queue.length;
-  state.pendingDelivery = kept;
-  return changed;
+  if (!queue.length || dryRun) return false;
+  await migrateLegacyDeliveryQueue(queue, outbox, { target, now });
+  delete state.pendingDelivery;
+  if (Number(state.version) < 2) state.version = 2;
+  return true;
 }
 
 // ---------- monitor 主流程 ----------
 
-async function monitorDrops({ statePath, ledgerPath, target, cardDir, alecaDir, dryRun }) {
+// options: { statePath, ledgerPath, target, cardDir, alecaDir, dryRun,
+//            outboxPath?, mailer?, attachOptions?, skipIcons?, now? }
+// 后四项为测试/诊断注入（mailer 默认走 openclaw CLI；attachOptions 传
+// slugs/quoteFetcher/priceIndex；skipIcons 让测试不联网；now 控制 TTL 时钟）。
+async function monitorDrops(options = {}) {
+  const {
+    statePath, ledgerPath, target, cardDir, alecaDir, dryRun = false,
+    outboxPath = defaultOutboxPath(statePath),
+    mailer = null,
+    attachOptions = {},
+    skipIcons = false,
+    now,
+  } = options;
   return withLock(statePath, async () => {
+    const outbox = createOutbox({ filePath: outboxPath, now });
+    const effectiveMailer = mailer || createCliMailer(target);
     const subscriptions = await activeDropSubscriptions(ledgerPath, target);
     if (!subscriptions.length && !dryRun) return { output: 'NO_REPLY\n', data: { ok: true, reason: 'no_subscriptions' } };
 
     const state = await readState(statePath);
-    // 先补投上轮欠账（网络恢复后自动重发），再看有没有新变化
-    if (!dryRun && await flushPending(state, target)) await writeState(statePath, state);
+    if (!dryRun) {
+      // 1) 旧欠账（pendingDelivery）兼容迁移 → Outbox：幂等、不丢债、TTL 48h 保持
+      if (await migrateLegacyDebt(state, outbox, target, dryRun, now)) await writeState(statePath, state);
+      // 2) 先补投既有欠账（网络恢复后自动重发），再看有没有新变化
+      await outbox.deliverPending({ target, mailer: effectiveMailer });
+    }
     const snapshotFile = path.join(alecaDir, 'lastData.dat');
 
     // 零成本闸门：mtime 没变就直接休眠，不解密不联网
@@ -514,9 +560,11 @@ async function monitorDrops({ statePath, ledgerPath, target, cardDir, alecaDir, 
     }
 
     const previousSyncedAt = state.lastSyncedAt;
-    await writeState(statePath, { ...state, baseline: counts, lastMtimeMs: snapshot.fileMtimeMs, lastSyncedAt: snapshot.syncedAt });
-
-    if (!gainedEntries.length) return { output: 'NO_REPLY\n', data: { ok: true, reason: 'no_gains' } };
+    const nextBaseline = { baseline: counts, lastMtimeMs: snapshot.fileMtimeMs, lastSyncedAt: snapshot.syncedAt };
+    if (!gainedEntries.length) {
+      await writeState(statePath, { ...state, ...nextBaseline });
+      return { output: 'NO_REPLY\n', data: { ok: true, reason: 'no_gains' } };
+    }
 
     const catalog = await loadCatalog(alecaDir);
     const drops = gainedEntries.map(([type, gained]) => describeDrop(type, gained, catalog));
@@ -531,36 +579,44 @@ async function monitorDrops({ statePath, ledgerPath, target, cardDir, alecaDir, 
       }
     }
     if (dryRun) {
+      await writeState(statePath, { ...state, ...nextBaseline });
       return { output: `${JSON.stringify({ ok: true, gained: drops, matched }, null, 2)}\n`, data: { ok: true, matched } };
     }
-    if (!matched.length) return { output: 'NO_REPLY\n', data: { ok: true, reason: 'no_match', gained: drops.length } };
+    if (!matched.length) {
+      await writeState(statePath, { ...state, ...nextBaseline });
+      return { output: 'NO_REPLY\n', data: { ok: true, reason: 'no_match', gained: drops.length } };
+    }
 
     // 排序：Prime → 赋能 → 稀有MOD → 其他；补市价后渲染
     matched.sort((a, b) => Number(b.isPrime) - Number(a.isPrime) || Number(b.isArcane) - Number(a.isArcane) || Number(b.isMod) - Number(a.isMod));
-    await attachPrices(matched);
+    await attachPrices(matched, attachOptions);
     // 物品图降级链（用户定：风格向 wm 看齐）：wm 素材 → browse.wf 游戏原图（同源同风格） → AlecaFrame 插画 → 字母块
-    try {
-      const { imageDataUri, gameIconDataUri, primeWarframePartIconDataUri } = await import('./wfdata.mjs');
-      let slugs = null;
-      try { slugs = await marketSlugMap(); } catch { slugs = null; }
-      await Promise.all(matched.slice(0, MAX_CARD_ROWS).map(async (drop) => {
-        const wmEntry = slugs ? findMarketEntry(slugs, drop.englishName) : null;
-        drop.iconDataUri = await primeWarframePartIconDataUri(drop.uniqueName, drop.englishName);
-        if (!drop.iconDataUri) {
-          const marketImageUrl = marketDisplayImageUrl(wmEntry);
-          if (marketImageUrl) drop.iconDataUri = await imageDataUri(marketImageUrl);
-        }
-        if (!drop.iconDataUri) drop.iconDataUri = await gameIconDataUri(drop.uniqueName);
-        if (!drop.iconDataUri && drop.imageName) drop.iconDataUri = await imageDataUri(`https://cdn.alecaframe.com/warframeData/img/${drop.imageName}`);
-      }));
-    } catch { /* 无图降级 */ }
+    if (!skipIcons) {
+      try {
+        const { imageDataUri, gameIconDataUri, primeWarframePartIconDataUri } = await import('./wfdata.mjs');
+        let slugs = null;
+        try { slugs = await marketSlugMap(); } catch { slugs = null; }
+        await Promise.all(matched.slice(0, MAX_CARD_ROWS).map(async (drop) => {
+          const wmEntry = slugs ? findMarketEntry(slugs, drop.englishName) : null;
+          drop.iconDataUri = await primeWarframePartIconDataUri(drop.uniqueName, drop.englishName);
+          if (!drop.iconDataUri) {
+            const marketImageUrl = marketDisplayImageUrl(wmEntry);
+            if (marketImageUrl) drop.iconDataUri = await imageDataUri(marketImageUrl);
+          }
+          if (!drop.iconDataUri) drop.iconDataUri = await gameIconDataUri(drop.uniqueName);
+          if (!drop.iconDataUri && drop.imageName) drop.iconDataUri = await imageDataUri(`https://cdn.alecaframe.com/warframeData/img/${drop.imageName}`);
+        }));
+      } catch { /* 无图降级 */ }
+    }
 
     // 玩家浮印头图（glyph）：解析失败退原 SVG
     let glyphDataUri = null;
-    try {
-      const { gameIconDataUri } = await import('./wfdata.mjs');
-      glyphDataUri = await gameIconDataUri(snapshot.inventory.ActiveAvatarImageType) || null;
-    } catch { glyphDataUri = null; }
+    if (!skipIcons) {
+      try {
+        const { gameIconDataUri } = await import('./wfdata.mjs');
+        glyphDataUri = await gameIconDataUri(snapshot.inventory.ActiveAvatarImageType) || null;
+      } catch { glyphDataUri = null; }
+    }
     const card = buildDropsAlertCard({
       drops: matched.slice(0, MAX_CARD_ROWS),
       total: matched.length,
@@ -590,20 +646,21 @@ async function monitorDrops({ statePath, ledgerPath, target, cardDir, alecaDir, 
       lines.push('数据来自本机账号快照；估值优先采用可靠今日成交中位，样本不足回退 90 日成交中位。');
       message = lines.join('\n');
     }
-    // 先落盘再投递：即使 cron 在发送期间强杀进程，下一轮仍能从欠账队列补投。
-    const deliveryId = `${Date.now()}-${process.pid}`;
-    const queuedState = await readState(statePath);
-    queuedState.pendingDelivery = [...(Array.isArray(queuedState.pendingDelivery) ? queuedState.pendingDelivery : []), {
-      id: deliveryId, message, queuedAt: new Date().toISOString(),
-    }];
-    await writeState(statePath, queuedState);
-    // 自发并确认；输出恒为 NO_REPLY，不再走 announce
-    if (await sendDirect(target, message)) {
-      const sentState = await readState(statePath);
-      sentState.pendingDelivery = (Array.isArray(sentState.pendingDelivery) ? sentState.pendingDelivery : [])
-        .filter((entry) => entry.id !== deliveryId);
-      await writeState(statePath, sentState);
-      return { output: 'NO_REPLY\n', data: { ok: true, matched, delivered: 'direct' } };
+    // 先入 Outbox 再写基线再投递：即使 cron 在发送期间被强杀，下一轮仍能从
+    // Outbox 补投（pending 恢复）；同一同步事件（businessKey 含 syncedAt）不会重复入队。
+    const enqueued = await outbox.enqueue({
+      businessKey: `drops:${targetKeyOf(target)}:${String(snapshot.syncedAt)}`,
+      target,
+      parts: partsForMessage(message),
+    });
+    await writeState(statePath, { ...state, ...nextBaseline });
+    // 自发并确认；输出恒为 NO_REPLY，不再走 announce。
+    // 去重命中但记录仍 pending（上次入队后基线写失败被恢复）时同样立即补投。
+    if (enqueued.created || enqueued.entry?.status === 'pending') {
+      const summary = await outbox.deliverPending({ target, mailer: effectiveMailer, ids: [enqueued.entry.id] });
+      if (summary.deliveredIds.includes(enqueued.entry.id)) {
+        return { output: 'NO_REPLY\n', data: { ok: true, matched, delivered: 'direct' } };
+      }
     }
     return { output: 'NO_REPLY\n', data: { ok: true, matched, delivered: 'queued' } };
   });
@@ -628,16 +685,21 @@ async function main() {
       target: normalize(args.target),
       cardDir: args['card-dir'] ? path.resolve(String(args['card-dir'])) : null,
       alecaDir: args['aleca-dir'] ? path.resolve(String(args['aleca-dir'])) : defaultAlecaDir(),
+      outboxPath: args['outbox-path'] ? path.resolve(String(args['outbox-path'])) : undefined,
       dryRun: String(args['dry-run']).toLowerCase() === 'true',
     });
     process.stdout.write(result.output);
     return;
   }
-  outputJson({ ok: false, error: '用法：drops.mjs monitor --state <path> --ledger <path> --target <qq-target> [--card-dir <dir>] [--dry-run true]' });
+  outputJson({ ok: false, error: '用法：drops.mjs monitor --state <path> --ledger <path> --target <qq-target> [--card-dir <dir>] [--outbox-path <path>] [--dry-run true]' });
   process.exitCode = 1;
 }
 
-export { monitorDrops, dropMatches, countInventory, loadCatalog, describeDrop, defaultAlecaDir, marketSlugMap, findMarketEntry, marketDisplayImagePath, marketDisplayImageUrl, attachPrices, withLock };
+export {
+  monitorDrops, dropMatches, countInventory, loadCatalog, describeDrop, defaultAlecaDir,
+  marketSlugMap, findMarketEntry, marketDisplayImagePath, marketDisplayImageUrl, attachPrices,
+  withLock, defaultOutboxPath,
+};
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {

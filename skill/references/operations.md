@@ -10,7 +10,7 @@ SKILL.md 瘦身移入（2026-08-07）。这些规则的执行主体是脚本与 
 - `--mode unpredictable`（警报/稀有入侵/活动，最多每 15 分钟联网一次）与 `--mode scheduled`（虚空商人按到达/离开边界蹲守）
   必须用不同 `--state` 文件，避免并发覆盖去重状态；恰逢其他固定边界已刷新世界状态时复用同一次结果
 - scheduled 记录 `nextCheckAt`：cron 可每分钟调，未到点只读本地状态输出 `NO_REPLY` 不联网
-- `--card-dir` 存在时发现新情报生成深色提醒卡；`monitor` 输出 `MEDIA:` 供兼容调用，生产订阅 cron 使用 `deliver` 子命令逐图调用 QQ outbound 并关闭 runner announce；周常订阅的主周报保持单张完整高清 PNG（原始像素，不切段、不裁剪、不二次缩放），主动推送直接调用 QQ `/files` 并设置 `srv_send_msg=true` 一步直传原图，不再追加会压缩长图的 `msg_type=7`；渲染失败退文字，原图直传失败不核销并留待下一轮重试
+- `--card-dir` 存在时发现新情报生成深色提醒卡；`monitor` 输出 `MEDIA:` 供兼容调用，生产订阅 cron 使用 `deliver` 子命令（通知先原子入 R3 共享 Outbox、提交账本后再逐 part 投递，见「订阅调度」）并关闭 runner announce；周常订阅的主周报保持单张完整高清 PNG（原始像素，不切段、不裁剪、不二次缩放），主动推送由 Outbox 以 `transport=lossless` part 走 QQ `/files` 并设置 `srv_send_msg=true` 一步直传原图，不再追加会压缩长图的 `msg_type=7`；渲染失败退文字，原图直传失败只补投未成功的 part（已成功 part 不重发）
 - cron 直投的命令（drops/subscriptions monitor、weekly remind）异常时必须输出 NO_REPLY，不得裸 JSON
 - 联网订阅每次真正刷新时写入通用审计：数据源状态、候选快照、匹配数、新匹配数和是否已生成提醒；`subscription_diagnosis` 只依据该流水回答历史/漏报问题。`seen` 只负责去重，不能再充当历史记录。
 
@@ -19,9 +19,10 @@ SKILL.md 瘦身移入（2026-08-07）。这些规则的执行主体是脚本与 
 ### Warframe.Market 愿望单
 
 - 愿望单使用独立的 `state/warframe-wishlist.json`，按 QQ 会话与发送者隔离；只保存商品、愿望价、等级条件、状态和订单去重 ID，不保存卖家名，也不登录 Market。
-- Gateway 生命周期内全插件只建立一条公开 `wss://ws.warframe.market/socket` / `wfm` 新订单订阅，并以内存 itemId 索引过滤；新愿望建立、改价或恢复后立即执行一次 item top 校准。设置反馈卡先发送；已有合价卖单时补发标准 `wm` 市场行情卡和私聊文本，并把当前订单写入去重，不能留到 10 分钟 cron 才延迟提醒。
+- Gateway 生命周期内全插件只建立一条公开 `wss://ws.warframe.market/socket` / `wfm` 新订单订阅，并以内存 itemId 索引过滤；新愿望建立、改价或恢复后立即执行一次 item top 校准。设置反馈卡先发送；已有合价卖单时补发标准 `wm` 市场行情卡和私聊文本，并把当前订单写入去重，不能留到 10 分钟 cron 才延迟提醒。**该「建立后立即行情卡」与愿望管理命令的主回复仍属交互用例顺序，不经 Outbox。**
 - 每个 QQ 会话另有一条 10 分钟命令型 cron，仅请求该会话当前商品的 `/v2/orders/item/{slug}/top` 做漏单/重连校准；REST 请求起点至少相隔 400ms，低于公开 3 req/s 上限。
 - 新订单按 `platinum / perTrade` 计算单件价格，只匹配可见 sell 单和准确等级；同一订单每个愿望只提醒一次。命中仅推送图片和 Market 私聊文本，绝不自动交易、聊天或核销。
+- **主动命中通知（生产 `deliver` 子命令与 Gateway 实时命中）已迁入 R3 共享 Outbox**（`state/warframe-delivery-outbox.json`）：命中结果确定后先原子入队，再提交 wishlist 账本（seenOrderIds/lastMatchAt/calibration），再在 wishlist 锁外逐 part 投递。业务键 = 脱敏 targetKey + 稳定「orderIdentity × 命中 wishId 集合」的 SHA-256 语义（原始 target/seller/owner/order/wish id 只进摘要，不原文落盘），REST 与 WS 对同一完整 order+wish 通知集合自动去重；愿望提醒使用保守 10 分钟业务 TTL（过期不盲发），条目在 delivered/expired 终态立即擦除 part.value（`redactOnTerminal`），只留 contentHash、part 状态、时间与脱敏结果审计——卖家名永不写入 wishlist 账本、墓碑或尝试日志。WebSocket 一笔订单命中多个 QQ target 时，全部目标的 Outbox 入队成功才一次性提交账本（每 target 独立业务键与投递状态）；任一目标入队失败不提交 seen，下轮 REST 校准同键恢复；入队成功但账本写失败下轮同键去重不重复入队；账本已提交但投递失败下轮 REST `not_due`/无新命中前先补投 pending。Gateway 启动或每次事件时先恢复相关 target 的 wishlist pending（只投 `wishlist:` 业务键前缀），outbox 跨进程锁保证与校准 cron 并发不重复发送；QQ outbound adapter 的 sendMedia/sendText 只有返回 messageId 才视为成功，结果转换为固定脱敏类别（异常只记类别不存原文）。`monitor`/`calibrate`/`gateway_start` 与 `--dry-run` 输出保持原样，不经 Outbox；`deliver --dry-run true` 只输出预览，绝不调用 QQ outbound。
 - 用户只有明确发送 `已购 <短编号>` 才会停止该愿望；不回复则继续监控。Gateway 断线指数退避至 60 秒，恢复后继续共用同一连接。
 
 - 每个 QQ 会话只建一条命令型 cron，合并该会话所有人的订阅共用一次世界状态请求；提醒发回订阅创建时的会话。安装/再次管理订阅时会把旧 `monitor + announce` 任务幂等迁移为 `deliver + no-deliver`
@@ -32,10 +33,20 @@ SKILL.md 瘦身移入（2026-08-07）。这些规则的执行主体是脚本与 
   高价值警报（反应堆/催化剂/Forma/适配器类）截止前 1h、稀有入侵进度 ≥90% 各补报一次「最后窗口」；
   每事件每阶段一次（去重标记 `id#closing`）；阈值是脚本内常量不做用户配置
 - `订阅 周常`：创建后首轮即推本周清单；之后每周一 00:00 UTC 刷新后推两张卡（周报主卡保持单张完整原始 PNG + 本周好货卡，好货卡挂了降级只发周报）；
-  优先级最低不挤占其他提醒；周报主卡通过 QQ `/files` 的 `srv_send_msg=true` 一步直发原图（不再追加会压缩长图的 `msg_type=7`），两张卡全部成功后才核销本周去重标记，失败留待下一分钟重试
+  优先级最低不挤占其他提醒；推送经 R3 共享 Outbox 逐 part 投递——主周报 part 以 `transport=lossless` 走 QQ `/files` 的 `srv_send_msg=true` 一步直发原图（不再追加会压缩长图的 `msg_type=7`），好货卡普通 `--media`，渲染失败退 `--message` 文字；
+  业务键 = 脱敏 targetKey + weeklyId + 本次 pending 周常订阅集合哈希（subscriptionId 只进摘要不入盘；同周新建订阅不会被旧 tombstone 吞掉），`expiresAt` = 本周重置边界且不晚于 48h——先原子入队，再提交 weekly seen/调度账本，再在账本锁外逐 part 投递；失败只补投未成功 part
+- 世界状态订阅（裂缝/仲裁/警报/活动/商人/突击/钢铁侵袭/赏金/商店/商品/轮换）的 `deliver` 子命令与掉落共用 R3 通知 Outbox
+  （`state/warframe-delivery-outbox.json`）：通知结果确定后先原子入队，再提交订阅账本（seen/一次性消费/调度/审计），再逐 part 投递；
+  业务键 = 脱敏 targetKey + 稳定“事件 × 命中订阅”集合（fresh 与 closing 区分，subscriptionId 只进摘要不原文落盘）；`expiresAt` = 本卡片最早的有效业务 expiry（裂缝/警报过期后不盲目补发），
+  无业务 expiry 时用保守的 6h 明确默认，且不晚于 48h 默认 TTL——入队成功但账本写失败下轮同键去重不重复入队，
+  账本已提交但投递失败下一轮即使调度 `not_due` 也先补投 pending；图片成功文字失败只补投文字，进程重启 pending 自动恢复。
+  `monitor`（announce）子命令不经过 Outbox，输出保持原样；周常已于第三片迁入同一 Outbox（见「订阅 周常」），愿望主动命中通知已于第四片迁入（见「Warframe.Market 愿望单」）
 - `订阅 掉落`（个人）：独立 cron 每分钟只查快照 mtime，变化才解密 diff；首次只建基线；
   筛选词支持 全部/prime/部件/mod/赋能/稀有/具体物品名，缺省只推 Prime 部件/赋能/稀有传说 MOD；
-  推送失败入欠账队列每轮补投（TTL 48h）；时效类订阅（裂缝/警报）故意不补投
+  通知先写入 R3 共享 Outbox 第一版（`state/warframe-delivery-outbox.json`：脱敏目标哈希、业务幂等键、内容哈希、媒体/文字
+  逐 part 状态、创建/过期时间、尝试次数与结果类别），再逐 part 投递——图片成功文字失败重试只补投
+  文字，进程重启后 pending 自动恢复补投，跨进程写由共享锁串行，同一业务键不重复入队；旧版 `pendingDelivery` 欠账自动
+  兼容迁移（TTL 维持 48h 不丢欠账）。掉落自身按 48h 补投；世界状态时效提醒只在各自业务 `expiresAt` 前补投
 - `订阅 商品`：泰辛 8 周表内给上架日期预告并到点推送；商店货单查无的转 Baro/瓦奇娅到货对账蹲守；
   常驻/每期必上的拒单并告知原因；`订阅 轮换` 为一次性（推送后自动取消，建立时告知目标日期）
 

@@ -14,7 +14,8 @@ import { pathToFileURL } from 'node:url';
 import { buildWishlistHitCard, buildWishlistSubscriptionCard, buildWishlistSummaryCard } from './wishlist-card.mjs';
 import { renderWarframeCard } from './warframe-cards.mjs';
 import { fetchMarketItems, resolveMarketItem } from './shortcuts.mjs';
-import { deliverMonitorResult } from './subscriptions.mjs';
+import { createSubscriptionsMailer, deliverMonitorResult } from './subscriptions.mjs';
+import { createOutbox, targetKeyOf } from './notification-outbox.mjs';
 
 const MARKET_BASE = 'https://api.warframe.market';
 const WS_URL = 'wss://ws.warframe.market/socket';
@@ -24,6 +25,12 @@ const WS_EVENT_ROUTE = '@wfm|event/subscriptions/newOrder';
 const PLATFORM = 'pc';
 const CROSSPLAY = true;
 const REST_INTERVAL_MS = 10 * 60 * 1000;
+// 愿望命中通知的保守业务 TTL（R3 第四片）：市场快照 10 分钟就过期，
+// 逾期不盲发；Outbox 对每条记录再按默认 TTL（48h）封顶，10 分钟生效的
+// 是业务过期（expiresAt），不影响掉落/世界状态/周报的既有 TTL 行为。
+const WISHLIST_TTL_MS = 10 * 60 * 1000;
+// 愿望通知 Outbox 业务键前缀（与 worldstate:/weekly:/drops:/legacy: 平级）
+const WISHLIST_KEY_PREFIX = 'wishlist:';
 const DEFAULT_WS_WINDOW_MS = 52 * 1000;
 const DEFAULT_STATE = path.resolve(process.cwd(), 'warframe-wishlist.json');
 const SHORT_ID_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -329,6 +336,57 @@ function hitNotificationText(hits) {
   return `愿望单命中 ${hits.length} 条新卖单。\n${hits.map(whisperTextForHit).join('\n')}\n${ack}`;
 }
 
+// ---------- 愿望命中通知 Outbox（R3 第四片：REST 校准 deliver + Gateway 实时命中） ----------
+// 与掉落/世界状态/周报共用同一状态文件（业务键前缀不同，按 targetKey 过滤）。
+
+// Outbox 默认路径：与愿望状态同目录（warframe-delivery-outbox.json），与其余切片一致
+export function defaultOutboxPath(statePath) {
+  return path.join(path.dirname(String(statePath)), 'warframe-delivery-outbox.json');
+}
+
+// 命中 → 稳定「orderIdentity × 命中 wishId 集合」对（集合语义：顺序无关、同单去重）。
+// 同一订单命中多个愿望聚合为一对；REST 批量校准可能含多对。
+export function wishlistHitsToPairs(hits) {
+  const byOrder = new Map();
+  for (const hit of hits || []) {
+    const identity = orderIdentity(hit?.order || {});
+    if (!identity) continue;
+    if (!byOrder.has(identity)) byOrder.set(identity, []);
+    if (hit?.wishId) byOrder.get(identity).push(String(hit.wishId));
+  }
+  return [...byOrder.entries()].map(([orderIdentityValue, wishIds]) => ({
+    orderIdentity: orderIdentityValue,
+    wishIds: [...new Set(wishIds)].sort(),
+  }));
+}
+
+// 业务幂等键：脱敏 targetKey + 稳定「orderIdentity × 命中 wishId」集合的 SHA-256 语义。
+// 原始 target/seller/owner/order/wish id 只进入摘要，绝不出现在 businessKey 原文；
+// REST 校准与 WS 实时对同一完整 orderIdentity+wish 通知集合产生同一键，双源自动去重
+// （Outbox tombstone 兜底；账本 seen 在 wishlist 锁内提交）。
+export function wishlistHitBusinessKey(target, pairs) {
+  const stable = (pairs || [])
+    .map((pair) => ({
+      order: String(pair?.orderIdentity || ''),
+      wishes: [...new Set((pair?.wishIds || []).map((id) => String(id || '').trim()).filter(Boolean))].sort(),
+    }))
+    .filter((pair) => pair.order)
+    .sort((a, b) => a.order.localeCompare(b.order) || JSON.stringify(a.wishes).localeCompare(JSON.stringify(b.wishes)));
+  const digest = createHash('sha256').update(JSON.stringify(stable)).digest('hex');
+  return `${WISHLIST_KEY_PREFIX}${targetKeyOf(target)}:${digest}`;
+}
+
+// 命中通知 → Outbox parts：媒体卡（渲染失败降级文字）+ 主文字（含 Market 私聊模板）。
+// 卖家名只存在这些瞬时 payload（pending 补投临时保留），终态由 Outbox 擦除。
+async function buildWishlistHitPayload(hits, cardDir, options = {}) {
+  const detectedAt = new Date().toISOString();
+  const card = buildWishlistHitCard({ hits, detectedAt });
+  const mediaUrl = await renderCard(card, cardDir, options);
+  const text = hitNotificationText(hits);
+  if (mediaUrl) return { mediaUrl, text, parts: [{ kind: 'media', value: mediaUrl }, { kind: 'text', value: text }] };
+  return { mediaUrl: null, text, parts: [{ kind: 'text', value: text }] };
+}
+
 function wishIdentityKey(itemId, rankMode, rank, maxRank) {
   return `${normalize(itemId)}|${rankMode || 'any'}|${rank == null ? '' : rank}|${maxRank == null ? '' : maxRank}`;
 }
@@ -626,37 +684,102 @@ function resultForHits(hits, now) {
 }
 
 /** Perform REST calibration + bounded websocket monitoring for one target. */
+// options: { ownerId?, forceRest?, restIntervalMs?, skipRest?, skipWebSocket?, fetchOrders?,
+//            fetchImpl?, render?, renderCard?, WebSocketImpl?, wsDurationMs?,
+//            outbox?, mailer?, now? }
+// 前几项为 monitor/calibrate/gateway_start 兼容路径（输出与行为不变）；后三项是
+// R3 第四片的 deliver 生产链注入：只有传入 outbox（且非 dry-run）才启用事务链
+// （先补投欠账 → 命中先原子入队 → 提交 seen/calibration 账本 → 锁外逐 part 投递）。
 export async function monitorWishlist(targetValue, statePath = DEFAULT_STATE, cardDir = null, dryRun = false, options = {}) {
   const target = normalizeId(targetValue);
+  const outbox = options.outbox || null;
+  const useOutbox = Boolean(outbox) && !dryRun;
+  const mailer = typeof options.mailer === 'function' ? options.mailer : null;
+  const nowMs = typeof options.now === 'function' ? options.now() : Date.now();
   let ledger = await readWishlistLedger(statePath);
   const ownerId = normalizeId(options.ownerId || options.owner || '');
   const active = ledger.wishes.filter((wish) => wish.target === target && (!ownerId || wish.ownerId === ownerId) && wish.status === 'active' && wish.enabled);
-  if (!active.length) return { output: 'NO_REPLY\n', data: { ok: true, reason: 'no_wishes' } };
+  // 1) 先补投欠账（R3 第四片）：账本已提交但投递失败（或入队后进程被杀）的 pending，
+  //    即使 REST 未到点/无新命中也会先补投；keyPrefix 限定只投本链业务键，
+  //    不代投世界状态/周报/掉落记录（它们由各自的 deliver cron 负责）。
+  let flushSummary = null;
+  if (useOutbox) {
+    flushSummary = await outbox.deliverPending({ target, mailer, keyPrefix: WISHLIST_KEY_PREFIX });
+  }
+  if (!active.length) {
+    return { output: 'NO_REPLY\n', data: useOutbox
+      ? { ok: true, reason: 'no_wishes', outbox: true, delivery: flushSummary }
+      : { ok: true, reason: 'no_wishes' } };
+  }
   const targetCalibration = ledger.calibration.targets?.[target] || {};
-  const due = options.forceRest || !targetCalibration.lastRestAt || (Date.now() - Date.parse(targetCalibration.lastRestAt) >= (options.restIntervalMs ?? REST_INTERVAL_MS));
+  const due = options.forceRest || !targetCalibration.lastRestAt || (nowMs - Date.parse(targetCalibration.lastRestAt) >= (options.restIntervalMs ?? REST_INTERVAL_MS));
   let hits = [];
   let restError = null;
+  let deferredDelivery = null;
+  let hitBusinessKey = null;
   if (due && options.skipRest !== true) {
     try {
       const orders = options.fetchOrders
         ? await options.fetchOrders(active, options.fetchImpl || globalThis.fetch)
         : await fetchTopOrdersForWishes(active, options.fetchImpl || globalThis.fetch);
-      const calibrated = await withWishlistLock(statePath, async () => {
-        // Reload under the lock: a live gateway event may have updated seen
-        // IDs while the item-top HTTP request was in flight.
-        const latest = await readWishlistLedger(statePath);
-        const applied = applyWishlistOrders(latest, orders, { source: 'rest', now: new Date().toISOString(), target, ownerId, notifyInitial: true });
-        const stamp = new Date().toISOString();
-        applied.ledger.calibration = {
-          ...applied.ledger.calibration,
-          lastRestAt: stamp, lastError: null,
-          targets: { ...(applied.ledger.calibration.targets || {}), [target]: { lastRestAt: stamp, lastError: null } },
-        };
-        await writeWishlistLedger(statePath, applied.ledger);
-        return applied;
-      });
-      hits.push(...calibrated.hits);
-      ledger = calibrated.ledger;
+      if (useOutbox) {
+        // —— Outbox 事务链（R3 第四片）：命中结果确定后先原子入队（含渲染 payload），
+        // 再提交 seen/calibration 账本，再在 wishlist 锁外逐 part 投递。
+        // 入队失败则整段抛错、seen 不提交（下轮同业务键重试）；
+        // 入队成功但账本写失败，下轮同业务键命中去重，不会重复入队。
+        const transaction = await withWishlistLock(statePath, async () => {
+          // Reload under the lock: a live gateway event may have updated seen
+          // IDs while the item-top HTTP request was in flight.
+          const latest = await readWishlistLedger(statePath);
+          const applied = applyWishlistOrders(latest, orders, { source: 'rest', now: new Date(nowMs).toISOString(), target, ownerId, notifyInitial: true });
+          const stamp = new Date(nowMs).toISOString();
+          applied.ledger.calibration = {
+            ...applied.ledger.calibration,
+            lastRestAt: stamp, lastError: null,
+            targets: { ...(applied.ledger.calibration.targets || {}), [target]: { lastRestAt: stamp, lastError: null } },
+          };
+          let deferred = null;
+          let businessKey = null;
+          if (applied.hits.length) {
+            const payload = await buildWishlistHitPayload(applied.hits, cardDir, options);
+            businessKey = wishlistHitBusinessKey(target, wishlistHitsToPairs(applied.hits));
+            const enqueued = await outbox.enqueue({
+              businessKey, target,
+              parts: payload.parts,
+              createdAt: new Date(nowMs).toISOString(),
+              expiresAt: new Date(nowMs + WISHLIST_TTL_MS).toISOString(),
+              redactOnTerminal: true,
+            });
+            // 去重命中但记录仍 pending（上次入队后账本写失败被恢复）时同样立即补投
+            if (enqueued.created || enqueued.entry?.status === 'pending') deferred = enqueued.entry.id;
+          }
+          // 全部入队成功（或无命中）才一次性提交校准/seen 账本；
+          // 任一 enqueue 抛错都不会写账本（绝不吞掉会吞提醒的 seen 状态）。
+          await writeWishlistLedger(statePath, applied.ledger);
+          return { applied, deferred, businessKey };
+        });
+        hits.push(...transaction.applied.hits);
+        ledger = transaction.applied.ledger;
+        deferredDelivery = transaction.deferred;
+        hitBusinessKey = transaction.businessKey;
+      } else {
+        const calibrated = await withWishlistLock(statePath, async () => {
+          // Reload under the lock: a live gateway event may have updated seen
+          // IDs while the item-top HTTP request was in flight.
+          const latest = await readWishlistLedger(statePath);
+          const applied = applyWishlistOrders(latest, orders, { source: 'rest', now: new Date().toISOString(), target, ownerId, notifyInitial: true });
+          const stamp = new Date().toISOString();
+          applied.ledger.calibration = {
+            ...applied.ledger.calibration,
+            lastRestAt: stamp, lastError: null,
+            targets: { ...(applied.ledger.calibration.targets || {}), [target]: { lastRestAt: stamp, lastError: null } },
+          };
+          await writeWishlistLedger(statePath, applied.ledger);
+          return applied;
+        });
+        hits.push(...calibrated.hits);
+        ledger = calibrated.ledger;
+      }
     } catch (error) {
       restError = String(error?.message || error);
       // The HTTP request may overlap a gateway event or a user command. Do
@@ -678,8 +801,10 @@ export async function monitorWishlist(targetValue, statePath = DEFAULT_STATE, ca
       });
     }
   }
+  // 兼容路径的 WS：只有 monitor/calibrate/gateway_start 使用（不经 Outbox——
+  // 要求 7：只有生产 deliver 与 extension live gateway 用 Outbox）。
   const itemIds = activeItemIds(ledger, target, ownerId);
-  if (!dryRun && options.skipWebSocket !== true) {
+  if (!useOutbox && !dryRun && options.skipWebSocket !== true) {
     await subscribeToNewOrders({
       WebSocketImpl: options.WebSocketImpl,
       durationMs: options.wsDurationMs ?? DEFAULT_WS_WINDOW_MS,
@@ -697,6 +822,31 @@ export async function monitorWishlist(targetValue, statePath = DEFAULT_STATE, ca
       },
     });
   }
+  if (useOutbox) {
+    const emptyDelivery = { attempted: 0, sentParts: 0, failedParts: 0, deliveredIds: [], pendingIds: [], expiredIds: [] };
+    const delivery = { ...emptyDelivery, ...(flushSummary || {}) };
+    if (deferredDelivery && mailer) {
+      const summary = await outbox.deliverPending({ target, mailer, ids: [deferredDelivery] });
+      delivery.attempted += summary.attempted;
+      delivery.sentParts += summary.sentParts;
+      delivery.failedParts += summary.failedParts;
+      delivery.deliveredIds.push(...summary.deliveredIds);
+      delivery.pendingIds.push(...summary.pendingIds);
+      delivery.expiredIds.push(...summary.expiredIds);
+    }
+    return {
+      output: 'NO_REPLY\n',
+      data: {
+        ok: true, hitCount: hits.length, outbox: true,
+        ...(hits.length ? { hits } : {}),
+        ...(restError ? { restError } : {}),
+        ...(hitBusinessKey ? { businessKey: hitBusinessKey } : {}),
+        ...(!due ? { reason: 'not_due' } : {}),
+        delivered: delivery.sentParts > 0 ? 'direct' : 'queued',
+        delivery,
+      },
+    };
+  }
   if (!hits.length) return { output: 'NO_REPLY\n', data: { ok: true, hitCount: 0, ...(restError ? { restError } : {}) } };
   const card = buildWishlistHitCard({ hits, detectedAt: new Date().toISOString() });
   const mediaUrl = dryRun ? null : await renderCard(card, cardDir, options);
@@ -707,17 +857,24 @@ export async function monitorWishlist(targetValue, statePath = DEFAULT_STATE, ca
 
 // Called by the gateway singleton only after it has filtered the event's
 // itemId against the in-memory wishlist index. It groups one order back to
-// QQ targets, writes only deduplication metadata, and keeps seller data in the
-// transient card/result (never in the ledger).
+// QQ targets. 生产路径（注入 options.outbox）：先为所有命中 target 原子入队
+// （每个目标独立业务键与投递状态），全部入队成功才一次性提交 wishlist ledger，
+// 再在 wishlist 锁外由调用方（Gateway extension）注入 QQ outbound mailer 让
+// Outbox 逐 part 持久化结果；任一目标入队失败则不提交 seen（下轮 REST 校准
+// 用同一业务键恢复）。无 outbox 时保持旧行为（先记账、返回可直投结果）。
+// seller 数据只存在于瞬时 payload（Outbox pending 的 redactOnTerminal 终态擦除），
+// 永不写入 wishlist ledger。
 export async function processWishlistLiveOrder(order, statePath = DEFAULT_STATE, cardDir = null, options = {}) {
   const normalized = orderPayload(order);
   if (!normalized.itemId) return [];
-  const groupedHits = await withWishlistLock(statePath, async () => {
+  const outbox = options.outbox || null;
+  const useOutbox = Boolean(outbox);
+  const nowMs = typeof options.now === 'function' ? options.now() : Date.now();
+  const transaction = await withWishlistLock(statePath, async () => {
     const ledger = await readWishlistLedger(statePath);
     const relevant = ledger.wishes.some((wish) => wish.itemId === normalized.itemId && wish.status === 'active' && wish.enabled);
-    if (!relevant) return new Map();
-    const applied = applyWishlistOrders(ledger, [normalized], { source: 'ws', now: new Date().toISOString() });
-    await writeWishlistLedger(statePath, applied.ledger);
+    if (!relevant) return { applied: null, byTarget: new Map(), entries: [] };
+    const applied = applyWishlistOrders(ledger, [normalized], { source: 'ws', now: new Date(nowMs).toISOString() });
     const byTarget = new Map();
     for (const hit of applied.hits) {
       const target = ledger.wishes.find((wish) => wish.id === hit.wishId)?.target;
@@ -725,11 +882,40 @@ export async function processWishlistLiveOrder(order, statePath = DEFAULT_STATE,
       if (!byTarget.has(target)) byTarget.set(target, []);
       byTarget.get(target).push(hit);
     }
-    return byTarget;
+    if (useOutbox) {
+      // —— Outbox 事务链（R3 第四片）：所有目标的入队成功后才能一次提交 ledger ——
+      const entries = [];
+      if (applied.hits.length) {
+        for (const [target, targetHits] of byTarget) {
+          const payload = await buildWishlistHitPayload(targetHits, cardDir, options);
+          const businessKey = wishlistHitBusinessKey(target, wishlistHitsToPairs(targetHits));
+          const enqueued = await outbox.enqueue({
+            businessKey, target,
+            parts: payload.parts,
+            createdAt: new Date(nowMs).toISOString(),
+            expiresAt: new Date(nowMs + WISHLIST_TTL_MS).toISOString(),
+            redactOnTerminal: true,
+          });
+          entries.push({ target, businessKey, entryId: enqueued.entry?.id || null, hitCount: targetHits.length });
+        }
+      }
+      // 任一 enqueue 抛错会跳过这行：ledger 不提交，绝不会吞掉会吞提醒的 seen 状态
+      await writeWishlistLedger(statePath, applied.ledger);
+      return { applied, byTarget, entries };
+    }
+    await writeWishlistLedger(statePath, applied.ledger);
+    return { applied, byTarget, entries: null };
   });
+  if (useOutbox) {
+    return (transaction.entries || []).map((entry) => ({
+      ...entry,
+      outbox: true,
+      data: { ok: true, hitCount: entry.hitCount, hits: transaction.byTarget.get(entry.target) || [] },
+    }));
+  }
   const results = [];
-  for (const [target, hits] of groupedHits) {
-    const detectedAt = new Date().toISOString();
+  for (const [target, hits] of transaction.byTarget) {
+    const detectedAt = new Date(nowMs).toISOString();
     const card = buildWishlistHitCard({ hits, detectedAt });
     const mediaUrl = await renderCard(card, cardDir, options);
     const text = hitNotificationText(hits);
@@ -765,12 +951,35 @@ async function main() {
     }, statePath, { cardDir: args['card-dir'] ? path.resolve(String(args['card-dir'])) : null }));
     return;
   }
-  if (command === 'monitor' || command === 'calibrate' || command === 'deliver' || command === 'gateway_start') {
+  if (command === 'monitor' || command === 'calibrate' || command === 'gateway_start') {
+    // 兼容输出路径：不经 Outbox（只有生产 deliver 与 extension live gateway 用 Outbox）
     const result = await monitorWishlist(target, statePath, args['card-dir'] ? path.resolve(String(args['card-dir'])) : null, String(args['dry-run']).toLowerCase() === 'true', {
       ownerId: normalizeId(args.owner),
       skipWebSocket: command !== 'gateway_start',
     });
-    if (command === 'monitor' || command === 'calibrate' || command === 'gateway_start') { process.stdout.write(result.output); return; }
+    process.stdout.write(result.output);
+    return;
+  }
+  if (command === 'deliver') {
+    // 生产校准链（R3 第四片）：先补投欠账 → 命中先原子入 Outbox → 提交 wishlist 账本
+    // → 锁外逐 part 投递（Outbox 自带跨进程锁，避免与 Gateway 进程互相覆盖）。
+    const dryRun = String(args['dry-run']).toLowerCase() === 'true';
+    const outboxPath = args['outbox-path'] ? path.resolve(String(args['outbox-path'])) : defaultOutboxPath(statePath);
+    const outbox = dryRun ? null : createOutbox({ filePath: outboxPath });
+    const result = await monitorWishlist(target, statePath, args['card-dir'] ? path.resolve(String(args['card-dir'])) : null, dryRun, {
+      ownerId: normalizeId(args.owner),
+      skipWebSocket: true,
+      ...(outbox ? { outbox, mailer: createSubscriptionsMailer(target) } : {}),
+    });
+    if (dryRun) {
+      process.stdout.write(result.output);
+      return;
+    }
+    if (result.data?.outbox) {
+      const total = Number(result.data?.delivery?.sentParts || 0);
+      process.stdout.write(total > 0 ? `DIRECT_DELIVERED:${total}\n` : 'NO_REPLY\n');
+      return;
+    }
     let sent = 0;
     if (result.output.trim() !== 'NO_REPLY') sent = await deliverMonitorResult(result, target);
     process.stdout.write(sent > 0 ? `DIRECT_DELIVERED:${sent}\n` : 'NO_REPLY\n');
