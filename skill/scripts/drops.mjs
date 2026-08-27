@@ -265,13 +265,27 @@ function dropMatches(drop, filter) {
 
 let marketSlugsPromise = null;
 
+// Warframe.Market 素材缺失时统一回退到同一张「问号」占位图（内容 id
+// fd671126fd4051e8e3addc13ae56d1f0；Granum's Nemesis / Worm's Torment 的 icon 与
+// thumb 实锤）。该图能正常下载（HTTP 200），但图上没有可用素材；接受它会挡住
+// monitorDrops 图标链后续的 browse.wf 游戏原图与 AlecaFrame 插画兜底。
+// 按路径内容 id 显式拒绝，不在运行时解码图片。
+const MARKET_QUESTIONMARK_HASH = 'fd671126fd4051e8e3addc13ae56d1f0';
+// 占位图文件名形如 <slug>.<32位内容id>.(128x128.)<ext>，与真实素材的哈希后缀同构
+const MARKET_QUESTIONMARK_ASSET_RE = new RegExp(`\\.${MARKET_QUESTIONMARK_HASH}\\.(?:128x128\\.)?[a-z0-9]+$`, 'iu');
+
+function isMarketPlaceholderAssetPath(imagePath) {
+  return MARKET_QUESTIONMARK_ASSET_RE.test(String(imagePath || ''));
+}
+
 // Warframe.Market 同时提供整件物品主图和部件副图。
 // 组成部件使用 subIcon；“XXX Blueprint”的 subIcon 只是通用蓝图纸，继续使用成品主图。
+// icon/thumb/subIcon 任一选中路径命中已知占位（问号图）都视为无图，让调用方继续走兜底链。
 function marketDisplayImagePath(entry) {
   const subIcon = entry?.subIcon || null;
   const genericBlueprint = /(?:^|\/)blueprint_128x128\.[a-z0-9]+$/iu.test(String(subIcon || ''));
-  if (subIcon && !genericBlueprint) return subIcon;
-  return entry?.thumb || entry?.icon || null;
+  const selected = subIcon && !genericBlueprint ? subIcon : (entry?.thumb || entry?.icon || null);
+  return isMarketPlaceholderAssetPath(selected) ? null : selected;
 }
 
 function marketDisplayImageUrl(entry) {
@@ -335,20 +349,33 @@ async function attachPrices(drops, options = {}) {
   }
   const quoteFetcher = options.quoteFetcher
     || (await import('./trader-shopping.mjs')).fetchTradeStatistics;
-  const priceable = drops.filter((drop) => drop.tradable && drop.englishName).slice(0, MAX_PRICED_ITEMS);
+  // AlecaFrame 目录偶发把可交易掉落误标 tradable:false（Granum's Nemesis /
+  // Worm's Torment 实锤），因此目录不再是唯一裁判：先按现有 findMarketEntry
+  // （英文名归一化精确查表 + Blueprint 尾缀补查）解析候选，只有精确命中 Market
+  // 目录才升级为可交易并允许查价；模糊/部分文本匹配绝不放行。
+  // 查价覆盖卡片实际展示的全部行（MAX_CARD_ROWS），其余行不浪费请求。
+  const priceable = [];
+  for (const drop of drops.filter((drop) => drop.englishName).slice(0, MAX_PRICED_ITEMS)) {
+    const entry = findMarketEntry(slugs, drop.englishName);
+    if (!drop.tradable && !entry) continue;
+    if (entry) {
+      if (!drop.tradable) drop.tradable = true;
+      drop.marketSlug = entry.slug;
+      // Market 的 zh-hans 名比本地词典更贴近交易场景，命中时优先展示
+      if (entry.zhName && drop.displayName.startsWith('未收录')) drop.displayName = entry.zhName;
+    }
+    priceable.push(drop);
+  }
   if (!priceable.length) return;
   // 每日成交索引与逐件中位价并行预热；只有统计接口失败时才采用其中明确标为 closed 的成交均价。
   const priceIndexPromise = options.priceIndex !== undefined
     ? Promise.resolve(options.priceIndex)
     : getMarketPriceIndex();
   await mapLimit(priceable, PRICE_CONCURRENCY, async (drop) => {
-    const entry = findMarketEntry(slugs, drop.englishName);
-    if (!entry) return;
-    drop.marketSlug = entry.slug;
-    // Market 的 zh-hans 名比本地词典更贴近交易场景，命中时优先展示
-    if (entry.zhName && drop.displayName.startsWith('未收录')) drop.displayName = entry.zhName;
+    // 无精确条目的可交易掉落不查行情接口（没有 slug），只走下面真实 closed 成交索引兜底
+    if (!drop.marketSlug) return;
     try {
-      const quote = await quoteFetcher(entry.slug, drop.isMod || drop.isArcane);
+      const quote = await quoteFetcher(drop.marketSlug, drop.isMod || drop.isArcane);
       drop.platinum = quote?.platinum ?? null;
       drop.marketBasis = quote?.basis ?? null;
       drop.dailyVolume = quote?.dailyVolume ?? null;

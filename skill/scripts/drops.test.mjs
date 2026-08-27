@@ -108,6 +108,28 @@ test('市场部件使用副图，主蓝图和套装继续使用成品主图', ()
   }), 'items/images/en/thumbs/nyx_prime_set.128x128.png');
 });
 
+test('Market 已知问号占位素材被拒绝，正常素材不受影响', () => {
+  const placeholderHash = 'fd671126fd4051e8e3addc13ae56d1f0';
+  const placeholderIcon = (slug) => `items/images/en/${slug}.${placeholderHash}.png`;
+  const placeholderThumb = (slug) => `items/images/en/thumbs/${slug}.${placeholderHash}.128x128.png`;
+  assert.equal(marketDisplayImagePath({
+    icon: placeholderIcon('granums_nemesis'), thumb: placeholderThumb('granums_nemesis'), subIcon: null,
+  }), null);
+  assert.equal(marketDisplayImagePath({
+    icon: placeholderIcon('worms_torment'), thumb: placeholderThumb('worms_torment'), subIcon: null,
+  }), null);
+  assert.equal(marketDisplayImagePath({
+    icon: 'items/images/en/normal.png',
+    thumb: 'items/images/en/thumbs/normal.128x128.png',
+    subIcon: `sub_icons/prime_systems.${placeholderHash}.png`,
+  }), null);
+  assert.equal(marketDisplayImagePath({
+    icon: 'items/images/en/lingering_torment.e63fea80ff3cb599d0840090716ad730.png',
+    thumb: 'items/images/en/thumbs/lingering_torment.e63fea80ff3cb599d0840090716ad730.128x128.png',
+    subIcon: null,
+  }), 'items/images/en/thumbs/lingering_torment.e63fea80ff3cb599d0840090716ad730.128x128.png');
+});
+
 test('掉落查价覆盖全部卡片行、限制并发并只用真实成交索引兜底', async () => {
   const drops = Array.from({ length: 9 }, (_, index) => ({
     uniqueName: `/Test/Item${index + 1}`,
@@ -148,6 +170,85 @@ test('掉落查价覆盖全部卡片行、限制并发并只用真实成交索�
   assert.equal(drops[6].marketBasis, 'daily-closed');
   assert.equal(drops[7].platinum, 8.5);
   assert.equal(drops[8].platinum, null);
+});
+
+test('AlecaFrame tradable:false 假阴性：精确 Market 命中即可交易并查价', async () => {
+  const key = (name) => String(name).toLowerCase().replace(/\s+/gu, '');
+  const slugs = new Map([[key("Granum's Nemesis"), { slug: 'granums_nemesis', zhName: '格拉努之劲敌' }]]);
+  const queried = [];
+  const drop = {
+    uniqueName: '/Lotus/Upgrades/Mods/Railjack/Gunnery/VidarCorpusKiller',
+    englishName: "Granum's Nemesis",
+    displayName: '未收录物品（VidarCorpusKiller）',
+    tradable: false,
+    isMod: true,
+    isArcane: false,
+  };
+  await attachPrices([drop], {
+    slugs,
+    quoteFetcher: async (slug) => { queried.push(slug); return { platinum: 18, basis: '90days', dailyVolume: 2.4 }; },
+    priceIndex: {},
+  });
+  assert.equal(drop.tradable, true);
+  assert.equal(drop.marketSlug, 'granums_nemesis');
+  assert.deepEqual(queried, ['granums_nemesis']);
+  assert.equal(drop.platinum, 18);
+  assert.equal(drop.marketBasis, '90days');
+  assert.equal(drop.dailyVolume, 2.4);
+  assert.equal(drop.displayName, '格拉努之劲敌');
+});
+
+test('无精确 Market 命中的 tradable:false 掉落保持不可交易、不查价', async () => {
+  const key = (name) => String(name).toLowerCase().replace(/\s+/gu, '');
+  const slugs = new Map([[key("Granum's Nemesis"), { slug: 'granums_nemesis', zhName: '格拉努之劲敌' }]]);
+  const queried = [];
+  const drops = [{
+    uniqueName: '/Lotus/Upgrades/Mods/Railjack/Gunnery/VidarCorpusKiller',
+    englishName: 'Granum Nemesis',
+    displayName: '格拉努之劲敌',
+    tradable: false,
+    isMod: true,
+    isArcane: false,
+  }, {
+    uniqueName: '/Lotus/Upgrades/Mods/Unknown/NoEntry',
+    englishName: 'Definitely Not On Market',
+    displayName: '未收录物品（NoEntry）',
+    tradable: false,
+    isMod: true,
+    isArcane: false,
+  }];
+  await attachPrices(drops, {
+    slugs,
+    quoteFetcher: async (slug) => { queried.push(slug); return { platinum: 1 }; },
+    priceIndex: {},
+  });
+  for (const drop of drops) {
+    assert.equal(drop.tradable, false);
+    assert.equal(drop.marketSlug, undefined);
+    assert.equal(drop.platinum, undefined);
+  }
+  assert.deepEqual(queried, []);
+});
+
+test('无精确条目的可交易掉落仍走真实 closed 成交索引兜底', async () => {
+  const queried = [];
+  const drop = {
+    uniqueName: '/Lotus/Upgrades/Mods/Unknown/TradableNoEntry',
+    englishName: 'Settled Tradable Mod',
+    displayName: '有成交的可交易 Mod',
+    tradable: true,
+    isMod: true,
+    isArcane: false,
+  };
+  await attachPrices([drop], {
+    slugs: new Map(),
+    quoteFetcher: async (slug) => { queried.push(slug); return { platinum: 1 }; },
+    priceIndex: { settledtradablemod: { p0: 12, p0Basis: 'closed' } },
+  });
+  assert.equal(drop.marketSlug, undefined);
+  assert.equal(drop.platinum, 12);
+  assert.equal(drop.marketBasis, 'daily-closed');
+  assert.deepEqual(queried, []);
 });
 
 test('战甲强化 Mod 不被 /Powersuits/ 路径误判为战甲，显示官方中文名', async () => {
