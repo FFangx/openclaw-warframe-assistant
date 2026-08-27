@@ -22,6 +22,7 @@
 
 ### 修复
 
+- 深层/时光科研词缀不再把 Oracle 词典说明里未解析的 `|val|` 参数占位符直接上卡：DE 官方 worldState Conquests 的个人词缀（`Variables`）只给键、不携带数值（TimeDilation 实锤），此前会显示「技能持续时间减少 |val|%。」。现在先用 warframestat 说明中的数字填充占位符（保留 ShieldDelay 500% 等动态替换），仍有 `|...|` 残留时优先采用同键完整审核静态说明（TimeDilation 按官方 Update 36.0 与 Hotfix 36.1.6 口径显示「缩短技能：技能持续时间减少 50%」），否则用诚实中文缺数值提示（`ARCHIMEDEA_UNRESOLVED_DESC_ZH`）；漂移监控把未解析占位符计为说明漂移（`descPlaceholder`，样本 `reason=unresolved-placeholder`），官方备用源 tailMap 路径行为不变。
 - 1999 日历增益中文名+效果改为成对收录与展示：以用户核验的灰机wiki「1999日历」页六人组覆写表为权威源更新静态路径表（硬化装甲/特浓咖啡/吸引力/强制输血/打孔纸带/人多势众/重型标枪/有福同享 等），社区状态行自带的 `description` 不再被丢弃；周报卡增益行同时显示中文名与效果说明并自动换行（去掉 ellipsis 截断），行高按估算保守留白。新增逐条季度实拍路径的 CI 离线用例。
 - 新增「1999 日历增益译名查证闭环」：全链查无的未知增益路径进入日历专属 inbox（`.cache/warframe-data/calendar-upgrade-inbox.json`），每日同一条 AI 定时任务（`config/cron/reward-zh-ai.job.json` 合同已扩展）用灰机wiki「1999日历」页查证后用 `calendar-upgrade-fallback.mjs learn --path/--name/--desc/--source` 回填学习词典（中文名+效果+来源，冲突安全、原子落盘、只补缺不覆盖），查无实据 dismiss，写入失败保留待重试；无实据时保持「新增日历增益（上游尚未提供中文说明）」诚实占位，绝不猜测翻译。
 - 新增漂移监控区分「缺中文名」与「有中文名但缺效果说明」两类（`drift-report.mjs`），当前赛季日历路径全部纳入离线漂移用例。

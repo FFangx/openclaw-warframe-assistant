@@ -949,39 +949,63 @@ function normalizeOracleText(value) {
   return String(value || '').trim().toLowerCase().replace(/\s+/gu, ' ');
 }
 
+// 兜底占位常量（drift-report.mjs 同步导入同一常量，测试锁定同步）
+export const ARCHIMEDEA_PLACEHOLDER_NAME = '新增科研词缀';
+export const ARCHIMEDEA_PLACEHOLDER_DESC = '效果说明待补录，请在游戏内查看';
+// 未解析参数占位符的诚实缺数值提示：Oracle 词典说明带 |val|（如 TimeDilation 的
+// 「技能持续时间减少 |val|%。」），DE 官方 worldState Conquests 只给个人修正键、
+// 不携带数值（worldstate-source.mjs 归一后 description:''），warframestat 说明
+// 缺失或占位符多于可用数值时替换不完整——任何 |...| 残留都不得直接上卡。
+export const ARCHIMEDEA_UNRESOLVED_DESC_ZH = '效果数值待上游同步，请以游戏内为准';
+
+function fillOraclePlaceholders(desc, targetNumbers) {
+  let text = String(desc || '');
+  if (text.includes('|') && targetNumbers.length) {
+    let numberIndex = 0;
+    text = text.replace(/\|[^|]+\|/gu, (placeholder) => targetNumbers[numberIndex++] || placeholder);
+  }
+  return text;
+}
+
 export function localizeArchimedeaModifier(mod, oracleMap = new Map(), fallbackMap = staticData.archimedeaZh, options = {}) {
   const { tailMap = null, kind = '' } = options;
   const fallback = fallbackMap?.[mod?.key]
     || fallbackMap?.[String(mod?.key || '').split(/[,\s]+/u).filter(Boolean)[0]];
-  // 官方备用源只有路径尾段（key 即尾段）：Oracle 语言键尾段直查，LAB/HEX 前缀消歧重名
   const keyTail = String(mod?.key || '').split(/[,\s]+/u).map((part) => part.trim().toLowerCase()).filter(Boolean)[0] || '';
+  const targetNumbers = String(mod?.description || '').match(/\d+(?:\.\d+)?/gu) || [];
+  let chosen = null;
+  // 官方备用源只有路径尾段（key 即尾段）：Oracle 语言键尾段直查，LAB/HEX 前缀消歧重名
   if (tailMap && keyTail) {
     const tailCandidates = tailMap.get(keyTail) || [];
     const prefix = kind === 'HEX' ? /HexConquest/iu : kind === 'LAB' ? /LabConquest/iu : null;
     const preferKind = prefix ? tailCandidates.filter((candidate) => prefix.test(String(candidate.key || ''))) : [];
-    const chosen = (preferKind.length ? preferKind : tailCandidates)[0] || null;
-    if (chosen) {
-      return { name: chosen.name, desc: chosen.desc || fallback?.desc || '效果说明待补录，请在游戏内查看' };
-    }
+    chosen = (preferKind.length ? preferKind : tailCandidates)[0] || null;
   }
   // warframestat 路径：英文显示名 + 说明原文/数字判别重名候选
-  const candidates = oracleMap?.get?.(String(mod?.name || '').trim()) || [];
-  const targetDesc = normalizeOracleText(mod?.description);
-  const targetNumbers = String(mod?.description || '').match(/\d+(?:\.\d+)?/gu) || [];
-  const chosen = candidates.find((candidate) => normalizeOracleText(candidate.descEn) === targetDesc)
-    || candidates.find((candidate) => {
-      const numbers = String(candidate.descEn || '').match(/\d+(?:\.\d+)?/gu) || [];
-      return targetNumbers.length > 0 && JSON.stringify(numbers) === JSON.stringify(targetNumbers);
-    })
-    || candidates[0];
-  let oracleDesc = chosen?.desc || '';
-  if (oracleDesc.includes('|') && targetNumbers.length) {
-    let numberIndex = 0;
-    oracleDesc = oracleDesc.replace(/\|[^|]+\|/gu, (placeholder) => targetNumbers[numberIndex++] || placeholder);
+  if (!chosen) {
+    const candidates = oracleMap?.get?.(String(mod?.name || '').trim()) || [];
+    const targetDesc = normalizeOracleText(mod?.description);
+    chosen = candidates.find((candidate) => normalizeOracleText(candidate.descEn) === targetDesc)
+      || candidates.find((candidate) => {
+        const numbers = String(candidate.descEn || '').match(/\d+(?:\.\d+)?/gu) || [];
+        return targetNumbers.length > 0 && JSON.stringify(numbers) === JSON.stringify(targetNumbers);
+      })
+      || candidates[0] || null;
+  }
+  // Oracle 说明先用 warframestat 描述里的数字填充 |val| 占位符（保留 ShieldDelay 500% 等
+  // 动态替换）；替换后仍有任何 |...| 残留 → 不得直接上卡：优先同键完整审核静态说明，
+  // 否则用诚实中文缺数值提示。
+  let desc = fillOraclePlaceholders(chosen?.desc, targetNumbers);
+  if (!desc) desc = fallback?.desc || '';
+  if (/\|/u.test(desc)) {
+    const reviewed = String(fallback?.desc || '').trim();
+    desc = reviewed && !/\|/u.test(reviewed) && reviewed !== ARCHIMEDEA_PLACEHOLDER_DESC
+      ? reviewed
+      : ARCHIMEDEA_UNRESOLVED_DESC_ZH;
   }
   return {
-    name: chosen?.name || fallback?.name || '新增科研词缀',
-    desc: oracleDesc || fallback?.desc || '效果说明待补录，请在游戏内查看',
+    name: chosen?.name || fallback?.name || ARCHIMEDEA_PLACEHOLDER_NAME,
+    desc: desc || ARCHIMEDEA_PLACEHOLDER_DESC,
   };
 }
 

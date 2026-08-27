@@ -84,7 +84,7 @@ SKILL.md 瘦身移入（2026-08-07）。这些规则的执行主体是脚本与 
 - `scripts/drift-report.mjs` 是纯函数漂移检测模块：统计 + 可审计键样本，零凭据、零联网、零写入，禁止用于生产告警、cron、缓存写入或运行时改动
 - 单次只读 CLI：`node scripts/drift-report.mjs health [--health <endpoint-health.v1.json>]` 输出 Market/worldstate 端点健康聚合（端点数、熔断中数、失败类别次数、最近失败/成功时间、各端点退避状态）；只输出白名单字段，即使文件混入 url/headers/token/body 也不外泄
 - 电波挑战漂移（缺 requiredCount/路径译名/关键字段）只报统计与键样本，绝不猜数量；`checkoffSafe=false` 只表示自动核销被保守禁用，不是完成判定
-- 科研词缀与 1999 日历增益占位统计不接收、不输出任何个人分数/快照字段
+- 科研词缀与 1999 日历增益占位统计不接收、不输出任何个人分数/快照字段；科研词缀 Oracle 说明残留的未解析 `|val|` 占位符（官方备用源只给键无数值，如 TimeDilation）也按说明漂移计（`descPlaceholder`，样本 `reason=unresolved-placeholder`）
 - 商店装配泄漏扫描：合成未知名必须落中文占位；`scanZhTableLeaks` 可对当前 `weekly-static.json` 用户可见中文表逐值扫描（合法英文保留词走白名单）
 - DE 官方 worldState 结构漂移：关键集合缺失/畸形 → `cacheable=false`（拒绝写可靠缓存），与 `hasCompleteArchimedeas` 的周报可靠缓存口径叠加
 - 完整覆盖见 `scripts/drift-report.test.mjs`（随 `verify.ps1 -SourceOnly` 运行）

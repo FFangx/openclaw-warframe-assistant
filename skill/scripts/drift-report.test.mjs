@@ -9,7 +9,8 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 import {
-  ARCHIMEDEA_PLACEHOLDER_DESC, ARCHIMEDEA_PLACEHOLDER_NAME, CALENDAR_UPGRADE_PLACEHOLDER_ZH,
+  ARCHIMEDEA_PLACEHOLDER_DESC, ARCHIMEDEA_PLACEHOLDER_NAME, ARCHIMEDEA_UNRESOLVED_DESC_ZH,
+  CALENDAR_UPGRADE_PLACEHOLDER_ZH,
   HEALTH_SOURCE_LABEL, NIGHTWAVE_PLACEHOLDER_ZH, SHOP_NAME_PLACEHOLDER_ZH,
   aggregateEndpointHealth, analyzeArchimedeaTranslationDrift, analyzeCalendarUpgradeDrift,
   analyzeNightwaveDrift, analyzeOfficialNormalizedDrift, analyzeOfficialRawDrift,
@@ -25,6 +26,15 @@ test('占位文案常量与 weekly.mjs 热路径兜底输出保持同步', () =>
   assert.equal(NIGHTWAVE_PLACEHOLDER_ZH, nightwaveChallengeZh({ id: '1786924800000brandnew' }, null));
   assert.equal(ARCHIMEDEA_PLACEHOLDER_NAME, localizeArchimedeaModifier({ key: 'BrandNewMod' }, new Map(), {}).name);
   assert.equal(ARCHIMEDEA_PLACEHOLDER_DESC, localizeArchimedeaModifier({ key: 'BrandNewMod' }, new Map(), {}).desc);
+  // 未解析 |val| 占位符时热路径输出诚实缺数值提示，且该常量与 drift-report 同源导出
+  assert.equal(
+    ARCHIMEDEA_UNRESOLVED_DESC_ZH,
+    localizeArchimedeaModifier(
+      { key: 'BrandNewMod', name: 'Brand New Mod', description: '' },
+      new Map([['Brand New Mod', [{ name: '全新词缀', descEn: 'Gain |val|% speed.', desc: '获得 |val|% 速度加成。' }]]]),
+      {},
+    ).desc,
+  );
   assert.equal(
     CALENDAR_UPGRADE_PLACEHOLDER_ZH,
     calendarUpgradeZh({ title: 'Totally New Buff' }, '/Lotus/Upgrades/Calendar/TotallyNewBuff', null),
@@ -131,6 +141,33 @@ test('科研词缀已翻译但缺说明时只算软漂移（descPlaceholder）',
   assert.equal(report.nameUntranslated, 2); // 只有 deviation 有译名
   assert.equal(report.descPlaceholder, 3); // deviation 有译名但说明为空也算软漂移
   assert.equal(report.byKind.LAB.descPlaceholder, 3);
+});
+
+test('科研词缀 Oracle |val| 未解析（上游只给键无数值）视为说明漂移，样本可审计', () => {
+  const oracleMap = new Map([['Abbreviated Abilities', [{
+    name: '缩短技能',
+    descEn: 'Ability durations reduced by |val|%.',
+    desc: '技能持续时间减少 |val|%。',
+  }]]]);
+  const entries = [{
+    typeKey: 'CT_LAB',
+    activation: new Date().toISOString(),
+    expiry: new Date(Date.now() + 86400000).toISOString(),
+    missions: [],
+    personalModifiers: [{ key: 'TimeDilation', name: 'Abbreviated Abilities' }],
+  }];
+  const report = analyzeArchimedeaTranslationDrift(entries, { oracleMap, oracleTailMap: null, staticZh: {} });
+  assert.equal(report.total, 1);
+  assert.equal(report.nameUntranslated, 0);
+  assert.equal(report.descPlaceholder, 1);
+  assert.equal(report.byKind.LAB.descPlaceholder, 1);
+  assert.ok(report.samples.some((s) => s.key === 'TimeDilation' && s.reason === 'unresolved-placeholder'));
+  // 防御性：即使注入的自定义本地化器把 |val| 原文漏出来，也按说明漂移计
+  const leakyLocalize = () => ({ name: '缩短技能', desc: '技能持续时间减少 |val|%。' });
+  const leaky = analyzeArchimedeaTranslationDrift(entries, { localizeMod: leakyLocalize, oracleMap: null, oracleTailMap: null, staticZh: {} });
+  assert.equal(leaky.descPlaceholder, 1);
+  const json = JSON.stringify(report);
+  assert.ok(!/ConquestCacheScore|ChallengeProgress|standing|tokens|score/iu.test(json), '漂移报告不得携带个人分数');
 });
 
 // —— 1999 日历增益漂移：区分「缺中文名」与「有中文名但缺效果」，全程离线 ——

@@ -10,6 +10,8 @@
 //   1) 午夜电波挑战缺 requiredCount/路径译名/关键字段：统计 + 键样本；缺失不猜数字、
 //      不自动核销（checkoffSafe=false 只表示「自动核销被保守禁用」，不是完成判定）。
 //   2) 科研词缀与 1999 日历增益占位：统计 + 可审计键样本；绝不接收/输出个人分数。
+//      科研词缀 Oracle 说明残留的 |val| 未解析占位符（官方源只给键无数值）也按说明漂移计，
+//      样本 reason=unresolved-placeholder。
 //   3) 商店装配结果内部名泄漏扫描：合成未知名必须落中文占位；当前静态中文表逐值扫描。
 //   4) DE 官方 worldState 结构漂移：关键集合缺失/畸形 → cacheable=false（拒绝写可靠缓存）。
 //   5) Market/worldstate 端点健康聚合：累计失败次数/类别/最近时间/退避状态；旧 v1 状态（无累计
@@ -24,13 +26,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
 import { FileEndpointHealthStore, readEndpointHealth } from './http-resilience.mjs';
-import { CALENDAR_UPGRADE_PLACEHOLDER_ZH, calendarUpgradeEntry, hasCompleteArchimedeas, localizeArchimedeaModifier, nightwaveChallengeZh } from './weekly.mjs';
+import { ARCHIMEDEA_PLACEHOLDER_DESC, ARCHIMEDEA_PLACEHOLDER_NAME, ARCHIMEDEA_UNRESOLVED_DESC_ZH, CALENDAR_UPGRADE_PLACEHOLDER_ZH, calendarUpgradeEntry, hasCompleteArchimedeas, localizeArchimedeaModifier, nightwaveChallengeZh } from './weekly.mjs';
 
-// —— 占位文案常量（与 weekly.mjs 热路径兜底串必须一致；测试锁定同步）——
-export { CALENDAR_UPGRADE_PLACEHOLDER_ZH } from './weekly.mjs';
+// —— 占位文案常量（与 weekly.mjs 热路径兜底串直接同源；测试锁定同步）——
+export { ARCHIMEDEA_PLACEHOLDER_DESC, ARCHIMEDEA_PLACEHOLDER_NAME, ARCHIMEDEA_UNRESOLVED_DESC_ZH, CALENDAR_UPGRADE_PLACEHOLDER_ZH } from './weekly.mjs';
 export const NIGHTWAVE_PLACEHOLDER_ZH = '本周挑战 ×1（译名待补）';
-export const ARCHIMEDEA_PLACEHOLDER_NAME = '新增科研词缀';
-export const ARCHIMEDEA_PLACEHOLDER_DESC = '效果说明待补录，请在游戏内查看';
 export const SHOP_NAME_PLACEHOLDER_ZH = '游戏内商品（名称待词典同步）';
 
 const MAX_SAMPLE_KEYS = 20;
@@ -129,7 +129,13 @@ export function analyzeArchimedeaTranslationDrift(entries = [], {
       report.total += 1;
       const result = localizeMod(mod, oracleMap, staticZh, { tailMap: oracleTailMap, kind });
       const nameUntranslated = !result?.name || result.name === ARCHIMEDEA_PLACEHOLDER_NAME;
-      const descPlaceholder = !result?.desc || result.desc === ARCHIMEDEA_PLACEHOLDER_DESC;
+      // 未解析占位符 = 用户可见说明仍是 |val| 一类参数占位（上游只给键无数值）或诚实缺数值提示：
+      // 都算说明漂移，与「效果说明待补录」的通用占位分桶统计，样本带 reason 可审计。
+      const unresolvedPlaceholder = result?.desc === ARCHIMEDEA_UNRESOLVED_DESC_ZH
+        || /\|/u.test(String(result?.desc || ''));
+      const descPlaceholder = !result?.desc
+        || result.desc === ARCHIMEDEA_PLACEHOLDER_DESC
+        || unresolvedPlaceholder;
       const bucket = report.byKind[kind] ??= { total: 0, nameUntranslated: 0, descPlaceholder: 0 };
       bucket.total += 1;
       if (nameUntranslated) {
@@ -141,7 +147,10 @@ export function analyzeArchimedeaTranslationDrift(entries = [], {
         report.descPlaceholder += 1;
       }
       if (nameUntranslated || descPlaceholder) {
-        report.samples.push({ kind, where, key: mod.key || null, name: mod.name || null });
+        report.samples.push({
+          kind, where, key: mod.key || null, name: mod.name || null,
+          reason: nameUntranslated ? 'name' : unresolvedPlaceholder ? 'unresolved-placeholder' : 'desc-placeholder',
+        });
       }
     }
   };

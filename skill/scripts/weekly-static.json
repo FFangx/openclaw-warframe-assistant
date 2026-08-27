@@ -49,6 +49,7 @@
     "FactionSwarm_Scaldra": { "name": "斯卡德拉狂潮", "desc": "所有敌人替换为斯卡德拉且移动大幅加快" },
     "BalloonFest": { "name": "气球盛会", "desc": "斯卡德拉先驱单位更多，攻击与移动更快" },
     "ShieldDelay": { "name": "迟滞护盾", "desc": "护盾回充延迟增加 500%" },
+    "TimeDilation": { "name": "缩短技能", "desc": "技能持续时间减少 50%" },
     "AbilityLockout": { "name": "能力封锁", "desc": "小队击杀 50 名敌人前，所有技能均被禁用" },
     "VoidEnergyOverload": { "name": "技能过载", "desc": "施放技能会在自身位置开启一道虚空裂隙" },
     "Exhaustion": { "name": "能量枯竭", "desc": "10 米内每有一名敌人，每秒损失 2 点能量" },

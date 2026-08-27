@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { archimedeaResearchProgress, calendarChallengeLine, calendarRewardZh, calendarUpgradeEntry, calendarUpgradeZh, evaluateAutoCheck, hasCompleteArchimedeas, localizeArchimedeaModifier, nextReset, nightwaveChallengeZh, remindWeekly, weekStart } from './weekly.mjs';
+import { ARCHIMEDEA_UNRESOLVED_DESC_ZH, archimedeaResearchProgress, calendarChallengeLine, calendarRewardZh, calendarUpgradeEntry, calendarUpgradeZh, evaluateAutoCheck, hasCompleteArchimedeas, localizeArchimedeaModifier, nextReset, nightwaveChallengeZh, remindWeekly, weekStart } from './weekly.mjs';
 import { calendarSection, labsSection } from './weekly-mega-card.mjs';
 
 const calendarDays = [
@@ -197,7 +197,7 @@ test('本周科研接口出现的全部词缀键都有中文映射', () => {
     'Quicksand', 'EnergyStarved', 'OverSensitive', 'Armorless', 'Knifestep',
     'TechrotConjunction', 'EfervonFog', 'DoubleTroubleLegacyte', 'FortifiedFoes',
     'MurmurIncursion', 'MiasmiteHive', 'ShieldDelay', 'AbilityLockout',
-    'VoidEnergyOverload',
+    'VoidEnergyOverload', 'TimeDilation',
   ];
   assert.deepEqual(currentKeys.filter((key) => !staticData.archimedeaZh[key]), []);
 });
@@ -214,6 +214,85 @@ test('科研词缀会用接口数值替换 Oracle 说明里的参数占位符', 
     description: 'Shield recharge delay increased 500%.',
   }, oracle, {});
   assert.deepEqual(result, { name: '嗜睡护盾', desc: '护盾充能延迟增加 500%。' });
+});
+
+// —— 未解析占位符保护（2026-08 实况修复）：DE 官方 worldState Conquests 的 Variables 只给
+// 个人修正键（TimeDilation 实锤），不带数值；Oracle 简中说明「技能持续时间减少 |val|%。」
+// 此前会原样上卡。Update 36.0 起该效果为 50%（Hotfix 36.1.6 修正说明），静态表已按此审核收录。
+
+function timeDilationOracleFixture() {
+  const candidate = [{
+    key: '/Lotus/Language/Conquest/PersonalMod_TimeDilation',
+    name: '缩短技能',
+    descEn: 'Ability durations reduced by |val|%.',
+    desc: '技能持续时间减少 |val|%。',
+  }];
+  return {
+    byName: new Map([['Abbreviated Abilities', candidate]]),
+    byTail: new Map([['timedilation', candidate]]),
+  };
+}
+
+test('TimeDilation（官方备用源只给键、无数值）：未解析 |val| 采用同键完整审核静态说明，显示「缩短技能：技能持续时间减少 50%」', () => {
+  const staticData = JSON.parse(readFileSync(new URL('./weekly-static.json', import.meta.url), 'utf8'));
+  const { byTail } = timeDilationOracleFixture();
+  // 与 buildMegaData 真实调用同形：worldstate-source.mjs normalizeConquests 把
+  // Variables 归一成 { key, name: key, description: '' }，tailMap 尾段直查命中。
+  const result = localizeArchimedeaModifier(
+    { key: 'TimeDilation', name: 'TimeDilation', description: '' },
+    new Map(), staticData.archimedeaZh, { tailMap: byTail, kind: 'LAB' },
+  );
+  assert.deepEqual(result, { name: '缩短技能', desc: '技能持续时间减少 50%' });
+  // 静态表缺该键时也必须诚实降级，不得把 |val| 原文送上卡
+  const withoutStatic = localizeArchimedeaModifier(
+    { key: 'TimeDilation', name: 'TimeDilation', description: '' },
+    new Map(), {}, { tailMap: byTail, kind: 'LAB' },
+  );
+  assert.equal(withoutStatic.name, '缩短技能');
+  assert.equal(withoutStatic.desc, ARCHIMEDEA_UNRESOLVED_DESC_ZH);
+  assert.ok(!withoutStatic.desc.includes('|'));
+});
+
+test('TimeDilation 走 warframestat 数值路径时同样得到 50% 口径（Update 36.0 / Hotfix 36.1.6）', () => {
+  const staticData = JSON.parse(readFileSync(new URL('./weekly-static.json', import.meta.url), 'utf8'));
+  const { byName } = timeDilationOracleFixture();
+  const result = localizeArchimedeaModifier(
+    { key: 'TimeDilation', name: 'Abbreviated Abilities', description: 'Ability durations reduced by 50%.' },
+    byName, staticData.archimedeaZh,
+  );
+  assert.equal(result.name, '缩短技能');
+  assert.match(result.desc, /技能持续时间减少 50%/u);
+  assert.ok(!result.desc.includes('|'));
+});
+
+test('未知词缀的 Oracle 说明残留 |val| 时安全降级为诚实中文缺数值提示，绝不直接上卡', () => {
+  const oracle = new Map([['Brand New Mod', [{
+    name: '全新词缀',
+    descEn: 'Movement speed increased by |val|%.',
+    desc: '移动速度提高 |val|%。',
+  }]]]);
+  const result = localizeArchimedeaModifier(
+    { key: 'BrandNewMod', name: 'Brand New Mod', description: '' },
+    oracle, {},
+  );
+  assert.equal(result.name, '全新词缀');
+  assert.equal(result.desc, ARCHIMEDEA_UNRESOLVED_DESC_ZH);
+  assert.ok(!result.desc.includes('|'));
+});
+
+test('占位符多于可用数值（部分替换后仍有残留）同样触发未解析保护', () => {
+  const oracle = new Map([['Two Token Mod', [{
+    name: '双参数词缀',
+    descEn: 'Gain |val| and |val|.',
+    desc: '获得 |val| 与 |val|。',
+  }]]]);
+  const result = localizeArchimedeaModifier(
+    { key: 'TwoTokenMod', name: 'Two Token Mod', description: 'Gain 10.' },
+    oracle, {},
+  );
+  assert.equal(result.name, '双参数词缀');
+  assert.equal(result.desc, ARCHIMEDEA_UNRESOLVED_DESC_ZH);
+  assert.ok(!result.desc.includes('|'));
 });
 
 test('1999 挑战同时显示官方标题和带数量的具体要求', () => {
