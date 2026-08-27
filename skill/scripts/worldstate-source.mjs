@@ -1,15 +1,27 @@
 // Resilient PC world-state loader.
-// PC order: official DE worldState.php -> optional WarframeStat cross-check/fallback -> last cached normalized snapshot.
+// PC order: official DE worldState.php -> browse.wf Oracle full mirror -> WarframeStat fallback -> last cached normalized snapshot.
 // Other platforms keep the WarframeStat normalized API path.
-// The official source is mapped to the subset consumed by public queries and subscriptions.
+// The official/Oracle sources are mapped to the subset consumed by public queries and subscriptions.
 
-import { getBountyZhMaps, getLangTable, staleCachedJson } from './wfdata.mjs';
+import { createHash } from 'node:crypto';
+
+import { getBountyZhMaps, getLangTable, readCachedData, staleCachedJson } from './wfdata.mjs';
 import { resilientJsonRequest } from './http-resilience.mjs';
 
 const PRIMARY_BASE = 'https://api.warframestat.us';
 const OFFICIAL_URL = 'https://api.warframe.com/cdn/worldState.php';
+// Browse.wf 实时客户端的公开 Oracle 全量镜像：与官方 worldState.php 同样的 raw 结构。
+const ORACLE_URL = 'https://oracle.browse.wf/worldState.min.json';
 const TIMEOUT_MS = 20_000;
+// Oracle 使用短超时/熔断的独立端点健康键，作为官方故障后的快速接管层。
+const ORACLE_TIMEOUT_MS = 6_000;
 const CACHE_TTL_MS = 45_000;
+// Oracle 是官方镜像候选：上游 Time 超过该年龄说明镜像内容滞后，禁止接管；
+// 直接命中 DE 官方源不受此门禁（官方即权威，只用原始/规范化双层完整性合同判定）。
+const ORACLE_MAX_UPSTREAM_AGE_MS = 15 * 60_000;
+// 裂缝事件 ID 连续性只在最近可靠快照足够新（生命周期内）时才执行零交集强制拒绝，
+// 避免跨波次正常轮换触发误判。
+const CONTINUITY_WINDOW_MS = 10 * 60_000;
 
 const TIER = { VoidT1: 'Lith', VoidT2: 'Meso', VoidT3: 'Neo', VoidT4: 'Axi', VoidT5: 'Requiem', VoidT6: 'Omnia' };
 const MISSION = {
@@ -280,6 +292,58 @@ export function assertOfficialRawWorldStateContract(raw) {
   return raw;
 }
 
+const RAW_ARRAY_FIELDS = ['ActiveMissions', 'VoidStorms', 'Alerts', 'Invasions', 'Goals', 'VoidTraders', 'SyndicateMissions', 'Conquests'];
+const hashOf = (value) => {
+  try { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); } catch { return null; }
+};
+
+// 来源质量信封：按来源记录 provider/fetchedAt/上游时间/延迟/完整性与内容哈希，
+// 供 doctor 与巡检审计每个字段来自哪个提供者、多新鲜、是否完整。
+function sourceEnvelope(raw, provider, { latencyMs = null, fetchedAt = null } = {}) {
+  const missing = RAW_ARRAY_FIELDS.filter((field) => !Array.isArray(raw?.[field]));
+  return {
+    provider,
+    fetchedAt: fetchedAt || new Date().toISOString(),
+    upstreamTime: isoOf(raw?.Time) || null,
+    latencyMs: Number.isFinite(latencyMs) ? Math.round(latencyMs) : null,
+    completeness: { required: RAW_ARRAY_FIELDS.length, present: RAW_ARRAY_FIELDS.length - missing.length, missing },
+    contentHash: hashOf(raw),
+  };
+}
+
+// 规范化结果的每个顶层字段都由同一来源提供；按字段记录 provider 供审计，不做来源推断。
+function fieldProvidersOf(state, provider) {
+  const fieldProviders = {};
+  for (const key of Object.keys(state || {})) {
+    if (!key.startsWith('_')) fieldProviders[key] = provider;
+  }
+  return fieldProviders;
+}
+
+// 候选镜像（Oracle）必须有相对本机的合理新鲜上游时间；官方主源不设此门禁。
+function assertFreshUpstream(raw, label = 'oracle', now = Date.now()) {
+  const upstreamMs = msOf(raw?.Time);
+  if (!Number.isFinite(upstreamMs) || now - upstreamMs > ORACLE_MAX_UPSTREAM_AGE_MS) {
+    throw new Error(`${label} upstream state is too old`);
+  }
+}
+
+const fissureEventIds = (state) => new Set((state?.fissures || []).map((entry) => entry?.id).filter(Boolean));
+
+// 裂缝事件 ID 集合连续性：候选镜像与最近可靠规范化快照同属一个生命周期窗口时
+// （缓存内记录 <10 分钟）必须存在交集；零交集说明镜像内容与已知现实不一致，
+// 拒绝接管且不覆盖可靠缓存。
+async function assertFissureContinuity(state, cacheName, readCached, now = Date.now()) {
+  const snapshot = await readCached(cacheName, 2);
+  const cachedIds = snapshot ? fissureEventIds(snapshot.data) : new Set();
+  if (!cachedIds.size || !Number.isFinite(Number(snapshot.cachedAt)) || now - Number(snapshot.cachedAt) > CONTINUITY_WINDOW_MS) return;
+  const candidateIds = fissureEventIds(state);
+  for (const id of candidateIds) {
+    if (cachedIds.has(id)) return;
+  }
+  throw new Error('fissure event set diverges from the last reliable snapshot');
+}
+
 export async function loadWorldState(platform = 'pc', options = {}) {
   const normalizedPlatform = platform === 'xbox' ? 'xb1' : platform === 'switch' ? 'swi' : platform;
   const forceOfficial = options.forceOfficial === true || process.env.WARFRAME_WORLDSTATE_FORCE_OFFICIAL === '1';
@@ -287,6 +351,7 @@ export async function loadWorldState(platform = 'pc', options = {}) {
   const dependencies = {
     fetchJson: options.fetchJson || fetchJson,
     staleCachedJson: options.staleCachedJson || staleCachedJson,
+    readCachedData: options.readCachedData || readCachedData,
     getBountyZhMaps: options.getBountyZhMaps || getBountyZhMaps,
     getLangTable: options.getLangTable || getLangTable,
   };
@@ -294,6 +359,17 @@ export async function loadWorldState(platform = 'pc', options = {}) {
   const fetchWarframeStat = () => dependencies.fetchJson(warframeStatUrl, {
     endpoint: `worldstate:warframestat:${normalizedPlatform}`,
   });
+  const fetchOracle = () => dependencies.fetchJson(ORACLE_URL, {
+    endpoint: 'worldstate:oracle:pc',
+    timeoutMs: ORACLE_TIMEOUT_MS,
+    maxAttempts: 2,
+    failureThreshold: 2,
+  });
+  // 节点/语言表：官方与 Oracle 镜像共用；本地缓存为主，失败不阻塞切换判定。
+  const facts = () => Promise.all([
+    dependencies.getBountyZhMaps(),
+    dependencies.getLangTable().catch(() => ({})),
+  ]);
   const result = await dependencies.staleCachedJson(cacheName, { ttlMs: CACHE_TTL_MS, version: 2 }, async () => {
     if (normalizedPlatform !== 'pc') {
       const primary = await fetchWarframeStat();
@@ -301,10 +377,13 @@ export async function loadWorldState(platform = 'pc', options = {}) {
     }
 
     try {
-      const [officialResult, maps, lang] = await Promise.all([
-        dependencies.staleCachedJson('official-worldstate', { ttlMs: 60_000, version: 2 }, () => dependencies.fetchJson(OFFICIAL_URL)),
-        dependencies.getBountyZhMaps(),
-        dependencies.getLangTable().catch(() => ({})),
+      let officialMeta = { latencyMs: null };
+      const [officialResult, [maps, lang]] = await Promise.all([
+        dependencies.staleCachedJson('official-worldstate', { ttlMs: 60_000, version: 2 }, () => {
+          const started = Date.now();
+          return dependencies.fetchJson(OFFICIAL_URL).then((data) => { officialMeta.latencyMs = Date.now() - started; return data; });
+        }),
+        facts(),
       ]);
       if (officialResult.stale) throw new Error('official world state source is stale');
       const official = officialResult.data;
@@ -312,6 +391,8 @@ export async function loadWorldState(platform = 'pc', options = {}) {
       const state = assertOfficialWorldStateContract(await normalizeOfficialWorldState(official, { nodes: maps?.nodes || {}, lang }));
       state._officialFallback = false;
       state._sourceLabel = 'DE official worldState';
+      state._envelope = sourceEnvelope(official, 'api.warframe.com', { latencyMs: officialMeta.latencyMs, fetchedAt: officialMeta.latencyMs === null ? officialResult.cachedAt : null });
+      state._fieldProviders = fieldProvidersOf(state, 'api.warframe.com');
 
       // This request only updates the shared resilience/health record. It is deliberately
       // not awaited, so a slow or broken community convenience API cannot delay fresh
@@ -323,18 +404,53 @@ export async function loadWorldState(platform = 'pc', options = {}) {
       return state;
     } catch (officialError) {
       if (forceOfficial) throw officialError;
+      // 第二全量源：browse.wf Oracle 全量镜像（同一 raw worldState 结构）。镜像必须通过
+      // 同官方一致的原始/规范化双层完整性合同；陈旧内层缓存、HTTP 200 但结构残缺、
+      // 或规范化结果不完整，一律不得接管，也不得写入可靠规范化缓存。
+      let oracleError = null;
       try {
+        let oracleMeta = { latencyMs: null };
+        const [oracleResult, [maps, lang]] = await Promise.all([
+          dependencies.staleCachedJson('oracle-worldstate', { ttlMs: 60_000, version: 2 }, () => {
+            const started = Date.now();
+            return fetchOracle().then((data) => { oracleMeta.latencyMs = Date.now() - started; return data; });
+          }),
+          facts(),
+        ]);
+        if (oracleResult.stale) throw new Error('oracle world state source is stale');
+        const oracle = oracleResult.data;
+        assertOfficialRawWorldStateContract(oracle);
+        assertFreshUpstream(oracle, 'oracle');
+        const state = assertOfficialWorldStateContract(await normalizeOfficialWorldState(oracle, { nodes: maps?.nodes || {}, lang }));
+        await assertFissureContinuity(state, cacheName, dependencies.readCachedData);
+        state._dataSource = 'oracle.browse.wf';
+        state._officialFallback = true;
+        state._sourceLabel = 'browse.wf Oracle（DE 官方源暂不可用，已自动切换）';
+        state._officialError = String(officialError?.message || officialError);
+        state._officialHealth = officialError?.diagnostic || null;
+        state._envelope = sourceEnvelope(oracle, 'oracle.browse.wf', { latencyMs: oracleMeta.latencyMs, fetchedAt: oracleMeta.latencyMs === null ? oracleResult.cachedAt : null });
+        state._fieldProviders = fieldProvidersOf(state, 'oracle.browse.wf');
+        return state;
+      } catch (oracleError_) {
+        oracleError = oracleError_;
+      }
+      try {
+        const started = Date.now();
         const fallback = await fetchWarframeStat();
         return {
           ...fallback,
           _dataSource: 'api.warframestat.us',
           _officialFallback: true,
-          _officialError: String(officialError?.message || officialError),
+          _officialError: `${String(officialError?.message || officialError)}; oracle=${String(oracleError?.message || oracleError)}`,
           _officialHealth: officialError?.diagnostic || null,
-          _sourceLabel: 'WarframeStat（DE 官方源暂不可用，已自动切换）',
+          _oracleError: String(oracleError?.message || oracleError),
+          _oracleHealth: oracleError?.diagnostic || null,
+          _sourceLabel: 'WarframeStat（DE 官方源与 Oracle 镜像暂不可用，已自动切换）',
+          _envelope: { provider: 'api.warframestat.us', fetchedAt: new Date().toISOString(), upstreamTime: null, latencyMs: Date.now() - started, completeness: null, contentHash: hashOf(fallback) },
+          _fieldProviders: fieldProvidersOf(fallback, 'api.warframestat.us'),
         };
       } catch (communityError) {
-        const error = new Error(`world state sources unavailable: official=${String(officialError?.message || officialError)}; warframestat=${String(communityError?.message || communityError)}`);
+        const error = new Error(`world state sources unavailable: official=${String(officialError?.message || officialError)}; oracle=${String(oracleError?.message || oracleError)}; warframestat=${String(communityError?.message || communityError)}`);
         error.cause = communityError;
         throw error;
       }

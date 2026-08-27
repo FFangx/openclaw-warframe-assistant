@@ -20,6 +20,8 @@ const minimalOfficialRaw = (now = Date.now()) => ({
 });
 
 const directCache = async (_name, _options, loader) => ({ data: await loader(), stale: false, cachedAt: null });
+// 测试默认没有可靠规范化缓存：事件 ID 连续性仅在注入快照时校验。
+const noCache = async () => null;
 const emptyMaps = async () => ({ nodes: {} });
 const emptyLang = async () => ({});
 
@@ -107,33 +109,86 @@ test('official raw contract rejects HTTP-success payloads with missing critical 
   assert.throws(() => assertOfficialRawWorldStateContract({ Time: Math.floor(Date.now() / 1000) }), /ActiveMissions must be an array/u);
 });
 
-test('PC returns validated official data without waiting for a slow WarframeStat cross-check', async () => {
+test('PC official success does not await Oracle or WarframeStat and keeps the warframestat health probe', async () => {
   let crossCheckStarted = false;
+  let oracleRequested = false;
   const fetchJson = async (url) => {
     if (url.includes('worldState.php')) return minimalOfficialRaw();
+    if (url.includes('oracle.browse.wf')) {
+      oracleRequested = true;
+      return new Promise(() => {});
+    }
     crossCheckStarted = true;
     return new Promise(() => {});
   };
   const result = await Promise.race([
-    loadWorldState('pc', { fetchJson, staleCachedJson: directCache, getBountyZhMaps: emptyMaps, getLangTable: emptyLang }),
-    new Promise((_, reject) => setTimeout(() => reject(new Error('official path waited for WarframeStat')), 100)),
+    loadWorldState('pc', { fetchJson, staleCachedJson: directCache, readCachedData: noCache, getBountyZhMaps: emptyMaps, getLangTable: emptyLang }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('official path waited for a community source')), 100)),
   ]);
   assert.equal(result._dataSource, 'api.warframe.com');
   assert.equal(result._officialFallback, false);
   assert.equal(result._communityCrossCheck, 'scheduled');
   assert.equal(crossCheckStarted, true);
+  assert.equal(oracleRequested, false);
+  // 质量信封：provider/fetchedAt/上游时间/延迟/完整性/内容哈希，以及按字段的 provider。
+  assert.equal(result._envelope.provider, 'api.warframe.com');
+  assert.ok(Number.isFinite(Date.parse(result._envelope.fetchedAt)));
+  assert.ok(Number.isFinite(Date.parse(result._envelope.upstreamTime)));
+  assert.ok(Number.isFinite(result._envelope.latencyMs));
+  assert.equal(result._envelope.completeness.missing.length, 0);
+  assert.match(result._envelope.contentHash, /^[0-9a-f]{64}$/u);
+  assert.equal(result._fieldProviders.fissures, 'api.warframe.com');
 });
 
-test('PC rejects malformed official data and falls back to WarframeStat', async () => {
-  const fallback = { timestamp: new Date().toISOString(), fissures: [{ id: 'community-f1' }] };
-  const fetchJson = async (url) => (url.includes('worldState.php') ? { Time: Math.floor(Date.now() / 1000) } : fallback);
+test('PC official failure is taken over by the browse.wf Oracle full mirror', async () => {
+  const oracleOptions = [];
+  let warframeStatRequested = false;
+  const fetchJson = async (url, resilience) => {
+    if (url.includes('worldState.php')) throw new Error('official unreachable');
+    if (url.includes('oracle.browse.wf/worldState.min.json')) {
+      oracleOptions.push(resilience);
+      return minimalOfficialRaw();
+    }
+    warframeStatRequested = true;
+    throw new Error('warframestat must not be reached while Oracle succeeds');
+  };
   const result = await loadWorldState('pc', {
-    fetchJson, staleCachedJson: directCache, getBountyZhMaps: emptyMaps, getLangTable: emptyLang,
+    fetchJson, staleCachedJson: directCache, readCachedData: noCache, getBountyZhMaps: emptyMaps, getLangTable: emptyLang,
+  });
+  assert.equal(result._dataSource, 'oracle.browse.wf');
+  assert.equal(result._officialFallback, true);
+  assert.match(result._sourceLabel, /browse\.wf Oracle/u);
+  assert.match(result._sourceLabel, /已自动切换/u);
+  assert.match(result._officialError, /official unreachable/u);
+  assert.deepEqual(result.fissures, []);
+  // Oracle 镜像必须通过同官方一致的原始/规范化双层完整性合同后才可接管。
+  assert.equal(assertOfficialWorldStateContract(result), result);
+  assert.equal(result._envelope.provider, 'oracle.browse.wf');
+  assert.equal(result._envelope.completeness.missing.length, 0);
+  assert.equal(result._fieldProviders.fissures, 'oracle.browse.wf');
+  assert.equal(warframeStatRequested, false);
+  // Oracle 拥有独立端点健康键、短超时与熔断配置。
+  assert.equal(oracleOptions.length, 1);
+  assert.equal(oracleOptions[0].endpoint, 'worldstate:oracle:pc');
+  assert.ok(oracleOptions[0].timeoutMs <= 8_000);
+  assert.ok(oracleOptions[0].failureThreshold >= 2);
+});
+
+test('PC rejects malformed official data, then malformed Oracle mirror, and falls back to WarframeStat', async () => {
+  const fallback = { timestamp: new Date().toISOString(), fissures: [{ id: 'community-f1' }] };
+  const fetchJson = async (url) => {
+    if (url.includes('worldState.php')) return { Time: Math.floor(Date.now() / 1000) };
+    if (url.includes('oracle.browse.wf')) return { Time: Math.floor(Date.now() / 1000), ActiveMissions: null };
+    return fallback;
+  };
+  const result = await loadWorldState('pc', {
+    fetchJson, staleCachedJson: directCache, readCachedData: noCache, getBountyZhMaps: emptyMaps, getLangTable: emptyLang,
   });
   assert.deepEqual(result.fissures, fallback.fissures);
   assert.equal(result._dataSource, 'api.warframestat.us');
   assert.equal(result._officialFallback, true);
   assert.match(result._officialError, /ActiveMissions must be an array/u);
+  assert.match(result._oracleError, /ActiveMissions must be an array/u);
   assert.match(result._sourceLabel, /已自动切换/u);
 });
 
@@ -146,6 +201,7 @@ test('PC does not promote a stale official inner cache to a fresh result', async
   const result = await loadWorldState('pc', {
     fetchJson: async () => fallback,
     staleCachedJson: cache,
+    readCachedData: noCache,
     getBountyZhMaps: emptyMaps,
     getLangTable: emptyLang,
   });
@@ -154,10 +210,35 @@ test('PC does not promote a stale official inner cache to a fresh result', async
   assert.match(result._officialError, /source is stale/u);
 });
 
+test('PC stale Oracle inner cache falls through to WarframeStat without overwriting the reliable cache', async () => {
+  const freshFallback = { timestamp: new Date().toISOString(), fissures: [{ id: 'community-fresh' }] };
+  const cache = async (name, _options, loader) => {
+    if (name === 'oracle-worldstate') return { data: minimalOfficialRaw(Date.now() - 120_000), stale: true, cachedAt: new Date(Date.now() - 120_000).toISOString() };
+    if (name === 'official-worldstate') return { data: await loader(), stale: false, cachedAt: null };
+    return { data: await loader(), stale: false, cachedAt: null };
+  };
+  const result = await loadWorldState('pc', {
+    fetchJson: async (url) => {
+      if (url.includes('worldState.php')) throw new Error('official unreachable');
+      return freshFallback;
+    },
+    staleCachedJson: cache,
+    readCachedData: noCache,
+    getBountyZhMaps: emptyMaps,
+    getLangTable: emptyLang,
+  });
+  assert.deepEqual(result.fissures, freshFallback.fissures);
+  assert.equal(result._dataSource, 'api.warframestat.us');
+  assert.equal(result._officialFallback, true);
+  assert.match(result._officialError, /official unreachable/u);
+  assert.match(result._oracleError, /oracle world state source is stale/u);
+  assert.match(result._sourceLabel, /已自动切换/u);
+});
+
 test('PC all-source failure returns the reliable normalized cache with stale metadata', async () => {
   const reliable = { timestamp: new Date(Date.now() - 60_000).toISOString(), fissures: [{ id: 'cached-f1' }], _dataSource: 'api.warframe.com' };
   const cache = async (name, _options, loader) => {
-    if (name === 'official-worldstate') return { data: await loader(), stale: false, cachedAt: null };
+    if (name === 'official-worldstate' || name === 'oracle-worldstate') return { data: await loader(), stale: false, cachedAt: null };
     try {
       return { data: await loader(), stale: false, cachedAt: null };
     } catch {
@@ -167,12 +248,51 @@ test('PC all-source failure returns the reliable normalized cache with stale met
   const result = await loadWorldState('pc', {
     fetchJson: async () => { throw new Error('simulated outage'); },
     staleCachedJson: cache,
+    readCachedData: noCache,
     getBountyZhMaps: emptyMaps,
     getLangTable: emptyLang,
   });
   assert.deepEqual(result.fissures, reliable.fissures);
   assert.equal(result._dataStale, true);
   assert.equal(result._cachedAt, reliable.timestamp);
+});
+
+test('PC Oracle takeover is rejected when the fissure event set is too old upstream', async () => {
+  const fallback = { timestamp: new Date().toISOString(), fissures: [{ id: 'community-fresh' }] };
+  const fetchJson = async (url) => {
+    if (url.includes('worldState.php')) throw new Error('official unreachable');
+    if (url.includes('oracle.browse.wf')) return minimalOfficialRaw(Date.now() - 20 * 60_000);
+    return fallback;
+  };
+  const result = await loadWorldState('pc', {
+    fetchJson, staleCachedJson: directCache, readCachedData: noCache, getBountyZhMaps: emptyMaps, getLangTable: emptyLang,
+  });
+  assert.deepEqual(result.fissures, fallback.fissures);
+  assert.equal(result._dataSource, 'api.warframestat.us');
+  assert.match(result._oracleError, /too old/u);
+});
+
+test('PC Oracle takeover is rejected when fissure event IDs diverge from the recent reliable snapshot', async () => {
+  const fallback = { timestamp: new Date().toISOString(), fissures: [{ id: 'community-fresh' }] };
+  const rawWithFissure = (id) => ({
+    ...minimalOfficialRaw(),
+    ActiveMissions: [{ _id: { $oid: id }, Expiry: date(Date.now() + 60 * 60 * 1000), Node: 'SolNode1', MissionType: 'MT_CAPTURE', Modifier: 'VoidT2', Hard: false }],
+  });
+  const fetchJson = async (url) => {
+    if (url.includes('worldState.php')) throw new Error('official unreachable');
+    if (url.includes('oracle.browse.wf')) return rawWithFissure('mirror-f1');
+    return fallback;
+  };
+  const result = await loadWorldState('pc', {
+    fetchJson,
+    staleCachedJson: directCache,
+    readCachedData: async () => ({ data: { fissures: [{ id: 'cached-f1' }] }, cachedAt: Date.now() }),
+    getBountyZhMaps: emptyMaps,
+    getLangTable: emptyLang,
+  });
+  assert.deepEqual(result.fissures, fallback.fissures);
+  assert.equal(result._dataSource, 'api.warframestat.us');
+  assert.match(result._oracleError, /diverges/u);
 });
 
 test('official bounty jobs attach the matching WFCD level and rotation reward table', () => {
