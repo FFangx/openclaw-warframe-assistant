@@ -1,10 +1,27 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { assertOfficialWorldStateContract, normalizeOfficialWorldState } from './worldstate-source.mjs';
+import {
+  assertOfficialRawWorldStateContract,
+  assertOfficialWorldStateContract,
+  loadWorldState,
+  normalizeOfficialWorldState,
+} from './worldstate-source.mjs';
 import { attachStaticBountyRewards } from './bounties.mjs';
 
 const date = (ms) => ({ $date: { $numberLong: String(ms) } });
+
+const minimalOfficialRaw = (now = Date.now()) => ({
+  Time: Math.floor(now / 1000),
+  ActiveMissions: [], VoidStorms: [], Alerts: [], Invasions: [], Goals: [],
+  VoidTraders: [], SyndicateMissions: [], Conquests: [],
+  Sorties: [], LiteSorties: [], EndlessXpSchedule: [], KnownCalendarSeasons: [],
+  SeasonInfo: null,
+});
+
+const directCache = async (_name, _options, loader) => ({ data: await loader(), stale: false, cachedAt: null });
+const emptyMaps = async () => ({ nodes: {} });
+const emptyLang = async () => ({});
 
 test('official world state normalizes the public query sections', async () => {
   const now = Date.now();
@@ -84,6 +101,78 @@ test('official world state completeness contract rejects missing seasonal sectio
     voidTraders: [], syndicateMissions: [], archimedeas: [], sortie: null, archonHunt: null,
     nightwave: null, duviriCycle: null,
   }), /calendar missing/u);
+});
+
+test('official raw contract rejects HTTP-success payloads with missing critical collections', () => {
+  assert.throws(() => assertOfficialRawWorldStateContract({ Time: Math.floor(Date.now() / 1000) }), /ActiveMissions must be an array/u);
+});
+
+test('PC returns validated official data without waiting for a slow WarframeStat cross-check', async () => {
+  let crossCheckStarted = false;
+  const fetchJson = async (url) => {
+    if (url.includes('worldState.php')) return minimalOfficialRaw();
+    crossCheckStarted = true;
+    return new Promise(() => {});
+  };
+  const result = await Promise.race([
+    loadWorldState('pc', { fetchJson, staleCachedJson: directCache, getBountyZhMaps: emptyMaps, getLangTable: emptyLang }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('official path waited for WarframeStat')), 100)),
+  ]);
+  assert.equal(result._dataSource, 'api.warframe.com');
+  assert.equal(result._officialFallback, false);
+  assert.equal(result._communityCrossCheck, 'scheduled');
+  assert.equal(crossCheckStarted, true);
+});
+
+test('PC rejects malformed official data and falls back to WarframeStat', async () => {
+  const fallback = { timestamp: new Date().toISOString(), fissures: [{ id: 'community-f1' }] };
+  const fetchJson = async (url) => (url.includes('worldState.php') ? { Time: Math.floor(Date.now() / 1000) } : fallback);
+  const result = await loadWorldState('pc', {
+    fetchJson, staleCachedJson: directCache, getBountyZhMaps: emptyMaps, getLangTable: emptyLang,
+  });
+  assert.deepEqual(result.fissures, fallback.fissures);
+  assert.equal(result._dataSource, 'api.warframestat.us');
+  assert.equal(result._officialFallback, true);
+  assert.match(result._officialError, /ActiveMissions must be an array/u);
+  assert.match(result._sourceLabel, /已自动切换/u);
+});
+
+test('PC does not promote a stale official inner cache to a fresh result', async () => {
+  const fallback = { timestamp: new Date().toISOString(), fissures: [{ id: 'community-fresh' }] };
+  const cache = async (name, _options, loader) => {
+    if (name === 'official-worldstate') return { data: minimalOfficialRaw(Date.now() - 120_000), stale: true, cachedAt: new Date(Date.now() - 120_000).toISOString() };
+    return { data: await loader(), stale: false, cachedAt: null };
+  };
+  const result = await loadWorldState('pc', {
+    fetchJson: async () => fallback,
+    staleCachedJson: cache,
+    getBountyZhMaps: emptyMaps,
+    getLangTable: emptyLang,
+  });
+  assert.deepEqual(result.fissures, fallback.fissures);
+  assert.equal(result._dataSource, 'api.warframestat.us');
+  assert.match(result._officialError, /source is stale/u);
+});
+
+test('PC all-source failure returns the reliable normalized cache with stale metadata', async () => {
+  const reliable = { timestamp: new Date(Date.now() - 60_000).toISOString(), fissures: [{ id: 'cached-f1' }], _dataSource: 'api.warframe.com' };
+  const cache = async (name, _options, loader) => {
+    if (name === 'official-worldstate') return { data: await loader(), stale: false, cachedAt: null };
+    try {
+      return { data: await loader(), stale: false, cachedAt: null };
+    } catch {
+      return { data: reliable, stale: true, cachedAt: reliable.timestamp };
+    }
+  };
+  const result = await loadWorldState('pc', {
+    fetchJson: async () => { throw new Error('simulated outage'); },
+    staleCachedJson: cache,
+    getBountyZhMaps: emptyMaps,
+    getLangTable: emptyLang,
+  });
+  assert.deepEqual(result.fissures, reliable.fissures);
+  assert.equal(result._dataStale, true);
+  assert.equal(result._cachedAt, reliable.timestamp);
 });
 
 test('official bounty jobs attach the matching WFCD level and rotation reward table', () => {

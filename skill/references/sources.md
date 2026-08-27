@@ -12,7 +12,7 @@
 
 ## 世界状态与静态资料
 
-- 世界状态：`GET https://api.warframestat.us/{platform}`；科研轮换可用子端点 `GET /{platform}/archimedeas` 做字段级补取
+- 世界状态：PC 首选 `GET https://api.warframe.com/cdn/worldState.php` 并本地规范化；`GET https://api.warframestat.us/{platform}` 用于非 PC，PC 仅作非阻塞交叉验证与官方故障备用；科研轮换可用 warframestat 子端点 `GET /{platform}/archimedeas` 做字段级补取
 - 科研词缀中文：`oracle.browse.wf/dicts/en.json` × `zh.json`（227 键，其中 `/Lotus/Language/Conquest/` 200 键）。两份索引：英文显示名 → 候选（warframestat 路径用，按说明原文/数字消歧）；语言键尾段（剥 `Condition_/PersonalMod_/MissionVariant_[Lab|Hex]Conquest_` 前缀后）→ 候选（官方备用源只有路径尾段时直查，按 LAB/HEX 前缀消歧重名，如 Reinforcements＝LAB 协调阵线/HEX 支援）。名称与 `_Desc` 官方简中说明同源返回；缓存 24 小时
 - 科研轮换风险词缀：官方 worldState 的 `difficulties[].risks` 是数组，普通/精英难度逐项拆分（精英独有风险标 `isHard`），不再把数组逗号合并成一个查无的词缀键
 - 科研个人周归属：AlecaFrame 库存快照的 `EntratiVaultCountResetDate` 是科研与衰退室共用的周重置边界；公开库存结构与本机 AlecaFrame 2.6.90 均确认该字段存在。只有它位于当前时刻之后且精确等于下一次周一 00:00 UTC，才证明两类 `ConquestCacheScoreMission` 已经过本周重置；缺失、过期、错位或解析失败时不得用同分自动核销，继续走跨周分数/HEX 令牌/电波挑战的保守证据链
@@ -24,10 +24,10 @@
 - 平台路径：`pc / ps4 / xb1 / swi`；mobile 世界状态不支持
 - PC 实测顶层字段包括 `timestamp`、`fissures`、`alerts`、`invasions`、`voidTraders`、开放世界周期、`nightwave`、`arbitration`、`steelPath`、`archonHunt` 与 `duviriCycle`
 - 静态资料：`GET /warframes|weapons|items/search/{query}`；实测 `gauss` 和 `ignis` 成功
-- 普通参考请求使用 20 秒超时；Market 主查询采用两次 8 秒的总预算内分类重试，PC worldstate 主源采用 6 秒快速探测并配合持久健康退避。搜索仍需区分“无匹配”与网络或 HTTP 失败
+- 普通参考请求使用 20 秒超时；Market 主查询采用两次 8 秒的总预算内分类重试，PC worldstate 的 warframestat 交叉验证/备用采用 6 秒快速探测并配合持久健康退避，但不阻塞已验证的 DE 官方结果。搜索仍需区分“无匹配”与网络或 HTTP 失败
 - 该服务为社区数据源，实时答案必须显示 `timestamp`，不能把缓存知识冒充实时状态
 - 周报只缓存同一周内通过完整性校验的世界状态（LAB/HEX 各至少三关且未过期）；顶层响应漏科研字段时补取子端点，Cloudflare/接口临时失败时仅回退本周可靠缓存，不跨周复用
-- PC worldstate 主源 403 首次即打开 15 分钟端点熔断；网络/超时连续失败使用 30 秒起的指数退避（最高 5 分钟）。退避状态写入本地 `endpoint-health.v1.json`，跨短命令进程生效；官方源规范化后须通过裂缝、警报、入侵、活动、商人、赏金、科研、突击/执刑官、电波、回廊和 1999 日历字段合同
+- PC worldstate 的 warframestat 交叉验证/备用源遇 403 首次即打开 15 分钟端点熔断；网络/超时连续失败使用 30 秒起的指数退避（最高 5 分钟）。退避状态写入本地 `endpoint-health.v1.json`，跨短命令进程生效；DE 官方原始响应与规范化结果须分别通过关键集合和裂缝、警报、入侵、活动、商人、赏金、科研、突击/执刑官、电波、回廊、1999 日历字段合同，HTTP 200 但结构残缺不得覆盖可靠缓存
 - 科研词缀优先使用 Oracle 世界状态专用中英词典（显示名 + 路径尾段双索引）；在线刷新失败时退陈旧词典缓存，再退 `weekly-static.json`，无需逐周手工补表
 - 1999 日历按官方路径逐事件对齐奖励/增益，挑战行同时显示官方标题、具体要求量和可用的个人进度
 - 1999 日历增益：DE 官方语言键与公开导出均不含增益名（实测 2026-08-18：`/Lotus/Upgrades/Calendar/*` 在 dict.en/dict.zh、lang.json、ExportUpgrades 全部查无）。解析优先级（weekly.mjs `calendarUpgradeEntry`，返回 {name, desc, source} 而非只取名字）：① `weekly-static.json` 路径表 = 灰机wiki「1999日历」页六人组覆写表（用户核验中文源，2026-08-24 全表核对：硬化装甲/特浓咖啡/吸引力/强制输血/打孔纸带/人多势众/重型标枪/有福同享 等，中文名与效果成对收录）→ ② 社区维护状态中文表（`KingPrimes/DataSource`（MIT）`warframe/state_translation.json`（按 uniqueName 索引的中文名+说明）＋ 内置 warframe-info-api（MIT）补充表），缓存 7 天，失败退陈旧缓存 → ③ AI 查证学习词典（`.cache/warframe-data/calendar-upgrade-zh.json`，`calendar-upgrade-fallback.mjs` 管理，只补缺口）→ ④ 静态题名表（无路径时的兜底）→ 诚实占位「新增日历增益（上游尚未提供中文说明）」。全链查无的未知路径自动进入 `.cache/warframe-data/calendar-upgrade-inbox.json`，由每日 AI 定时任务用灰机wiki「1999日历」页查证后 `learn --path --name --desc --source` 回填（冲突安全：词典/静态/社区已覆盖返回 ok:false 应 dismiss，写入失败保留待重试）；查无实据的 `dismiss`。周报卡增益行同时显示中文名与效果说明（换行不截断，行高按估算保守留白）

@@ -1,5 +1,6 @@
 // Resilient PC world-state loader.
-// Order: WarframeStat normalized API -> official DE worldState.php -> last cached normalized snapshot.
+// PC order: official DE worldState.php -> optional WarframeStat cross-check/fallback -> last cached normalized snapshot.
+// Other platforms keep the WarframeStat normalized API path.
 // The official source is mapped to the subset consumed by public queries and subscriptions.
 
 import { getBountyZhMaps, getLangTable, staleCachedJson } from './wfdata.mjs';
@@ -268,28 +269,75 @@ export function assertOfficialWorldStateContract(state) {
   return state;
 }
 
+export function assertOfficialRawWorldStateContract(raw) {
+  const arrayFields = ['ActiveMissions', 'VoidStorms', 'Alerts', 'Invasions', 'Goals', 'VoidTraders', 'SyndicateMissions', 'Conquests'];
+  for (const field of arrayFields) {
+    if (!Array.isArray(raw?.[field])) throw new Error(`official raw world state contract: ${field} must be an array`);
+  }
+  if (!Number.isFinite(msOf(raw?.Time))) {
+    throw new Error('official raw world state contract: Time missing or invalid');
+  }
+  return raw;
+}
+
 export async function loadWorldState(platform = 'pc', options = {}) {
   const normalizedPlatform = platform === 'xbox' ? 'xb1' : platform === 'switch' ? 'swi' : platform;
   const forceOfficial = options.forceOfficial === true || process.env.WARFRAME_WORLDSTATE_FORCE_OFFICIAL === '1';
   const cacheName = `worldstate-normalized-${normalizedPlatform}${forceOfficial ? '-official-probe' : ''}`;
-  const result = await staleCachedJson(cacheName, { ttlMs: CACHE_TTL_MS, version: 1 }, async () => {
-    try {
-      if (forceOfficial) throw new Error('diagnostic: primary source bypassed');
-      const primary = await fetchJson(`${PRIMARY_BASE}/${normalizedPlatform}`, {
-        endpoint: `worldstate:warframestat:${normalizedPlatform}`,
-      });
+  const dependencies = {
+    fetchJson: options.fetchJson || fetchJson,
+    staleCachedJson: options.staleCachedJson || staleCachedJson,
+    getBountyZhMaps: options.getBountyZhMaps || getBountyZhMaps,
+    getLangTable: options.getLangTable || getLangTable,
+  };
+  const warframeStatUrl = `${PRIMARY_BASE}/${normalizedPlatform}`;
+  const fetchWarframeStat = () => dependencies.fetchJson(warframeStatUrl, {
+    endpoint: `worldstate:warframestat:${normalizedPlatform}`,
+  });
+  const result = await dependencies.staleCachedJson(cacheName, { ttlMs: CACHE_TTL_MS, version: 2 }, async () => {
+    if (normalizedPlatform !== 'pc') {
+      const primary = await fetchWarframeStat();
       return { ...primary, _dataSource: 'api.warframestat.us', _officialFallback: false };
-    } catch (primaryError) {
-      if (normalizedPlatform !== 'pc') throw primaryError;
-      const [{ data: official }, maps, lang] = await Promise.all([
-        staleCachedJson('official-worldstate', { ttlMs: 60_000, version: 1 }, () => fetchJson(OFFICIAL_URL)),
-        getBountyZhMaps(),
-        getLangTable().catch(() => ({})),
+    }
+
+    try {
+      const [officialResult, maps, lang] = await Promise.all([
+        dependencies.staleCachedJson('official-worldstate', { ttlMs: 60_000, version: 2 }, () => dependencies.fetchJson(OFFICIAL_URL)),
+        dependencies.getBountyZhMaps(),
+        dependencies.getLangTable().catch(() => ({})),
       ]);
+      if (officialResult.stale) throw new Error('official world state source is stale');
+      const official = officialResult.data;
+      assertOfficialRawWorldStateContract(official);
       const state = assertOfficialWorldStateContract(await normalizeOfficialWorldState(official, { nodes: maps?.nodes || {}, lang }));
-      state._primaryError = String(primaryError?.message || primaryError);
-      state._primaryHealth = primaryError?.diagnostic || null;
+      state._officialFallback = false;
+      state._sourceLabel = 'DE official worldState';
+
+      // This request only updates the shared resilience/health record. It is deliberately
+      // not awaited, so a slow or broken community convenience API cannot delay fresh
+      // official PC data. Consumers always receive the already-validated official facts.
+      if (!forceOfficial && options.crossCheck !== false) {
+        void Promise.resolve(fetchWarframeStat()).catch(() => null);
+        state._communityCrossCheck = 'scheduled';
+      }
       return state;
+    } catch (officialError) {
+      if (forceOfficial) throw officialError;
+      try {
+        const fallback = await fetchWarframeStat();
+        return {
+          ...fallback,
+          _dataSource: 'api.warframestat.us',
+          _officialFallback: true,
+          _officialError: String(officialError?.message || officialError),
+          _officialHealth: officialError?.diagnostic || null,
+          _sourceLabel: 'WarframeStat（DE 官方源暂不可用，已自动切换）',
+        };
+      } catch (communityError) {
+        const error = new Error(`world state sources unavailable: official=${String(officialError?.message || officialError)}; warframestat=${String(communityError?.message || communityError)}`);
+        error.cause = communityError;
+        throw error;
+      }
     }
   });
   return { ...result.data, _dataStale: result.stale, _cachedAt: result.cachedAt };

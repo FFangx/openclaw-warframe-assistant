@@ -113,11 +113,11 @@ Prime Mod 按 0 级成交统计；交易税从 warframe.market 单品详情接�
 
 赏金订阅与赏金查询共用奖励池补齐：warframestat 主源不可用而切换 DE 官方世界状态时，使用官方任务等级/奖励表路径配合 WFCD 静态掉落表恢复奖励关键词候选；不得因备用源缺少展开后的 `rewardPoolDrops` 而静默生成空候选池。
 
-所有世界状态入口统一采用 `warframestat → DE 官方 worldState.php → 最近规范化缓存`。官方备用源规范化覆盖裂缝/虚空风暴、警报、入侵、活动、突击、执刑官、虚空商人、赏金任务、午夜电波、科研、回廊与 1999 日历；周报也必须走统一入口。掉落搜索另走 `warframestat drops → WFCD GitHub`，赏金奖励池走 `drops.warframestat → WFCD GitHub`，物品/中文目录走本机 AlecaFrame → AlecaFrame CDN → warframestat 旧兜底，奸商货单以 DE 官方 Manifest 为权威、warframestat 仅补英文名。
+所有 PC 世界状态入口统一采用 `DE 官方 worldState.php → warframestat 交叉验证/备用 → 最近规范化缓存`；官方结果先做本地规范化和原始/规范化双层完整性校验，warframestat 的慢请求或 404 不再阻塞已验证的官方实时结果。非 PC 平台暂维持 warframestat 路径。官方规范化覆盖裂缝/虚空风暴、警报、入侵、活动、突击、执刑官、虚空商人、赏金任务、午夜电波、科研、回廊与 1999 日历；周报也必须走统一入口。掉落搜索另走 `warframestat drops → WFCD GitHub`，赏金奖励池走 `drops.warframestat → WFCD GitHub`，物品/中文目录走本机 AlecaFrame → AlecaFrame CDN → warframestat 旧兜底，奸商货单以 DE 官方 Manifest 为权威、warframestat 仅补英文名。
 
 DE 官方备用世界状态返回的入侵奖励内部名会先按 CamelCase 拆成显示名，再进入 Market/官方简中词典，避免 `StrunWraithStock` 一类可识别部件落成“未收录奖励”。拆词后再做别名归一（`GrineerCombatKnife`→`Sheev`、配方尾段 `Sheev Sortie Blueprint`→`Sheev Blueprint` 等，`scripts/reward-zh-fallback.mjs`）并兜底组件词元与学习词典，希芙散热片等部件不再落占位文案。仍查无的内部名自动进入 AI 查证 inbox（`reward-zh-inbox.json`），由每日定时任务用网页搜索查证 Market/灰机wiki 后回填学习词典，查无实据则保持占位；该每日任务有可部署定义 `config/cron/reward-zh-ai.job.json`（安装/修复与并发原子细节见 `references/operations.md`）。订阅卡来源只按本次实际展示的情报计算：仅世界状态、仅仲裁排期或两者混合，不因会话里另有仲裁订阅而误标当前卡片。
 
-PC 的 warframestat 主源按端点持久记录健康状态：403 首次即退避 15 分钟，连续网络/超时故障进入指数短退避；退避期不再撞主源而直接读取 DE 官方源。官方规范化结果通过字段完整性合同后才写入缓存，主源错误分类和熔断截止时间保留在内部诊断字段中。
+PC 的 warframestat 交叉验证/备用源按端点持久记录健康状态：403 首次即退避 15 分钟，连续网络/超时故障进入指数短退避；它的健康探测不阻塞 DE 官方主路径。官方原始响应与规范化结果均通过字段完整性合同后才写入可靠缓存；官方失败时才等待 warframestat 备用结果，两源都失败则退最近可靠规范化缓存并标明陈旧。
 
 裂缝、仲裁（`仲裁推荐`=只推 S/A 场地，评级缺失宁漏不推）、警报、稀有入侵、特殊活动、突击、钢铁侵袭、
 赏金（必须带筛选词）、虚空商人、掉落（个人）、周常刷新（周一：单张原始 PNG 周报+本周好货；周报使用 QQ `/files` 一步直发，规避常规主动富媒体链路压缩长图）、商店周货（个人）、商品上架（一次性）。
