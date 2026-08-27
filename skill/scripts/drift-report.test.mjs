@@ -15,7 +15,7 @@ import {
   analyzeNightwaveDrift, analyzeOfficialNormalizedDrift, analyzeOfficialRawDrift,
   sanitizeEndpointHealth, scanShopAssemblyLeaks, scanZhTableLeaks, shopNameLeakSeverity,
 } from './drift-report.mjs';
-import { calendarUpgradeZh, evaluateAutoCheck, localizeArchimedeaModifier, nightwaveChallengeZh } from './weekly.mjs';
+import { calendarUpgradeEntry, calendarUpgradeZh, evaluateAutoCheck, localizeArchimedeaModifier, nightwaveChallengeZh } from './weekly.mjs';
 import { itemZh } from './vendor-shop.mjs';
 
 // 漂移监控测试（第 6 项）：全部零联网、零凭据、零写入；合成 fixture + 本地静态表。
@@ -28,6 +28,10 @@ test('占位文案常量与 weekly.mjs 热路径兜底输出保持同步', () =>
   assert.equal(
     CALENDAR_UPGRADE_PLACEHOLDER_ZH,
     calendarUpgradeZh({ title: 'Totally New Buff' }, '/Lotus/Upgrades/Calendar/TotallyNewBuff', null),
+  );
+  assert.deepEqual(
+    calendarUpgradeEntry({ title: 'Totally New Buff' }, '/Lotus/Upgrades/Calendar/TotallyNewBuff', null),
+    { name: CALENDAR_UPGRADE_PLACEHOLDER_ZH, desc: '', source: null },
   );
   const names = { zhOf: () => null, catalogZhOf: () => null, catalogTailZhOf: () => null, languageTailZhOf: () => null };
   assert.equal(itemZh('/Lotus/StoreItems/Types/Keys/UnknownInternalKey', names), SHOP_NAME_PLACEHOLDER_ZH);
@@ -129,21 +133,74 @@ test('科研词缀已翻译但缺说明时只算软漂移（descPlaceholder）',
   assert.equal(report.byKind.LAB.descPlaceholder, 3);
 });
 
-test('1999 日历增益占位统计与键样本（未翻译 / 静态手订占位分列），无个人数据', () => {
+// —— 1999 日历增益漂移：区分「缺中文名」与「有中文名但缺效果」，全程离线 ——
+
+// 当前赛季实拍路径（官方 worldState KnownCalendarSeasons 第 22 轮，2026-08-24）：
+// 覆盖用户核验的灰机wiki「1999日历」表新增/修正条目（打孔纸带/人多势众/硬化装甲/特浓咖啡/吸引力等）
+const CURRENT_SEASON_UPGRADE_PATHS = [
+  // [路径, 期望中文名, 期望效果片段]
+  ['/Lotus/Upgrades/Calendar/Armor', '硬化装甲', '增加250护甲'],
+  ['/Lotus/Upgrades/Calendar/MeleeCritChance', '熟能生巧', '近战暴击几率'],
+  ['/Lotus/Upgrades/Calendar/PunchToPrimary', '打孔纸带', '主要武器穿透增加1.5米'],
+  ['/Lotus/Upgrades/Calendar/MagnetStatusPull', '吸引力', '磁力异常状态会将1米范围内的敌人拉近'],
+  ['/Lotus/Upgrades/Calendar/FinisherChancePerComboMultiplier', '杀意连段', '可处决状态的几率'],
+  ['/Lotus/Upgrades/Calendar/CompanionsBuffNearbyPlayer', '人多势众', '20米内每名非Tenno友军增加5%近战攻击速度和20%射速'],
+  ['/Lotus/Upgrades/Calendar/MagazineCapacity', '重型弹匣', '增加25%的弹匣容量'],
+  ['/Lotus/Upgrades/Calendar/EnergyRestoration', '特浓咖啡', '增加每秒2能量恢复'],
+];
+
+test('当前赛季日历增益路径全部可解析（静态灰机wiki表），无占位无缺效果', () => {
+  const days = CURRENT_SEASON_UPGRADE_PATHS.map(([path], index) => ({
+    date: `2026-01-0${index + 1}T00:00:00.000Z`,
+    events: [{ type: 'Override', upgrade: { title: path.split('/').pop() }, upgradePath: path }],
+  }));
+  const report = analyzeCalendarUpgradeDrift(days);
+  assert.equal(report.total, CURRENT_SEASON_UPGRADE_PATHS.length);
+  assert.equal(report.nameMissing, 0);
+  assert.equal(report.effectMissing, 0);
+  assert.equal(report.untranslated, 0);
+  assert.equal(report.staticPlaceholder, 0);
+  assert.deepEqual(report.samples, []);
+  // 逐条抽查：中文名与效果都来自静态表（用户核验源）
+  for (const [path, name, descPart] of CURRENT_SEASON_UPGRADE_PATHS) {
+    const entry = calendarUpgradeEntry({}, path, null);
+    assert.equal(entry.name, name);
+    assert.match(entry.desc, new RegExp(descPart.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
+    assert.ok(entry.source.includes('灰机wiki'));
+  }
+});
+
+test('1999 日历增益漂移区分缺中文名与缺效果说明（含社区表软漂移与静态手订占位）', () => {
   const days = [
+    // ① 全链查无：缺中文名（上游未收录）→ nameMissing
     { date: '2026-01-01T00:00:00.000Z', events: [{ type: 'Override', upgrade: { title: 'Energy Waves On Combo' }, upgradePath: '/Lotus/Upgrades/Calendar/EnergyWavesOnCombo' }] },
-    { date: '2026-01-02T00:00:00.000Z', events: [{ type: 'Override', upgrade: { title: 'OvershieldCap' }, upgradePath: '/Lotus/Upgrades/Calendar/OvershieldCap' }] },
-    { date: '2026-01-03T00:00:00.000Z', events: [{ type: 'Override', upgrade: { title: 'Radial Javelin On Heavy' }, upgradePath: '/Lotus/Upgrades/Calendar/RadialJavelinOnHeavy' }] },
+    // ② 社区表有中文名但没有说明 → effectMissing（软漂移）
+    { date: '2026-01-02T00:00:00.000Z', events: [{ type: 'Override', upgrade: { title: 'ElectricDamagePerDistance' }, upgradePath: '/Lotus/Upgrades/Calendar/ElectricDamagePerDistance' }] },
+    // ③ 静态表手订「占位说明」类条目 → staticPlaceholder（注入桩模拟，真实静态表已无此类）
+    { date: '2026-01-03T00:00:00.000Z', events: [{ type: 'Override', upgrade: { title: 'Placeholder Buff' }, upgradePath: '/Lotus/Upgrades/Calendar/PlaceholderBuff' }] },
+    // ④ 大奖日不计入
     { date: '2026-01-04T00:00:00.000Z', events: [{ type: 'Big Prize!', reward: 'Kuva' }] },
   ];
-  const report = analyzeCalendarUpgradeDrift(days);
+  const communityStateZh = {
+    byPath: new Map([['/Lotus/Upgrades/Calendar/ElectricDamagePerDistance', { name: '远距电击', description: '' }]]),
+    byTail: new Map(),
+  };
+  const stubEntry = (upgrade, upgradePath, stateZh, options) => {
+    if (upgradePath === '/Lotus/Upgrades/Calendar/PlaceholderBuff') {
+      return { name: '占位增益', desc: '上游数据仍为占位说明，具体效果以游戏内为准', source: null };
+    }
+    return calendarUpgradeEntry(upgrade, upgradePath, stateZh, options);
+  };
+  const report = analyzeCalendarUpgradeDrift(days, { upgradeEntry: stubEntry, calendarStateZh: communityStateZh });
   assert.equal(report.total, 3);
-  assert.equal(report.untranslated, 1); // EnergyWavesOnCombo：上游未收录 → 诚实占位
-  assert.equal(report.staticPlaceholder, 1); // RadialJavelinOnHeavy：静态表手订占位
-  assert.deepEqual(report.samples.map((s) => s.path).sort(), [
-    '/Lotus/Upgrades/Calendar/EnergyWavesOnCombo',
-    '/Lotus/Upgrades/Calendar/RadialJavelinOnHeavy',
-  ]);
+  assert.equal(report.nameMissing, 1);        // EnergyWavesOnCombo：无据不猜
+  assert.equal(report.effectMissing, 1);      // 远距电击：有名无效果
+  assert.equal(report.untranslated, 1);       // 兼容计数：只有「无译文」才算 untranslated
+  assert.equal(report.staticPlaceholder, 1);  // 静态手订占位单独归类
+  assert.deepEqual(
+    report.samples.map((s) => `${s.kind}:${s.path?.split('/').pop()}`).sort(),
+    ['effect:ElectricDamagePerDistance', 'name:EnergyWavesOnCombo', 'static-placeholder:PlaceholderBuff'],
+  );
   const json = JSON.stringify(report);
   assert.ok(!/Progress|standing|score|Inventory/iu.test(json), '日历漂移报告不得携带个人数据');
 });

@@ -24,13 +24,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
 import { FileEndpointHealthStore, readEndpointHealth } from './http-resilience.mjs';
-import { calendarUpgradeZh, hasCompleteArchimedeas, localizeArchimedeaModifier, nightwaveChallengeZh } from './weekly.mjs';
+import { CALENDAR_UPGRADE_PLACEHOLDER_ZH, calendarUpgradeEntry, hasCompleteArchimedeas, localizeArchimedeaModifier, nightwaveChallengeZh } from './weekly.mjs';
 
 // —— 占位文案常量（与 weekly.mjs 热路径兜底串必须一致；测试锁定同步）——
+export { CALENDAR_UPGRADE_PLACEHOLDER_ZH } from './weekly.mjs';
 export const NIGHTWAVE_PLACEHOLDER_ZH = '本周挑战 ×1（译名待补）';
 export const ARCHIMEDEA_PLACEHOLDER_NAME = '新增科研词缀';
 export const ARCHIMEDEA_PLACEHOLDER_DESC = '效果说明待补录，请在游戏内查看';
-export const CALENDAR_UPGRADE_PLACEHOLDER_ZH = '新增日历增益（上游尚未提供中文说明）';
 export const SHOP_NAME_PLACEHOLDER_ZH = '游戏内商品（名称待词典同步）';
 
 const MAX_SAMPLE_KEYS = 20;
@@ -159,24 +159,45 @@ export function analyzeArchimedeaTranslationDrift(entries = [], {
 }
 
 // days = 规范化 1999 日历 days（event.type==='Override'，upgrade.title 必填、upgradePath 可选，
-// 与 weekly.mjs 的 officialSafe 对位约定一致）；upgradeZh 默认复用 weekly.mjs 真实链。
+// 与 weekly.mjs 的 officialSafe 对位约定一致）；upgradeEntry 默认复用 weekly.mjs 真实链。
+// 漂移判定区分「缺中文名」（nameMissing）与「有中文名但缺效果说明」（effectMissing）：
+// 前者继续走 AI 查证闭环，后者是社区表/词典只补了名字的软漂移，报告里分开统计。
 export function analyzeCalendarUpgradeDrift(days = [], {
-  upgradeZh = calendarUpgradeZh,
+  upgradeEntry = calendarUpgradeEntry,
   calendarStateZh = null,
+  learnedEntries = null,
 } = {}) {
-  const report = { total: 0, untranslated: 0, staticPlaceholder: 0, samples: [] };
+  const report = {
+    total: 0,
+    nameMissing: 0,
+    effectMissing: 0,
+    untranslated: 0,
+    staticPlaceholder: 0,
+    samples: [],
+  };
   for (const day of days || []) {
     for (const event of day?.events || []) {
       if (event?.type !== 'Override') continue;
       report.total += 1;
-      const zh = upgradeZh(event.upgrade || {}, event?.upgradePath || null, calendarStateZh);
-      if (!zh || zh === CALENDAR_UPGRADE_PLACEHOLDER_ZH) {
+      const entry = upgradeEntry(event.upgrade || {}, event?.upgradePath || null, calendarStateZh, { learnedEntries }) || {};
+      const nameMissing = !entry.name || entry.name === CALENDAR_UPGRADE_PLACEHOLDER_ZH;
+      const effectMissing = !nameMissing && !entry.desc;
+      const staticPh = String(entry.name || '').includes('占位说明') || String(entry.desc || '').includes('占位说明');
+      if (nameMissing) {
+        report.nameMissing += 1;
         report.untranslated += 1;
-        report.samples.push({ day: day?.date || null, path: event.upgradePath || null, title: event.upgrade?.title || null });
-      } else if (zh.includes('占位说明')) {
-        // 静态表手订的「上游数据仍为占位说明」类条目：仍是诚实占位，单独归类可审计
-        report.staticPlaceholder += 1;
-        report.samples.push({ day: day?.date || null, path: event.upgradePath || null, title: event.upgrade?.title || null, note: '静态表手订占位' });
+      }
+      if (effectMissing) report.effectMissing += 1;
+      if (staticPh) report.staticPlaceholder += 1;
+      if (nameMissing || effectMissing || staticPh) {
+        report.samples.push({
+          day: day?.date || null,
+          path: event.upgradePath || null,
+          title: event.upgrade?.title || null,
+          kind: nameMissing ? 'name' : effectMissing ? 'effect' : 'static-placeholder',
+          name: entry.name || null,
+          desc: entry.desc || null,
+        });
       }
     }
   }

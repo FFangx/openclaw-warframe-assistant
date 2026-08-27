@@ -335,11 +335,40 @@ function nightwaveSection(data) {
 // —— S6 轮换商店板块已移入独立「商店」模板（vendor-shop-card.mjs，2026-08-05）——
 
 // —— S7 1999 日历：整宽，大奖/挑战/增益按日期顺序混排；v5 接快照进度三态（完成✓暗/当前高亮/未来常规） ——
-function calendarSection(data) {
+// v6（2026-08-27）：增益行同时显示中文名 + 效果说明（社区行自带 {name, description}，不再丢效果）；
+//   全部日历行改为自动换行（去掉 ellipsis 截断），行高按行数保守估算——宁可多留白也不截断长文案。
+export function calendarSection(data) {
   const schedule = data.calendar.schedule || [];
-  const rowH = (day) => day.type === 'prize' ? 48 : day.type === 'todo' ? day.lines.length * 40 : 34 + day.lines.length * 34;
+  // 换行估算（保守口径：CJK=1em、ASCII=0.62em，可用宽度按真实容量的 ~90% 计，估算只会偏大）
+  const estEm = (text) => {
+    let width = 0;
+    for (const ch of String(text || '')) {
+      const code = ch.codePointAt(0);
+      if ((code >= 0x2e80 && code <= 0xa4cf) || (code >= 0xac00 && code <= 0xd7a3)
+        || (code >= 0xf900 && code <= 0xfaff) || (code >= 0xfe30 && code <= 0xfe4f)
+        || (code >= 0xff00 && code <= 0xff60) || (code >= 0xffe0 && code <= 0xffe6)) width += 1;
+      else if (code >= 0x20 && code < 0x7f) width += 0.62;
+      else width += 0.85;
+    }
+    return Math.max(1, width);
+  };
+  const wrapLines = (text, availEm) => Math.max(1, Math.ceil(estEm(text) / Math.max(4, availEm)));
+  const rowH = (day) => {
+    if (day.type === 'prize') return 14 + wrapLines(day.lines[0], 37) * 26 + 1;
+    if (day.type === 'todo') return day.lines.reduce((sum, line) => sum + 12 + wrapLines(line, 38) * 26 + 1, 0);
+    // override：日期/标签头行 34px + 每个选项（名 + 可选效果说明）
+    return 34 + day.lines.reduce((sum, line) => {
+      const chosen = Boolean(line?.chosen);
+      const name = typeof line === 'string' ? line : (line?.name || line?.text || '');
+      const desc = typeof line === 'object' && line?.desc ? line.desc : '';
+      const nameLines = wrapLines(name, chosen ? 38 : 42);
+      const descLines = desc ? wrapLines(desc, 46) : 0;
+      return sum + 10 + nameLines * 24 + (descLines ? 2 + descLines * 20 : 0) + 1;
+    }, 0);
+  };
   const scheduleH = schedule.reduce((sum, day) => sum + rowH(day), 0);
-  const bodyH = 24 * 2 + scheduleH + 14 + 30;
+  // 底部预留 6px 安全余量：估算偏差只会多留白，绝不截断最后一行
+  const bodyH = 24 * 2 + scheduleH + 14 + 30 + 6;
   const typeMeta = { prize: { color: C.temporal, tag: '大奖' }, todo: { color: C.green, tag: '挑战' }, override: { color: C.cyan, tag: '增益三选一' } };
   // 三态装饰：完成=整行压暗+绿✓；当前=金底高亮+「当前」徽；无快照进度时 state 空串零装饰
   const deco = (day) => day.state === 'done'
@@ -351,29 +380,33 @@ function calendarSection(data) {
     const meta = typeMeta[day.type];
     const state = deco(day);
     if (day.type === 'prize') {
-      return `<div style="height:48px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #262A38;${state.row}">
+      return `<div style="padding:7px 0;display:flex;align-items:flex-start;gap:12px;border-bottom:1px solid #262A38;${state.row}">
         <span style="flex:0 0 72px;font-size:18px;font-weight:900;color:${meta.color};font-variant-numeric:tabular-nums">${escapeHtml(day.dateZh)}</span>
         <span style="flex:0 0 auto;padding:2px 8px;border-radius:6px;font-size:13px;font-weight:800;color:${meta.color};border:1px solid ${meta.color}">${meta.tag}</span>${state.tag}
-        <span style="font-size:18px;color:${C.text};font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(day.lines[0])}</span></div>`;
+        <span style="flex:1 1 auto;min-width:0;font-size:18px;line-height:26px;color:${C.text};font-weight:700;white-space:normal">${escapeHtml(day.lines[0])}</span></div>`;
     }
     if (day.type === 'todo') {
-      return day.lines.map((line) => `<div style="height:40px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #262A38;${state.row}">
+      return day.lines.map((line) => `<div style="padding:6px 0;display:flex;align-items:flex-start;gap:12px;border-bottom:1px solid #262A38;${state.row}">
         <span style="flex:0 0 72px;font-size:17px;font-weight:900;color:${meta.color};font-variant-numeric:tabular-nums">${escapeHtml(day.dateZh)}</span>
         <span style="flex:0 0 auto;padding:2px 8px;border-radius:6px;font-size:13px;font-weight:800;color:${meta.color};border:1px solid ${meta.color}">${meta.tag}</span>${state.tag}
-        <span style="font-size:17px;color:${C.text};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(line)}</span></div>`).join('');
+        <span style="flex:1 1 auto;min-width:0;font-size:17px;line-height:26px;color:${C.text};white-space:normal">${escapeHtml(line)}</span></div>`).join('');
     }
-    return `<div style="height:34px;display:flex;align-items:center;gap:12px;${state.row}">
+    return `<div style="display:flex;align-items:center;gap:12px;${state.row}">
         <span style="flex:0 0 72px;font-size:17px;font-weight:900;color:${meta.color};font-variant-numeric:tabular-nums">${escapeHtml(day.dateZh)}</span>
         <span style="flex:0 0 auto;padding:2px 8px;border-radius:6px;font-size:13px;font-weight:800;color:${meta.color};border:1px solid ${meta.color}">${meta.tag}</span>${state.tag}</div>`
-      // override 行是 {text, chosen} 对象：已选项亮金★，同日其余选项再压暗一档
+      // override 行是 {name, desc, chosen} 对象：已选项亮金★，同日其余选项再压暗一档；
+      // 效果说明换行展示（不截断），行高按估算行数留白
       + day.lines.map((line) => {
-        const text = typeof line === 'string' ? line : line.text;
-        const chosen = typeof line === 'object' && line.chosen;
+        const name = typeof line === 'string' ? line : (line?.name || line?.text || '');
+        const desc = typeof line === 'object' && line?.desc ? line.desc : '';
+        const chosen = Boolean(line?.chosen);
         const dimStyle = day.state === 'done' ? (chosen ? 'opacity:.78' : 'opacity:.38') : '';
         const mark = chosen ? `<span style="flex:0 0 auto;padding:1px 7px;border-radius:6px;font-size:12px;font-weight:900;color:#131722;background:${C.temporal}">已选</span>` : '';
-        return `<div style="height:34px;display:flex;align-items:center;gap:8px;padding-left:84px;border-bottom:1px solid #262A38;${dimStyle}">
-        <span style="color:${chosen ? C.temporal : meta.color};font-weight:900">${chosen ? '★' : '◇'}</span>
-        <span style="font-size:16px;color:${chosen ? C.text : C.sub};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(text)}</span>${mark}</div>`;
+        return `<div style="padding:5px 0 5px 84px;border-bottom:1px solid #262A38;${dimStyle}">
+        <div style="display:flex;align-items:center;gap:8px">
+        <span style="flex:0 0 auto;color:${chosen ? C.temporal : meta.color};font-weight:900">${chosen ? '★' : '◇'}</span>
+        <span style="flex:1 1 auto;min-width:0;font-size:16px;line-height:24px;font-weight:800;color:${chosen ? C.text : C.sub};white-space:normal">${escapeHtml(name)}</span>${mark}</div>
+        ${desc ? `<div style="margin-top:2px;padding-left:24px;font-size:15px;line-height:20px;color:${C.dim};white-space:normal">${escapeHtml(desc)}</div>` : ''}</div>`;
       }).join('');
   }).join('');
   const progress = data.calendar.progress;

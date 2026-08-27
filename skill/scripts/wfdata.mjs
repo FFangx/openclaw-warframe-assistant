@@ -549,8 +549,8 @@ export function getSeasonChallengeRequired() {
 const CALENDAR_STATE_URL = 'https://raw.githubusercontent.com/KingPrimes/DataSource/main/warframe/state_translation.json';
 const CALENDAR_STATE_CACHE = path.join(DATA_CACHE_DIR, 'calendar-state-zh.json');
 const CALENDAR_STATE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-// warframe-info-api 本地补充表（MIT）：只取日历相关条目，键与上游同构
-const CALENDAR_STATE_SUPPLEMENT = [
+// warframe-info-api 本地补充表（MIT）：只取日历相关条目，键与上游同构；导出供日历增益兜底层复用
+export const CALENDAR_STATE_SUPPLEMENT = [
   { uniqueName: '/Lotus/Types/Challenges/Calendar1999/CalendarKillEximusEasy', name: '前卓越者', description: '击杀10名卓越者' },
   { uniqueName: '/Lotus/Types/Challenges/Calendar1999/CalendarKillTechrotEnemiesEasy', name: '清除感染', description: '击杀250名科腐者敌人' },
   { uniqueName: '/Lotus/Types/Challenges/Calendar1999/CalendarKillEnemiesWithMeleeHard', name: '以刃之名', description: '使用近战武器击杀500名敌人' },

@@ -70,6 +70,15 @@ SKILL.md 瘦身移入（2026-08-07）。这些规则的执行主体是脚本与 
 - **持久化与并发**：inbox/学习词典的读写全部经进程内串行队列（入队/出队/清空同队列，先入队后 dismiss 不会复活条目）+ 临时文件 rename 原子落盘；多进程并发（订阅监测与每日任务分属不同进程）时最坏是丢失一次更新，文件不会损坏
 - **测试隔离铁律**：任何跑 inbox/学习词典的测试必须先把 `WARFRAME_DATA_CACHE_DIR` 指向临时目录（2026-08-21 实拍：`subscriptions-audit.test.mjs` 未隔离，把合成名 `totally alad v xyz thing` 写进了真实运行时与仓库缓存目录的 inbox，且清空过真实 inbox；模块已改为按需解析该环境变量，测试在文件顶部设置即可生效）
 
+### 1999 日历增益查证闭环（与奖励查证共用同一条每日任务）
+
+- 周报 1999 日历增益解析链（`weekly.mjs calendarUpgradeEntry`，成对返回 {name, desc, source}）：静态灰机wiki表 → 社区状态中文表 → AI 学习词典 → 静态题名表 → 诚实占位；全链查无的路径自动排队进 `.cache/warframe-data/calendar-upgrade-inbox.json`（独立于奖励 inbox，路径小写做键，上限 100）
+- 同一条每日 agent 型 cron 在处理完奖励 inbox 后处理日历增益 inbox：`node …/calendar-upgrade-fallback.mjs inbox` → 逐路径用灰机wiki「1999日历」页六人组覆写表查证 → 名称和效果都有据时才执行 `learn --path <inbox键原文> --name <纯中文名> --desc <中文效果> --source <依据>`（要求中文名 + 效果 + 来源三件套；只有名称时保持待查证，不得 dismiss）→ 名称和效果都查无实据才 `dismiss --path`
+- **冲突安全与原子**：词典只补缺、绝不覆盖静态/社区表；learn 返回 `ok:false`（outcome `conflict`/`seed`/`covered`，即词典、静态表或社区表已覆盖）时 inbox 条目原样保留，安全处置是 `dismiss`；error 含「写入失败」时保留待下轮重试。落盘全部走临时文件 rename 原子写 + 进程内串行队列（与 reward-zh-fallback 同款 pattern），CLI 覆盖检查只读本地缓存与内置补充表（零联网、离线确定）
+- 词典文件：`.cache/warframe-data/calendar-upgrade-zh.json`；`calendar-upgrade-fallback.mjs` 与 `calendar-upgrade-fallback.test.mjs` 是它的唯一写手与回归；种子键来自 `weekly-static.json` 的日历路径表（灰机wiki 用户核验值），不可被 learn 覆盖
+- 若社区表已有同名但效果为空，`learn` 允许同名效果补缺；仍未提供效果时返回 `effect-missing` 并保留 inbox，避免把“仅有名字”误当成完整覆盖
+- 周报卡增益行显示 {name, desc} 两行、自动换行不截断；漂移监控（`drift-report.mjs`）区分「缺中文名」（nameMissing，继续走 AI 查证）与「有中文名但缺效果」（effectMissing，社区表/词典的软漂移）
+
 ## 数据源漂移监控（只读诊断）
 
 - `scripts/drift-report.mjs` 是纯函数漂移检测模块：统计 + 可审计键样本，零凭据、零联网、零写入，禁止用于生产告警、cron、缓存写入或运行时改动

@@ -8,6 +8,7 @@ import { buildWeeklyMegaCard } from './weekly-mega-card.mjs';
 import { readSnapshot } from './alecaframe.mjs';
 import { getBountyZhMaps, getChallengeZhMap, getCalendarChallengeMap, getCalendarStateZhMap, getLangTable, getOfficialTextMap, getOracleConquestMap, getOracleConquestTailMap, getSeasonChallengeRequired, readAlecaJson, staleCachedJson, stripDataUriReplacer } from './wfdata.mjs';
 import { loadWorldState } from './worldstate-source.mjs';
+import { getLearnedCalendarUpgradeEntries, queuePendingCalendarUpgrade } from './calendar-upgrade-fallback.mjs';
 
 // 静态参考表：奖励池/电波译名，以及 Oracle 词典暂不可用时的科研词缀兜底。
 const staticData = JSON.parse(await readFile(new URL('./weekly-static.json', import.meta.url), 'utf8'));
@@ -161,15 +162,63 @@ function nightwaveChallengeZh(challenge, names = null) {
 function calendarChallengeZh(challenge) {
   return challengeTitleZh(challenge?.title) || staticData.calendarChallengeZh?.[challenge?.title] || translateDesc(challenge?.description) || '日历挑战（要求以游戏内为准）';
 }
-export function calendarUpgradeZh(upgrade, upgradePath = null, calendarStateZh = null) {
+
+// —— 1999 日历增益中文名+效果（2026-08-27 起成对收录，不再只取名字丢效果）——
+// 解析优先级：① 静态路径表（灰机wiki 1999日历 用户核验）→ ② 社区维护状态中文表（自动吸收，
+// 行自带 {name, description}）→ ③ AI 查证学习词典（calendar-upgrade-fallback.mjs，只补缺口）
+// → ④ 静态题名表（无路径时的兜底）→ 诚实占位。任何一层查无效果都不猜，效果留空由调用方决定是否展示。
+export const CALENDAR_UPGRADE_PLACEHOLDER_ZH = '新增日历增益（上游尚未提供中文说明）';
+
+function normalizeUpgradeEntry(value, source) {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    // 兼容旧字符串形式（"名称：效果"）：作为单一名称文本处理，不强行拆分
+    return { name: cleanGameText(value), desc: '', source };
+  }
+  return {
+    name: cleanGameText(value.name),
+    desc: cleanGameText(value.desc || ''),
+    source: cleanGameText(value.source || source || null),
+  };
+}
+
+export function calendarUpgradeEntry(upgrade, upgradePath = null, calendarStateZh = null, options = {}) {
+  const learnedKey = String(upgradePath || '').trim().toLowerCase();
+  const learned = options.learnedEntries?.get?.(learnedKey);
+  const mergeLearnedEffect = (entry) => {
+    if (!entry || entry.desc || !learned?.desc || learned.name !== entry.name) return entry;
+    return { ...entry, desc: cleanGameText(learned.desc), source: cleanGameText(`${entry.source || ''} + ${learned.source || '学习词典'}`) };
+  };
+  // ① 静态路径表：灰机wiki 1999日历 用户核验条目（name+desc+source 成对收录）
   const pathHit = staticData.calendarUpgradeZhByPath?.[upgradePath];
-  if (pathHit) return pathHit;
-  // 社区维护的日历增益中文表：DE 官方语言键没有增益名，这里按路径/尾段自动吸收
+  if (pathHit) return mergeLearnedEffect(normalizeUpgradeEntry(pathHit, '灰机wiki 1999日历（静态表）'));
+  // ② 社区维护的日历增益中文表：DE 官方语言键没有增益名，这里按路径/尾段自动吸收（含说明）
   const stateTail = String(upgradePath || '').split('/').pop().toLowerCase();
   const stateHit = calendarStateZh?.byPath?.get?.(upgradePath) || calendarStateZh?.byTail?.get?.(stateTail);
-  if (stateHit?.name) return stateHit.name;
-  return staticData.calendarUpgradeZh?.[upgrade?.title]
-    || '新增日历增益（上游尚未提供中文说明）';
+  if (stateHit?.name) {
+    return mergeLearnedEffect({ name: cleanGameText(stateHit.name), desc: cleanGameText(stateHit.description || ''), source: '社区维护状态中文表' });
+  }
+  // ③ AI 查证学习词典：按完整路径小写键，双语名+效果+来源；只补缺口，绝不覆盖上面两层
+  if (learned?.name) {
+    return { name: cleanGameText(learned.name), desc: cleanGameText(learned.desc || ''), source: cleanGameText(learned.source || '学习词典') };
+  }
+  // ④ 静态题名表：DE 官方备份源只有英文题名时的兜底
+  const titleHit = staticData.calendarUpgradeZh?.[upgrade?.title];
+  if (titleHit) return normalizeUpgradeEntry(titleHit, '灰机wiki 1999日历（静态表）');
+  return { name: CALENDAR_UPGRADE_PLACEHOLDER_ZH, desc: '', source: null };
+}
+
+export function calendarUpgradeZh(upgrade, upgradePath = null, calendarStateZh = null, learnedEntries = null) {
+  const entry = calendarUpgradeEntry(upgrade, upgradePath, calendarStateZh, { learnedEntries });
+  if (!entry.name || entry.name === CALENDAR_UPGRADE_PLACEHOLDER_ZH) return CALENDAR_UPGRADE_PLACEHOLDER_ZH;
+  return entry.desc ? `${entry.name}：${entry.desc}` : entry.name;
+}
+
+// 渲染入口加载一次学习词典（失败静默降级空表，不影响主流程）
+let learnedCalendarUpgradesPromise = null;
+export function loadCalendarUpgradeLearned() {
+  learnedCalendarUpgradesPromise ??= getLearnedCalendarUpgradeEntries().catch(() => new Map());
+  return learnedCalendarUpgradesPromise;
 }
 
 function fillCalendarCount(text, required) {
@@ -936,7 +985,7 @@ export function localizeArchimedeaModifier(mod, oracleMap = new Map(), fallbackM
   };
 }
 
-function buildMegaData(record, worldState, skipped = new Set(), autoResult = null, autoIds = [], names = null, calMap = null, officialDays = null, seasonRequired = null, nwPredict = null, oracleConquestMap = null, officialTextMap = null, worldStateMeta = {}, oracleConquestTails = null, calendarStateZh = null) {
+function buildMegaData(record, worldState, skipped = new Set(), autoResult = null, autoIds = [], names = null, calMap = null, officialDays = null, seasonRequired = null, nwPredict = null, oracleConquestMap = null, officialTextMap = null, worldStateMeta = {}, oracleConquestTails = null, calendarStateZh = null, learnedCalendarUpgrades = null) {
   const done = new Set(record.completed);
   const autoProgress = autoResult?.progress || {};
   const inventory = autoResult?.inventory || null;
@@ -1067,7 +1116,16 @@ function buildMegaData(record, worldState, skipped = new Set(), autoResult = nul
       // 三选一已选标记：只标已完成日；第 k 个完成的三选一日 ↔ seasonPicks[k]（选择顺序=日期顺序）
       const pickPath = state === 'done' ? seasonPicks[overrideSeen++] : null;
       const flags = chosenFlags(officialSafe?.[dayIdx]?.events, overrides.length, pickPath);
-      return { dateZh, state, type: 'override', lines: overrides.map(({ event, official }, j) => ({ text: calendarUpgradeZh(event.upgrade, official?.upgrade, calendarStateZh), chosen: Boolean(flags[j]) })) };
+      return {
+        dateZh, state, type: 'override',
+        lines: overrides.map(({ event, official }, j) => {
+          const entry = calendarUpgradeEntry(event.upgrade, official?.upgrade, calendarStateZh, { learnedEntries: learnedCalendarUpgrades });
+          // 名称或效果任一缺失都进入 AI 查证 inbox；学习词典只能补缺，不得覆盖已有名称。
+          // 无官方完整路径时不猜路径，只保持诚实占位。
+          if ((entry.name === CALENDAR_UPGRADE_PLACEHOLDER_ZH || !entry.desc) && official?.upgrade) queuePendingCalendarUpgrade(official.upgrade);
+          return { ...entry, chosen: Boolean(flags[j]) };
+        }),
+      };
     }
     return null;
   }).filter(Boolean);
@@ -1224,11 +1282,12 @@ async function renderResult(record, cardDir, actionText = '', skipped = new Set(
   const autoResult = await autoCheckFromSnapshot(worldState, state.conquestSamples);
   const { record: effective, autoIds } = mergeAutoRecord(record, autoResult);
   const [names, calMap, officialDays, seasonRequired, oracleConquestMap, officialTextMap, oracleConquestTails, calendarStateZh] = await Promise.all([loadNameTables(), getCalendarChallengeMap(), loadOfficialCalendarDays(), getSeasonChallengeRequired(), getOracleConquestMap(), getOfficialTextMap(), getOracleConquestTailMap(), getCalendarStateZhMap(), primeChallengeZh()]);
+  const learnedCalendarUpgrades = await loadCalendarUpgradeLearned();
   const rows = taskRows(effective, worldState, skipped, autoResult?.progress || {}, { names, officialDays, officialTextMap, calendarStateZh });
   const nwPredict = await sampleAndPredict(statePath, worldState, autoResult);
   // 科研分数样本落盘：本次渲染后，同周同类只留最新一条（供下一周判断分数是否真的变过）
   await recordConquestObservations(statePath, autoResult?.observations);
-  const card = buildWeeklyMegaCard(buildMegaData(effective, worldState, skipped, autoResult, autoIds, names, calMap, officialDays, seasonRequired, nwPredict, oracleConquestMap, officialTextMap, { stale: worldStateStale }, oracleConquestTails, calendarStateZh));
+  const card = buildWeeklyMegaCard(buildMegaData(effective, worldState, skipped, autoResult, autoIds, names, calMap, officialDays, seasonRequired, nwPredict, oracleConquestMap, officialTextMap, { stale: worldStateStale }, oracleConquestTails, calendarStateZh, learnedCalendarUpgrades));
   let mediaUrl = null;
   if (cardDir) mediaUrl = await renderWarframeCard(card, cardDir).catch(() => null);
   const active = rows.filter((item) => !item.skipped);
@@ -1313,10 +1372,11 @@ async function renderWeeklyDetailCardFor(weeklyStatePath, context, worldState, c
   const autoResult = await autoCheckFromSnapshot(effectiveWorldState, state.conquestSamples);
   const { record: effective, autoIds } = mergeAutoRecord(record, autoResult);
   const [names, calMap, officialDays, seasonRequired, oracleConquestMap, officialTextMap, oracleConquestTails, calendarStateZh] = await Promise.all([loadNameTables(), getCalendarChallengeMap(), loadOfficialCalendarDays(), getSeasonChallengeRequired(), getOracleConquestMap(), getOfficialTextMap(), getOracleConquestTailMap(), getCalendarStateZhMap(), primeChallengeZh()]);
+  const learnedCalendarUpgrades = await loadCalendarUpgradeLearned();
   const rows = taskRows(effective, effectiveWorldState, skipped, autoResult?.progress || {}, { names, officialDays, officialTextMap, calendarStateZh });
   const nwPredict = await sampleAndPredict(weeklyStatePath, effectiveWorldState, autoResult);
   await recordConquestObservations(weeklyStatePath, autoResult?.observations);
-  const card = buildWeeklyMegaCard(buildMegaData(effective, effectiveWorldState, skipped, autoResult, autoIds, names, calMap, officialDays, seasonRequired, nwPredict, oracleConquestMap, officialTextMap, { stale: repaired.stale }, oracleConquestTails, calendarStateZh));
+  const card = buildWeeklyMegaCard(buildMegaData(effective, effectiveWorldState, skipped, autoResult, autoIds, names, calMap, officialDays, seasonRequired, nwPredict, oracleConquestMap, officialTextMap, { stale: repaired.stale }, oracleConquestTails, calendarStateZh, learnedCalendarUpgrades));
   if (!cardDir) return { mediaUrl: null, rows };
   const mediaUrl = await renderWarframeCard(card, cardDir).catch(() => null);
   return { mediaUrl, rows };

@@ -38,6 +38,7 @@ if ($null -ne $job) {
   Assert-True 'declarationKey is stable' ([string]$job.declarationKey -eq 'warframe-assistant:reward-zh-ai:default')
   Assert-True 'name is set' ([string]$job.name -eq 'Warframe奖励译名AI查证')
   Assert-True 'description is set' ([string]$job.description -like '*reward-zh-inbox*')
+  Assert-True 'description mentions calendar upgrade inbox' ([string]$job.description -like '*calendar-upgrade-inbox*')
   Assert-True 'enabled by default' ([bool]$job.enabled -eq $true)
   Assert-True 'schedule kind is every' ([string]$job.schedule.kind -eq 'every')
   Assert-True 'schedule is daily (86400000ms)' ([int64]$job.schedule.everyMs -eq 86400000)
@@ -56,6 +57,20 @@ if ($null -ne $job) {
   Assert-Contains 'message: evidence sources only Market/huijiwiki' $message '灰机wiki'
   Assert-Contains 'message: learn ok:false contract (conflict/seed)' $message 'ok:false'
   Assert-Contains 'message: write failure keeps inbox for retry' $message '写入失败'
+  # --- 1999 日历增益查证闭环（2026-08-27 扩展）---
+  Assert-Contains 'message: calendar fallback script' $message 'calendar-upgrade-fallback.mjs'
+  Assert-Contains 'message: calendar reads its own inbox first' $message 'calendar-upgrade-fallback.mjs inbox'
+  Assert-Contains 'message: calendar learn writes name+effect+source' $message '--desc'
+  Assert-Contains 'message: calendar learn uses full path key verbatim' $message '--path'
+  Assert-Contains 'message: calendar learn name must be pure Chinese' $message 'name 必须纯中文'
+  Assert-Contains 'message: calendar evidence source is Huiji 1999 page' $message '灰机wiki「1999日历」'
+  Assert-Contains 'message: calendar no-evidence dismiss keeps placeholder' $message 'dismiss --path'
+  Assert-Contains 'message: calendar covered result conflicts dismissed' $message 'covered'
+  Assert-Contains 'message: calendar name-only result stays pending' $message 'effect-missing'
+  Assert-Contains 'message: calendar name-only result must not dismiss' $message '效果暂缺时不得 learn 或 dismiss'
+  Assert-Contains 'message: calendar write failure keeps inbox' $message '写入失败'
+  Assert-Contains 'message: calendar unknown paths are searched against Huiji wiki' $message 'PunchToPrimary=打孔纸带'
+  Assert-Contains 'message: calendar example uses both name and effect' $message 'CompanionsBuffNearbyPlayer=人多势众'
   Assert-True 'delivery is best-effort announce to owner placeholder' (
     [string]$job.delivery.mode -eq 'announce' -and
     [string]$job.delivery.channel -eq 'qqbot' -and

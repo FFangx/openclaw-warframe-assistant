@@ -20,7 +20,7 @@
 - 1999 挑战：`ExportChallenges.json` 提供语言键与 `requiredCount`，中文标题/说明从 Public Export 词典读取并替换 `|COUNT|`
 - 午夜电波挑战：主源有标题时使用 `ExportChallenges.json × dict.en/dict.zh`；DE 官方备用世界状态只有 `/Seasons/Weekly|WeeklyHard/<key>` 路径尾段时，直接按同路径从 AlecaFrame `lang.json` 读取官方简中名称。该路径级兜底覆盖刚换季、Public Export 挑战清单尚未收录的新 key
 - 午夜电波挑战的 `requiredCount` 没有 DE 官方来源：官方 worldState 的 `SeasonInfo.ActiveChallenges` 只含路径、Daily/Elite 标志与激活/过期时间。唯一可审计的计数来源是 `ExportChallenges.json`（browse.wf 的 warframe-public-export-plus 导出），周报自动核销依赖它，刷新 TTL 24 小时；key 尚未收录或刷新失败时显示未知、不猜数量、不自动核销（2026-08-17 实测：RadioLegionIntermission16 当前 10 条活跃挑战 10/10 已收录）
-- 1999 奖励：优先使用官方 `KnownCalendarSeasons.Days[].events[].reward` StoreItem 路径反查中文（lang.json 路径 → 目录父子关系 → Public Export 语言键尾段 → 日历状态中文表），不依赖解析器英文显示名；静态表只兜底个别别名（如 `ResourceDropChance3DayStoreItem`＝3 天资源掉落几率加成）
+- 1999 奖励：优先使用官方 `KnownCalendarSeasons.Days[].events[].reward` StoreItem 路径反查中文（lang.json 路径 → 目录父子关系 → Public Export 语言键尾段 → 日历状态中文表），不依赖解析器英文显示名；静态表只兜底个别别名（如 `ResourceDropChance3DayStoreItem`＝3 天资源掉落几率加成、`ModDropChanceBooster3DayStoreItem`＝3 天 Mod 掉落几率加成〔灰机wiki「Mod Drop Chance Booster」页〕）
 - 平台路径：`pc / ps4 / xb1 / swi`；mobile 世界状态不支持
 - PC 实测顶层字段包括 `timestamp`、`fissures`、`alerts`、`invasions`、`voidTraders`、开放世界周期、`nightwave`、`arbitration`、`steelPath`、`archonHunt` 与 `duviriCycle`
 - 静态资料：`GET /warframes|weapons|items/search/{query}`；实测 `gauss` 和 `ignis` 成功
@@ -30,7 +30,7 @@
 - PC worldstate 主源 403 首次即打开 15 分钟端点熔断；网络/超时连续失败使用 30 秒起的指数退避（最高 5 分钟）。退避状态写入本地 `endpoint-health.v1.json`，跨短命令进程生效；官方源规范化后须通过裂缝、警报、入侵、活动、商人、赏金、科研、突击/执刑官、电波、回廊和 1999 日历字段合同
 - 科研词缀优先使用 Oracle 世界状态专用中英词典（显示名 + 路径尾段双索引）；在线刷新失败时退陈旧词典缓存，再退 `weekly-static.json`，无需逐周手工补表
 - 1999 日历按官方路径逐事件对齐奖励/增益，挑战行同时显示官方标题、具体要求量和可用的个人进度
-- 1999 日历增益：DE 官方语言键与公开导出均不含增益名（实测 2026-08-18：`/Lotus/Upgrades/Calendar/*` 在 dict.en/dict.zh、lang.json、ExportUpgrades 全部查无）。周报改用社区维护状态中文表自动吸收——`KingPrimes/DataSource`（MIT）`warframe/state_translation.json`（按 uniqueName 索引的中文名+说明）＋ 内置 warframe-info-api（MIT）补充表（`MeleeAttackSpeed`＝绝不留情等），上游覆盖同键补充表，缓存 7 天，失败退陈旧缓存；`weekly-static.json` 的 `calendarUpgradeZhByPath` 既有手订译名仍优先。个别上游未收录的新增益（如 EnergyWavesOnCombo）保持诚实占位，上游补录后随缓存刷新自动生效，不再要求每周手工改表
+- 1999 日历增益：DE 官方语言键与公开导出均不含增益名（实测 2026-08-18：`/Lotus/Upgrades/Calendar/*` 在 dict.en/dict.zh、lang.json、ExportUpgrades 全部查无）。解析优先级（weekly.mjs `calendarUpgradeEntry`，返回 {name, desc, source} 而非只取名字）：① `weekly-static.json` 路径表 = 灰机wiki「1999日历」页六人组覆写表（用户核验中文源，2026-08-24 全表核对：硬化装甲/特浓咖啡/吸引力/强制输血/打孔纸带/人多势众/重型标枪/有福同享 等，中文名与效果成对收录）→ ② 社区维护状态中文表（`KingPrimes/DataSource`（MIT）`warframe/state_translation.json`（按 uniqueName 索引的中文名+说明）＋ 内置 warframe-info-api（MIT）补充表），缓存 7 天，失败退陈旧缓存 → ③ AI 查证学习词典（`.cache/warframe-data/calendar-upgrade-zh.json`，`calendar-upgrade-fallback.mjs` 管理，只补缺口）→ ④ 静态题名表（无路径时的兜底）→ 诚实占位「新增日历增益（上游尚未提供中文说明）」。全链查无的未知路径自动进入 `.cache/warframe-data/calendar-upgrade-inbox.json`，由每日 AI 定时任务用灰机wiki「1999日历」页查证后 `learn --path --name --desc --source` 回填（冲突安全：词典/静态/社区已覆盖返回 ok:false 应 dismiss，写入失败保留待重试）；查无实据的 `dismiss`。周报卡增益行同时显示中文名与效果说明（换行不截断，行高按估算保守留白）
 
 ## Warframe.Market v2
 
