@@ -93,6 +93,8 @@ function retryAfterMs(response) {
   return Number.isFinite(date) ? Math.max(0, date - Date.now()) : null;
 }
 
+const headerOf = (response, name) => response?.headers?.get?.(name) ?? null;
+
 function categoryFor(error) {
   if (error?.name === 'AbortError' || error?.name === 'TimeoutError' || error?.code === 'ABORT_ERR') return 'timeout';
   if (error instanceof SyntaxError) return 'bad_response';
@@ -123,6 +125,10 @@ export async function resilientJsonRequest(url, options = {}) {
     healthStore = new FileEndpointHealthStore(),
     now = () => Date.now(),
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    // 可选响应元数据模式：默认返回纯 JSON（与既有调用方完全兼容）；开启时成功返回
+    // { data, responseMeta: { lastModified, etag, cacheControl } }，供需要上游内容时间
+    // （如 HTTP Last-Modified 年龄门禁）的调用方使用，不影响其他调用方的返回形状。
+    withResponseMeta = false,
   } = options;
   if (!endpoint) throw new Error('resilientJsonRequest requires endpoint');
 
@@ -193,7 +199,16 @@ export async function resilientJsonRequest(url, options = {}) {
             circuitOpenCount: Number(previous.circuitOpenCount || 0),
           };
           await writeEndpoint(healthStore, endpoint, healthy, states);
-          return data;
+          return withResponseMeta
+            ? {
+                data,
+                responseMeta: {
+                  lastModified: headerOf(response, 'last-modified'),
+                  etag: headerOf(response, 'etag'),
+                  cacheControl: headerOf(response, 'cache-control'),
+                },
+              }
+            : data;
         } catch (error) {
           last = { category: 'bad_response', status: response.status, retryAfter: null, cause: error };
         }

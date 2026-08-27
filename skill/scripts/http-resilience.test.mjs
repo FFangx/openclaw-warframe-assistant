@@ -5,6 +5,42 @@ import { MemoryEndpointHealthStore, resilientJsonRequest } from './http-resilien
 
 const response = (status, body = {}, headers = {}) => new Response(JSON.stringify(body), { status, headers });
 
+test('default return shape stays plain JSON and opt-in response metadata is opt-in only', async () => {
+  const store = new MemoryEndpointHealthStore();
+  const headers = {
+    'last-modified': 'Wed, 27 Aug 2026 07:28:00 GMT',
+    etag: '"oracle-etag-1"',
+    'cache-control': 'public,max-age=10',
+  };
+  // 默认（不开 withResponseMeta）：返回值与既有调用方完全一致——纯 JSON，无包装。
+  const plain = await resilientJsonRequest('https://example.invalid/worldstate', {
+    endpoint: 'worldstate:oracle:pc', healthStore: store,
+    fetchImpl: async () => response(200, { ActiveMissions: [], VoidStorms: [] }, headers),
+  });
+  assert.deepEqual(plain, { ActiveMissions: [], VoidStorms: [] });
+  assert.equal(plain.data, undefined);
+  // 开启 withResponseMeta：成功时返回 { data, responseMeta: { lastModified, etag, cacheControl } }。
+  const wrapped = await resilientJsonRequest('https://example.invalid/worldstate', {
+    endpoint: 'worldstate:oracle:pc', healthStore: store, withResponseMeta: true,
+    fetchImpl: async () => response(200, { ActiveMissions: [], VoidStorms: [] }, headers),
+  });
+  assert.deepEqual(wrapped, {
+    data: { ActiveMissions: [], VoidStorms: [] },
+    responseMeta: {
+      lastModified: 'Wed, 27 Aug 2026 07:28:00 GMT',
+      etag: '"oracle-etag-1"',
+      cacheControl: 'public,max-age=10',
+    },
+  });
+  // 响应头缺失时 responseMeta 字段为 null（不伪造上游内容时间），健康记录照常成功写入。
+  const noHeaders = await resilientJsonRequest('https://example.invalid/worldstate', {
+    endpoint: 'worldstate:oracle:pc', healthStore: store, withResponseMeta: true,
+    fetchImpl: async () => response(200, { ok: true }),
+  });
+  assert.deepEqual(noHeaders.responseMeta, { lastModified: null, etag: null, cacheControl: null });
+  assert.equal((await store.read())['worldstate:oracle:pc'].consecutiveFailures, 0);
+});
+
 test('network errors retry within the attempt budget and recover', async () => {
   let calls = 0;
   const delays = [];

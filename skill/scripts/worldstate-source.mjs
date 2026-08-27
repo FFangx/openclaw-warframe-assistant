@@ -1,5 +1,7 @@
 // Resilient PC world-state loader.
-// PC order: official DE worldState.php -> browse.wf Oracle full mirror -> WarframeStat fallback -> last cached normalized snapshot.
+// PC order: official DE worldState.php (full, authoritative) -> WarframeStat full fallback with a
+// browse.wf Oracle fissure-level overlay (the Oracle endpoint is a PARTIAL mirror: it only carries
+// a trimmed key set and cannot stand alone as a complete state) -> last cached normalized snapshot.
 // Other platforms keep the WarframeStat normalized API path.
 // The official/Oracle sources are mapped to the subset consumed by public queries and subscriptions.
 
@@ -10,14 +12,22 @@ import { resilientJsonRequest } from './http-resilience.mjs';
 
 const PRIMARY_BASE = 'https://api.warframestat.us';
 const OFFICIAL_URL = 'https://api.warframe.com/cdn/worldState.php';
-// Browse.wf 实时客户端的公开 Oracle 全量镜像：与官方 worldState.php 同样的 raw 结构。
+// Browse.wf 实时客户端的公开 Oracle 世界状态端点，实为「部分镜像」：只保留官方 worldState
+// 的裁剪键（实测 Events/Goals/Alerts/Sorties/LiteSorties/ActiveMissions/VoidTraders/VoidStorms/
+// DailyDeals/Conquests/Tmp），没有 Invasions/SyndicateMissions/SeasonInfo/EndlessXpSchedule/
+// KnownCalendarSeasons 等，不能当作全量镜像接管，只能作为裂缝/虚空风暴的字段级来源。
+// 实况（2026-08-27 复核）HTTP 响应**没有顶层 Time 字段**：只有 Date/Last-Modified/ETag/
+// Cache-Control: public,max-age=10，其中 Date 是服务器请求/响应时间而非上游内容时间，
+// 上游内容时间以 HTTP Last-Modified 为准。
 const ORACLE_URL = 'https://oracle.browse.wf/worldState.min.json';
 const TIMEOUT_MS = 20_000;
-// Oracle 使用短超时/熔断的独立端点健康键，作为官方故障后的快速接管层。
+// Oracle 使用短超时/熔断的独立端点健康键，作为官方故障后的快速裂缝层探测。
 const ORACLE_TIMEOUT_MS = 6_000;
 const CACHE_TTL_MS = 45_000;
-// Oracle 是官方镜像候选：上游 Time 超过该年龄说明镜像内容滞后，禁止接管；
-// 直接命中 DE 官方源不受此门禁（官方即权威，只用原始/规范化双层完整性合同判定）。
+// Oracle 仅作为裂缝来源：上游内容时间 = HTTP Last-Modified 响应头，超过该年龄说明镜像内容
+// 滞后，禁止叠加；Last-Modified 缺失/不可解析同样拒绝（不得用响应 Date 或本机 fetchedAt
+// 冒充上游内容时间）。直接命中 DE 官方源不受此门禁（官方即权威，只用原始/规范化双层完整性
+// 合同判定）。
 const ORACLE_MAX_UPSTREAM_AGE_MS = 15 * 60_000;
 // 裂缝事件 ID 连续性只在最近可靠快照足够新（生命周期内）时才执行零交集强制拒绝，
 // 避免跨波次正常轮换触发误判。
@@ -71,6 +81,7 @@ async function fetchJson(url, resilience = null) {
       failureThreshold: resilience.failureThreshold ?? 2,
       forbiddenOpenMs: resilience.forbiddenOpenMs ?? 15 * 60_000,
       headers: { 'User-Agent': 'Mozilla/5.0' },
+      withResponseMeta: resilience.withResponseMeta === true,
     });
   }
   const response = await fetch(url, {
@@ -292,6 +303,43 @@ export function assertOfficialRawWorldStateContract(raw) {
   return raw;
 }
 
+// Oracle 是部分镜像，不能套用官方全量原始合同（它永远缺少 Invasions/SyndicateMissions 等，
+// 用旧合同只会恒拒收）。Oracle 专属合同只要求裂缝相关集合同源字段合法；实况端点无顶层
+// Time 字段，上游内容时间由 HTTP Last-Modified 承担（见 assertFreshUpstream），
+// 因此合同**不要求** Time。
+const ORACLE_REQUIRED_RAW_FIELDS = Object.freeze(['ActiveMissions', 'VoidStorms']);
+
+export function assertOracleRawWorldStateContract(raw) {
+  for (const field of ORACLE_REQUIRED_RAW_FIELDS) {
+    if (!Array.isArray(raw?.[field])) throw new Error(`oracle raw world state contract: ${field} must be an array`);
+  }
+  return raw;
+}
+
+// Oracle 规范化只产出裂缝/虚空风暴（字段级来源），绝不冒充官方全量规范化状态。
+// timestamp 是上游内容修改时间：生产路径必须传入已通过 HTTP Last-Modified 年龄门禁的
+// upstreamTime（毫秒）；raw.Time / now 兜底仅供直接单元调用，不作为生产取值。
+export function normalizeOracleWorldState(raw, { nodes = {}, now = Date.now(), upstreamTime = null } = {}) {
+  const upstreamMs = Number(upstreamTime);
+  return {
+    timestamp: Number.isFinite(upstreamMs) && upstreamMs > 0
+      ? new Date(upstreamMs).toISOString()
+      : (isoOf(raw?.Time) || new Date(now).toISOString()),
+    fissures: [
+      ...(raw?.ActiveMissions || []).map((entry) => normalizeFissure(entry, nodes, false, now)),
+      ...(raw?.VoidStorms || []).map((entry) => normalizeFissure(entry, nodes, true, now)),
+    ],
+  };
+}
+
+export function assertOracleFissureContract(state) {
+  if (!Array.isArray(state?.fissures)) throw new Error('oracle fissure contract: fissures must be an array');
+  if (!state?.timestamp || !Number.isFinite(Date.parse(state.timestamp))) {
+    throw new Error('oracle fissure contract: timestamp missing or invalid');
+  }
+  return state;
+}
+
 const RAW_ARRAY_FIELDS = ['ActiveMissions', 'VoidStorms', 'Alerts', 'Invasions', 'Goals', 'VoidTraders', 'SyndicateMissions', 'Conquests'];
 const hashOf = (value) => {
   try { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); } catch { return null; }
@@ -299,14 +347,17 @@ const hashOf = (value) => {
 
 // 来源质量信封：按来源记录 provider/fetchedAt/上游时间/延迟/完整性与内容哈希，
 // 供 doctor 与巡检审计每个字段来自哪个提供者、多新鲜、是否完整。
-function sourceEnvelope(raw, provider, { latencyMs = null, fetchedAt = null } = {}) {
-  const missing = RAW_ARRAY_FIELDS.filter((field) => !Array.isArray(raw?.[field]));
+// required 按来源自有合同传入：官方 = 8 个关键集合；Oracle = 仅 ActiveMissions/VoidStorms。
+// upstreamTime 是上游内容修改时间：官方取顶层 Time，Oracle 取已验证的 HTTP Last-Modified；
+// fetchedAt 是本机抓取/缓存时间，两者语义不同，不得混用。
+function sourceEnvelope(raw, provider, { latencyMs = null, fetchedAt = null, required = RAW_ARRAY_FIELDS, upstreamTime = null } = {}) {
+  const missing = required.filter((field) => !Array.isArray(raw?.[field]));
   return {
     provider,
     fetchedAt: fetchedAt || new Date().toISOString(),
-    upstreamTime: isoOf(raw?.Time) || null,
+    upstreamTime: upstreamTime || isoOf(raw?.Time) || null,
     latencyMs: Number.isFinite(latencyMs) ? Math.round(latencyMs) : null,
-    completeness: { required: RAW_ARRAY_FIELDS.length, present: RAW_ARRAY_FIELDS.length - missing.length, missing },
+    completeness: { required: [...required], present: required.length - missing.length, missing },
     contentHash: hashOf(raw),
   };
 }
@@ -320,19 +371,27 @@ function fieldProvidersOf(state, provider) {
   return fieldProviders;
 }
 
-// 候选镜像（Oracle）必须有相对本机的合理新鲜上游时间；官方主源不设此门禁。
-function assertFreshUpstream(raw, label = 'oracle', now = Date.now()) {
-  const upstreamMs = msOf(raw?.Time);
-  if (!Number.isFinite(upstreamMs) || now - upstreamMs > ORACLE_MAX_UPSTREAM_AGE_MS) {
+// 裂缝层候选（Oracle 部分镜像）必须有相对本机的合理新鲜上游内容时间。上游内容时间只能取
+// HTTP Last-Modified：实况端点无顶层 Time 字段，响应 Date 是服务器请求/响应时间而非内容
+// 时间，本机 fetchedAt 是抓取/缓存时间，都不能冒充上游内容时间；缺失/不可解析/超过
+// 15 分钟一律拒绝叠加。官方主源不设此门禁（官方即权威，仅由完整性合同判定）。返回毫秒。
+function assertFreshUpstream(meta, label = 'oracle', now = Date.now()) {
+  const raw = meta?.lastModified;
+  const upstreamMs = raw ? Date.parse(raw) : Number.NaN;
+  if (!Number.isFinite(upstreamMs)) {
+    throw new Error(`${label} upstream Last-Modified missing or invalid`);
+  }
+  if (now - upstreamMs > ORACLE_MAX_UPSTREAM_AGE_MS) {
     throw new Error(`${label} upstream state is too old`);
   }
+  return upstreamMs;
 }
 
 const fissureEventIds = (state) => new Set((state?.fissures || []).map((entry) => entry?.id).filter(Boolean));
 
-// 裂缝事件 ID 集合连续性：候选镜像与最近可靠规范化快照同属一个生命周期窗口时
-// （缓存内记录 <10 分钟）必须存在交集；零交集说明镜像内容与已知现实不一致，
-// 拒绝接管且不覆盖可靠缓存。
+// 裂缝事件 ID 集合连续性：候选裂缝层与最近可靠规范化快照（只含官方结果）同属一个生命周期
+// 窗口时（缓存内记录 <10 分钟）必须存在交集；零交集说明来源内容与已知现实不一致，
+// 拒绝叠加且不覆盖可靠缓存。
 async function assertFissureContinuity(state, cacheName, readCached, now = Date.now()) {
   const snapshot = await readCached(cacheName, 2);
   const cachedIds = snapshot ? fissureEventIds(snapshot.data) : new Set();
@@ -364,97 +423,194 @@ export async function loadWorldState(platform = 'pc', options = {}) {
     timeoutMs: ORACLE_TIMEOUT_MS,
     maxAttempts: 2,
     failureThreshold: 2,
+    // 需读取上游内容时间（HTTP Last-Modified）：开启响应元数据模式，返回
+    // { data, responseMeta }，仅影响 Oracle 调用方。
+    withResponseMeta: true,
   });
-  // 节点/语言表：官方与 Oracle 镜像共用；本地缓存为主，失败不阻塞切换判定。
+  // 节点/语言表：官方与 Oracle 裂缝层共用；本地缓存为主，失败不阻塞切换判定。
   const facts = () => Promise.all([
     dependencies.getBountyZhMaps(),
     dependencies.getLangTable().catch(() => ({})),
   ]);
-  const result = await dependencies.staleCachedJson(cacheName, { ttlMs: CACHE_TTL_MS, version: 2 }, async () => {
-    if (normalizedPlatform !== 'pc') {
-      const primary = await fetchWarframeStat();
-      return { ...primary, _dataSource: 'api.warframestat.us', _officialFallback: false };
-    }
 
-    try {
-      let officialMeta = { latencyMs: null };
-      const [officialResult, [maps, lang]] = await Promise.all([
-        dependencies.staleCachedJson('official-worldstate', { ttlMs: 60_000, version: 2 }, () => {
-          const started = Date.now();
-          return dependencies.fetchJson(OFFICIAL_URL).then((data) => { officialMeta.latencyMs = Date.now() - started; return data; });
-        }),
-        facts(),
-      ]);
-      if (officialResult.stale) throw new Error('official world state source is stale');
-      const official = officialResult.data;
-      assertOfficialRawWorldStateContract(official);
-      const state = assertOfficialWorldStateContract(await normalizeOfficialWorldState(official, { nodes: maps?.nodes || {}, lang }));
-      state._officialFallback = false;
-      state._sourceLabel = 'DE official worldState';
-      state._envelope = sourceEnvelope(official, 'api.warframe.com', { latencyMs: officialMeta.latencyMs, fetchedAt: officialMeta.latencyMs === null ? officialResult.cachedAt : null });
-      state._fieldProviders = fieldProvidersOf(state, 'api.warframe.com');
-
-      // This request only updates the shared resilience/health record. It is deliberately
-      // not awaited, so a slow or broken community convenience API cannot delay fresh
-      // official PC data. Consumers always receive the already-validated official facts.
-      if (!forceOfficial && options.crossCheck !== false) {
-        void Promise.resolve(fetchWarframeStat()).catch(() => null);
-        state._communityCrossCheck = 'scheduled';
+  // 外层可靠缓存只保存「官方全量规范化结果」——它是唯一能独立支撑全部字段的状态形状。
+  // Oracle 只是裂缝字段级来源，不能单独构成完整状态；社区叠加（warframestat + Oracle 裂缝）
+  // 属于在线组合快照，一律不经外层缓存写盘，避免把部分数据当作全量新鲜状态落进可靠缓存。
+  let officialFailure = null;
+  let outerResult = null;
+  try {
+    outerResult = await dependencies.staleCachedJson(cacheName, { ttlMs: CACHE_TTL_MS, version: 2 }, async () => {
+      if (normalizedPlatform !== 'pc') {
+        const primary = await fetchWarframeStat();
+        return { ...primary, _dataSource: 'api.warframestat.us', _officialFallback: false };
       }
-      return state;
-    } catch (officialError) {
-      if (forceOfficial) throw officialError;
-      // 第二全量源：browse.wf Oracle 全量镜像（同一 raw worldState 结构）。镜像必须通过
-      // 同官方一致的原始/规范化双层完整性合同；陈旧内层缓存、HTTP 200 但结构残缺、
-      // 或规范化结果不完整，一律不得接管，也不得写入可靠规范化缓存。
-      let oracleError = null;
       try {
-        let oracleMeta = { latencyMs: null };
-        const [oracleResult, [maps, lang]] = await Promise.all([
-          dependencies.staleCachedJson('oracle-worldstate', { ttlMs: 60_000, version: 2 }, () => {
+        let officialMeta = { latencyMs: null };
+        const [officialResult, [maps, lang]] = await Promise.all([
+          dependencies.staleCachedJson('official-worldstate', { ttlMs: 60_000, version: 2 }, () => {
             const started = Date.now();
-            return fetchOracle().then((data) => { oracleMeta.latencyMs = Date.now() - started; return data; });
+            return dependencies.fetchJson(OFFICIAL_URL).then((data) => { officialMeta.latencyMs = Date.now() - started; return data; });
           }),
           facts(),
         ]);
-        if (oracleResult.stale) throw new Error('oracle world state source is stale');
-        const oracle = oracleResult.data;
-        assertOfficialRawWorldStateContract(oracle);
-        assertFreshUpstream(oracle, 'oracle');
-        const state = assertOfficialWorldStateContract(await normalizeOfficialWorldState(oracle, { nodes: maps?.nodes || {}, lang }));
-        await assertFissureContinuity(state, cacheName, dependencies.readCachedData);
-        state._dataSource = 'oracle.browse.wf';
-        state._officialFallback = true;
-        state._sourceLabel = 'browse.wf Oracle（DE 官方源暂不可用，已自动切换）';
-        state._officialError = String(officialError?.message || officialError);
-        state._officialHealth = officialError?.diagnostic || null;
-        state._envelope = sourceEnvelope(oracle, 'oracle.browse.wf', { latencyMs: oracleMeta.latencyMs, fetchedAt: oracleMeta.latencyMs === null ? oracleResult.cachedAt : null });
-        state._fieldProviders = fieldProvidersOf(state, 'oracle.browse.wf');
+        if (officialResult.stale) throw new Error('official world state source is stale');
+        const official = officialResult.data;
+        assertOfficialRawWorldStateContract(official);
+        const state = assertOfficialWorldStateContract(await normalizeOfficialWorldState(official, { nodes: maps?.nodes || {}, lang }));
+        state._officialFallback = false;
+        state._sourceLabel = 'DE official worldState';
+        state._envelope = sourceEnvelope(official, 'api.warframe.com', { latencyMs: officialMeta.latencyMs, fetchedAt: officialMeta.latencyMs === null ? officialResult.cachedAt : null });
+        state._fieldProviders = fieldProvidersOf(state, 'api.warframe.com');
+
+        // This request only updates the shared resilience/health record. It is deliberately
+        // not awaited, so a slow or broken community convenience API cannot delay fresh
+        // official PC data. Consumers always receive the already-validated official facts.
+        if (!forceOfficial && options.crossCheck !== false) {
+          void Promise.resolve(fetchWarframeStat()).catch(() => null);
+          state._communityCrossCheck = 'scheduled';
+        }
         return state;
-      } catch (oracleError_) {
-        oracleError = oracleError_;
-      }
-      try {
-        const started = Date.now();
-        const fallback = await fetchWarframeStat();
-        return {
-          ...fallback,
-          _dataSource: 'api.warframestat.us',
-          _officialFallback: true,
-          _officialError: `${String(officialError?.message || officialError)}; oracle=${String(oracleError?.message || oracleError)}`,
-          _officialHealth: officialError?.diagnostic || null,
-          _oracleError: String(oracleError?.message || oracleError),
-          _oracleHealth: oracleError?.diagnostic || null,
-          _sourceLabel: 'WarframeStat（DE 官方源与 Oracle 镜像暂不可用，已自动切换）',
-          _envelope: { provider: 'api.warframestat.us', fetchedAt: new Date().toISOString(), upstreamTime: null, latencyMs: Date.now() - started, completeness: null, contentHash: hashOf(fallback) },
-          _fieldProviders: fieldProvidersOf(fallback, 'api.warframestat.us'),
-        };
-      } catch (communityError) {
-        const error = new Error(`world state sources unavailable: official=${String(officialError?.message || officialError)}; oracle=${String(oracleError?.message || oracleError)}; warframestat=${String(communityError?.message || communityError)}`);
-        error.cause = communityError;
+      } catch (error) {
+        officialFailure = error;
         throw error;
       }
+    });
+  } catch (error) {
+    // staleCachedJson 只在「没有同版本缓存」时把 loader 错误原样抛出：官方失败且无缓存时
+    // 继续进入社区叠加；非 PC 主源失败（officialFailure 为空）则直接上抛，沿用原语义。
+    if (!officialFailure) throw error;
+  }
+
+  if (officialFailure === null) {
+    return { ...outerResult.data, _dataStale: outerResult.stale, _cachedAt: outerResult.cachedAt };
+  }
+  if (forceOfficial) {
+    if (outerResult) return { ...outerResult.data, _dataStale: true, _cachedAt: outerResult.cachedAt };
+    throw officialFailure;
+  }
+
+  // 第二层：社区叠加。warframestat 提供全量（社区口径）状态；Oracle 部分镜像必须通过
+  // 自身字段合同、上游年龄门禁（HTTP Last-Modified 缺失/无效/超过 15 分钟拒绝）与
+  // 裂缝事件 ID 连续性核对后才叠加 fissures。
+  let composite = null;
+  let communityError = null;
+  try {
+    composite = await communityComposite(officialFailure, { cacheName, dependencies, fetchWarframeStat, fetchOracle, facts });
+  } catch (error) {
+    communityError = error;
+  }
+  if (composite) return { ...composite, _dataStale: false, _cachedAt: null };
+
+  // 全在线源失败：绝不单独返回 Oracle 裂缝（它只是部分镜像，不是完整状态）——
+  // 维持既有「可靠缓存 + stale/cachedAt 全局真实」回退；无缓存时抛组合错误。
+  if (outerResult) {
+    return {
+      ...outerResult.data,
+      _dataStale: true,
+      _cachedAt: outerResult.cachedAt,
+      _officialError: String(officialFailure?.message || officialFailure),
+      _communityError: String(communityError?.message || communityError),
+      _onlineSourcesFailed: true,
+    };
+  }
+  throw communityError || officialFailure;
+}
+
+// 官方失败后的社区叠加：warframestat 提供完整（社区口径）状态，Oracle 只在其通过
+// 自身字段合同/上游年龄/裂缝事件 ID 连续性门禁后叠加 fissures。返回的叠加对象
+// 由调用方直接返回（不写可靠缓存），并附按字段 provider 与两份来源信封供审计。
+async function communityComposite(officialError, { cacheName, dependencies, fetchWarframeStat, fetchOracle, facts }) {
+  let oracleError = null;
+  let oracleLayer = null;
+  try {
+    let oracleMeta = { latencyMs: null };
+    const [oracleResult, [maps]] = await Promise.all([
+      // Oracle 内层缓存存「原始载荷 + 已验证的上游元数据」包（版本 3：部署中的 v2 纯载荷
+      // 缓存绝不可误读为带元数据的包）。Last-Modified 保留抓取时的原值：缓存命中只复用
+      // 原元数据，不得把上限年龄刷新成缓存读取时间——年龄门禁永远按原始 Last-Modified 计算。
+      dependencies.staleCachedJson('oracle-worldstate', { ttlMs: 60_000, version: 3 }, () => {
+        const started = Date.now();
+        return fetchOracle().then(({ data, responseMeta }) => {
+          oracleMeta.latencyMs = Date.now() - started;
+          const bundle = {
+            raw: data,
+            meta: {
+              lastModified: responseMeta?.lastModified ?? null,
+              etag: responseMeta?.etag ?? null,
+              cacheControl: responseMeta?.cacheControl ?? null,
+            },
+          };
+          // 缓存写入前先完成结构与内容时间校验：无效的 HTTP 200 响应不得覆盖一份
+          // 已有的健康 v3 bundle。缓存命中后仍会在下方重新校验年龄，防止陈旧内容复活。
+          assertOracleRawWorldStateContract(bundle.raw);
+          assertFreshUpstream(bundle.meta, 'oracle');
+          return bundle;
+        });
+      }),
+      facts(),
+    ]);
+    if (oracleResult.stale) throw new Error('oracle world state source is stale');
+    const oracleBundle = oracleResult.data;
+    if (!oracleBundle || !('raw' in oracleBundle) || !('meta' in oracleBundle)) {
+      throw new Error('oracle world state cache metadata missing');
     }
-  });
-  return { ...result.data, _dataStale: result.stale, _cachedAt: result.cachedAt };
+    const oracle = oracleBundle.raw;
+    assertOracleRawWorldStateContract(oracle);
+    const upstreamMs = assertFreshUpstream(oracleBundle.meta, 'oracle');
+    const fissureState = assertOracleFissureContract(await normalizeOracleWorldState(oracle, { nodes: maps?.nodes || {}, upstreamTime: upstreamMs }));
+    await assertFissureContinuity(fissureState, cacheName, dependencies.readCachedData);
+    const envelope = sourceEnvelope(oracle, 'oracle.browse.wf', {
+      latencyMs: oracleMeta.latencyMs,
+      fetchedAt: oracleMeta.latencyMs === null ? oracleResult.cachedAt : null,
+      required: ORACLE_REQUIRED_RAW_FIELDS,
+      upstreamTime: new Date(upstreamMs).toISOString(),
+    });
+    oracleLayer = {
+      state: fissureState,
+      envelope: {
+        ...envelope,
+        // 部分镜像明示：只声明 ActiveMissions/VoidStorms（无 Time——实况端点无顶层 Time，
+        // 上游时间由 Last-Modified 承担）与 fissures 归一化字段，
+        // 其余官方字段不在该源范围（无 Invasions/SyndicateMissions 等）。
+        partial: true,
+        scope: [...ORACLE_REQUIRED_RAW_FIELDS],
+        normalizedFields: ['fissures'],
+      },
+    };
+  } catch (error) {
+    oracleError = error;
+  }
+  try {
+    const started = Date.now();
+    const fallback = await fetchWarframeStat();
+    const state = { ...fallback };
+    if (oracleLayer) state.fissures = oracleLayer.state.fissures;
+    state._dataSource = 'api.warframestat.us';
+    state._officialFallback = true;
+    state._officialError = String(officialError?.message || officialError);
+    state._officialHealth = officialError?.diagnostic || null;
+    state._sourceLabel = oracleLayer
+      ? 'WarframeStat 全量（DE 官方源暂不可用，已自动切换；裂缝由 browse.wf Oracle 补齐）'
+      : 'WarframeStat（DE 官方源与 Oracle 裂缝层暂不可用，已自动切换）';
+    state._envelope = { provider: 'api.warframestat.us', fetchedAt: new Date().toISOString(), upstreamTime: null, latencyMs: Date.now() - started, completeness: null, contentHash: hashOf(fallback) };
+    state._fieldProviders = fieldProvidersOf(fallback, 'api.warframestat.us');
+    if (oracleLayer) {
+      state._fieldProviders.fissures = 'oracle.browse.wf';
+      state._oracleEnvelope = oracleLayer.envelope;
+      // 按字段来源明示叠加结构：基底为 warframestat，只有 fissures 来自 Oracle 部分镜像；
+      // 该组合未写入可靠缓存，不得被当作单一全量来源。
+      state._composite = { base: 'api.warframestat.us', overlay: 'oracle.browse.wf', overlayFields: ['fissures'], cached: false };
+    } else {
+      state._oracleError = String(oracleError?.message || oracleError);
+      state._oracleHealth = oracleError?.diagnostic || null;
+    }
+    return state;
+  } catch (communityError) {
+    const oracleNote = oracleError
+      ? String(oracleError?.message || oracleError)
+      : 'fissures-only available but insufficient alone (partial mirror is not a complete state)';
+    const error = new Error(`world state sources unavailable: official=${String(officialError?.message || officialError)}; oracle=${oracleNote}; warframestat=${String(communityError?.message || communityError)}`);
+    error.cause = communityError;
+    throw error;
+  }
 }

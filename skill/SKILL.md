@@ -5,7 +5,7 @@ description: "Warframe/星际战甲国际服专用助手：QQ短命令、遗物�
 
 # Warframe Assistant（星际战甲助手）
 
-Warframe 国际服游戏助手。数据源：DE 官方 `worldState.php`（PC 世界状态首选）、browse.wf Oracle 全量镜像 `oracle.browse.wf/worldState.min.json`（PC 官方故障接管）、`api.warframestat.us`（非 PC 世界状态及 PC 交叉验证/最终备用）、`api.warframe.market` v2（市价，`Language: zh-hans`）、browse.wf（官方导出/词典）、AlecaFrame 本机快照（个人数据，只读）。查询只读；监测只写本地去重状态，不操作游戏或市场。
+Warframe 国际服游戏助手。数据源：DE 官方 `worldState.php`（PC 世界状态首选）、browse.wf Oracle 世界状态镜像 `oracle.browse.wf/worldState.min.json`（**部分镜像**：实测只含 Events/Goals/Alerts/Sorties/LiteSorties/ActiveMissions/VoidTraders/VoidStorms/DailyDeals/Conquests/Tmp 等裁剪键，无 Invasions/SyndicateMissions 等；仅作为官方故障后的**裂缝字段级**叠加层，不能单独构成完整状态）、`api.warframestat.us`（非 PC 世界状态及 PC 交叉验证/最终备用）、`api.warframe.market` v2（市价，`Language: zh-hans`）、browse.wf（官方导出/词典）、AlecaFrame 本机快照（个人数据，只读）。查询只读；监测只写本地去重状态，不操作游戏或市场。
 
 ## 能力索引
 
