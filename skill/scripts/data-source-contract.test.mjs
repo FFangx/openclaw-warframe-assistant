@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
-import path from 'node:path';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -45,7 +44,9 @@ const { getLangTable, readAlecaJson } = wfdata;
 const { endpointFor: traderEndpointFor, summarizeTradeStatistics } = trader;
 const { marketEndpoint: shortcutsMarketEndpoint } = shortcuts;
 
-const repoRoot = dirname(fileURLToPath(import.meta.url)) + path.sep + '..' + path.sep + '..';
+// scripts 的父目录就是 Skill 根：源码为 repo/skill，部署后为
+// workspace/skills/warframe-assistant；两种布局都可直接定位 references。
+const skillRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 test.after(async () => {
   await rm(cacheDir, { recursive: true, force: true });
@@ -496,8 +497,8 @@ test('PC 世界状态链：官方成功即止；官方失败+warframestat 失败
 // ---------- 文档漂移检测 ----------
 
 test('文档事实：references/sources.md 与 operations.md 与合同一致（零漂移）', async () => {
-  const sources = await readFile(join(repoRoot, 'skill', 'references', 'sources.md'), 'utf8');
-  const operations = await readFile(join(repoRoot, 'skill', 'references', 'operations.md'), 'utf8');
+  const sources = await readFile(join(skillRoot, 'references', 'sources.md'), 'utf8');
+  const operations = await readFile(join(skillRoot, 'references', 'operations.md'), 'utf8');
   const docs = { 'references/sources.md': sources, 'references/operations.md': operations };
   assert.deepEqual(sourceDocViolations(docs), []);
   validateSourceDocs(docs);
@@ -505,8 +506,8 @@ test('文档事实：references/sources.md 与 operations.md 与合同一致（�
 });
 
 test('文档漂移（负向）：缺失路由、颠倒顺序、少关键事实、文档缺失都失败', async () => {
-  const sources = await readFile(join(repoRoot, 'skill', 'references', 'sources.md'), 'utf8');
-  const operations = await readFile(join(repoRoot, 'skill', 'references', 'operations.md'), 'utf8');
+  const sources = await readFile(join(skillRoot, 'references', 'sources.md'), 'utf8');
+  const operations = await readFile(join(skillRoot, 'references', 'operations.md'), 'utf8');
   const docs = { 'references/sources.md': sources, 'references/operations.md': operations };
 
   // 缺失路由：抽走全部 Oracle 世界状态 URL（行 15 与新合同节各一处）
