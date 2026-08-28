@@ -14,6 +14,7 @@ import {
   wishlistHitBusinessKey,
   wishlistHitsToPairs,
 } from './wishlist.mjs';
+import { createConcurrencyGate, createTokenBucket, runCoalescedWishlistScan } from './wishlist-protection.mjs';
 
 const IDENTITY = { target: 'qqbot:group:test', ownerId: 'member-a', ownerName: '测试用户' };
 const TARGET_B = 'qqbot:c2c:member-b';
@@ -499,7 +500,186 @@ test('业务键语义：集合顺序无关、同单多愿聚合、双源同键�
   assert.deepEqual(pairs, [{ orderIdentity: orderIdentity(ORDER), wishIds: ['WABC1', 'WXYZ9'] }]);
 });
 
+test('R4 恢复扫描链：QQ outbound 缺省时仍执行 REST 校准并原子入队，欠账留盘下轮补投', async () => {
+  const { dir, state, outbox, clock, manage } = await fixture();
+  try {
+    const wish = await createWish(state, manage);
+    // mailer 缺省模拟 QQ outbound 不可用（网关恢复扫描时的诚实降级）
+    const result = await monitorWishlist(IDENTITY.target, state, null, false, {
+      ownerId: IDENTITY.ownerId,
+      skipWebSocket: true,
+      forceRest: true,
+      fetchOrders: async () => [ORDER],
+      outbox,
+      now: clock.now,
+    });
+    assert.equal(result.data.outbox, true);
+    assert.equal(result.data.hitCount, 1);
+    assert.equal(result.data.delivery.sentParts, 0, '没有 mailer 绝不伪造已投递');
+    const store = await readStore(dir);
+    assert.equal(store.entries.length, 1);
+    assert.equal(store.entries[0].status, 'pending', '命中已原子入队，留盘等下一步补投');
+    assert.equal(store.entries[0].businessKey, wishlistHitBusinessKey(IDENTITY.target, [{ orderIdentity: orderIdentity(ORDER), wishIds: [wish.id] }]));
+
+    // 账本 seen/calibration 已提交：同一批订单再次校准被去重，不重复入队
+    const second = await monitorWishlist(IDENTITY.target, state, null, false, {
+      ownerId: IDENTITY.ownerId,
+      skipWebSocket: true,
+      forceRest: true,
+      fetchOrders: async () => [ORDER],
+      outbox,
+      now: clock.now,
+    });
+    assert.equal(second.data.hitCount, 0);
+    assert.equal((await readStore(dir)).entries.length, 1, '同业务键去重只入队一次');
+
+    // 后续补投（如 10 分钟 cron 或下一次实时事件）正常逐 part 投递
+    const calls = [];
+    const summary = await outbox.deliverPending({ target: IDENTITY.target, mailer: okMailer(calls), keyPrefix: 'wishlist:' });
+    assert.equal(calls.length, 1);
+    assert.deepEqual(summary.deliveredIds, [store.entries[0].id]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('defaultOutboxPath 与其他切片一致（与状态同目录 warframe-delivery-outbox.json）', () => {
   const statePath = path.join(os.tmpdir(), 'state', 'warframe-wishlist.json');
   assert.equal(defaultOutboxPath(statePath), path.join(os.tmpdir(), 'state', 'warframe-delivery-outbox.json'));
+});
+
+test('R4 合并扫描链：跨 target 同档愿望只发一次请求；per-target 匹配、Outbox 幂等与 10 分钟校准语义保持', async () => {
+  const { dir, state, outbox, clock, manage } = await fixture();
+  try {
+    await createWish(state, manage);
+    await createWish(state, manage, { target: TARGET_B, ownerId: 'member-b', ownerName: '用户B' });
+    const fetchCalls = [];
+    const monitorTargets = [];
+    const result = await runCoalescedWishlistScan({
+      wishes: (await readLedger(state)).wishes,
+      fetchOne: async (wish) => { fetchCalls.push(String(wish.slug)); return [ORDER]; },
+      tokenBucket: createTokenBucket({ capacity: 10, refillMs: 1_000 }),
+      concurrency: createConcurrencyGate({ limit: 2 }),
+      logger: { warn: () => {} },
+      monitorTarget: async (target, targetWishes, info) => {
+        monitorTargets.push(target);
+        return monitorWishlist(target, state, null, false, {
+          ownerId: '',
+          skipWebSocket: true,
+          forceRest: true,
+          fetchOrders: async () => {
+            if (info.allFailed) throw new Error('Warframe.Market 完全不可用（保护扫描全组失败）');
+            return info.orders || [];
+          },
+          outbox,
+          now: clock.now,
+        });
+      },
+    });
+    // 全局合并：两个目标共享同一 (itemId, rank 档) → 只发一次 Market 请求
+    assert.deepEqual(fetchCalls, ['foo_prime_set']);
+    assert.deepEqual(new Set(monitorTargets), new Set([IDENTITY.target, TARGET_B]));
+    assert.equal(result.ok, true);
+    assert.equal(result.marketAvailable, true);
+    assert.equal(result.fetched, 1);
+
+    // per-target 账本：两个 target 的 wish 都 seen + calibration 各自提交（10 分钟校准语义保留）
+    const ledger = await readLedger(state);
+    assert.equal(ledger.wishes.filter((wish) => wish.seenOrderIds.includes(orderIdentity(ORDER))).length, 2);
+    assert.equal(ledger.calibration.targets[IDENTITY.target].lastRestAt, iso(BASE));
+    assert.equal(ledger.calibration.targets[TARGET_B].lastRestAt, iso(BASE));
+
+    // R3 Outbox：每个 target 独立业务键、独立投递状态（同一订单不跨目标吞掉）
+    const store = await readStore(dir);
+    assert.equal(store.entries.length, 2);
+    assert.notEqual(store.entries[0].businessKey, store.entries[1].businessKey);
+    assert.match(store.entries[0].businessKey, /^wishlist:[0-9a-f]{64}:[0-9a-f]{64}$/u);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('R4 合并扫描链：target 所需组全败时走 restError 分支，不更新 lastRestAt（不伪造新鲜校准）', async () => {
+  const { dir, state, outbox, clock, manage } = await fixture();
+  try {
+    await createWish(state, manage);
+    const result = await runCoalescedWishlistScan({
+      wishes: (await readLedger(state)).wishes,
+      fetchOne: async () => { throw new Error('Warframe.Market top orders HTTP 503'); },
+      tokenBucket: createTokenBucket({ capacity: 10, refillMs: 1_000 }),
+      concurrency: createConcurrencyGate({ limit: 2 }),
+      logger: { warn: () => {} },
+      monitorTarget: async (target, targetWishes, info) => monitorWishlist(target, state, null, false, {
+        ownerId: '',
+        skipWebSocket: true,
+        forceRest: true,
+        fetchOrders: async () => {
+          if (info.allFailed) throw new Error('Warframe.Market 完全不可用（保护扫描全组失败）');
+          return info.orders || [];
+        },
+        outbox,
+        now: clock.now,
+      }),
+    });
+    assert.equal(result.marketAvailable, false, '全组失败必须诚实标记 Market 不可用');
+    assert.equal(result.ok, false);
+    const ledger = await readLedger(state);
+    assert.equal(ledger.calibration.targets[IDENTITY.target].lastRestAt, null, '不可用时不写新鲜 calibration');
+    assert.match(ledger.calibration.targets[IDENTITY.target].lastError, /完全不可用/u, 'restError 如实记录全组失败');
+    const raw = await readFile(path.join(dir, 'warframe-delivery-outbox.json'), 'utf8').catch(() => '{"entries":[]}');
+    assert.equal(JSON.parse(raw).entries.length, 0, '没有命中就没有 Outbox 记录');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('R4 合并扫描链：部分组失败仍处理成功命中，但不把 target 标成完整新鲜校准', async () => {
+  const { dir, state, outbox, clock, manage } = await fixture();
+  try {
+    const firstWish = await createWish(state, manage);
+    const initial = await readLedger(state);
+    initial.wishes.push({
+      ...firstWish,
+      id: 'WPART',
+      itemId: 'item-bar',
+      slug: 'bar_prime_set',
+      itemName: 'Bar Prime Set',
+      zhName: '吧 Prime 套装',
+      seenOrderIds: [],
+      initialized: false,
+    });
+    await writeFile(state, `${JSON.stringify(initial)}\n`, 'utf8');
+
+    const result = await runCoalescedWishlistScan({
+      wishes: (await readLedger(state)).wishes,
+      fetchOne: async (entry) => {
+        if (entry.itemId === 'item-bar') throw new Error('Warframe.Market top orders HTTP 503');
+        return [ORDER];
+      },
+      tokenBucket: createTokenBucket({ capacity: 10, refillMs: 1_000 }),
+      concurrency: createConcurrencyGate({ limit: 2 }),
+      logger: { warn: () => {} },
+      monitorTarget: async (target, targetWishes, info) => monitorWishlist(target, state, null, false, {
+        ownerId: '',
+        skipWebSocket: true,
+        forceRest: true,
+        restIncompleteError: info.hasFailures ? `保护扫描部分请求失败（${info.failedKeys.length} 组）` : null,
+        fetchOrders: async () => info.orders || [],
+        outbox,
+        now: clock.now,
+      }),
+    });
+
+    assert.equal(result.marketAvailable, true, '成功组存在时 Market 仍是部分可用');
+    assert.equal(result.failedGroups, 1);
+    assert.equal(result.ok, false);
+    const ledger = await readLedger(state);
+    assert.equal(ledger.wishes.find((entry) => entry.itemId === 'item-foo').seenOrderIds.includes(orderIdentity(ORDER)), true, '成功组命中仍处理');
+    assert.equal(ledger.wishes.find((entry) => entry.itemId === 'item-bar').seenOrderIds.length, 0);
+    assert.equal(ledger.calibration.targets[IDENTITY.target].lastRestAt, null, '部分失败不得写完整校准时间');
+    assert.match(ledger.calibration.targets[IDENTITY.target].lastError, /部分请求失败/u);
+    assert.equal((await readStore(dir)).entries.length, 1, '成功命中仍按 R3 Outbox 原子入队');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

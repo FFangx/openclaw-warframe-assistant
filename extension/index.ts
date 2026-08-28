@@ -11,6 +11,8 @@ import { createContextBridge } from './context-bridge.mjs';
 import { executeSubscriptionUseCase } from './subscription-usecase.mjs';
 import { executeWishlistUseCase, wishlistNeedsImmediateInspection } from './wishlist-usecase.mjs';
 import { createGatewayWishlistMailer } from './wishlist-gateway-mailer.mjs';
+import { createWishlistGateway } from './wishlist-gateway.mjs';
+import { createWishlistMetrics } from './wishlist-metrics.mjs';
 
 const execFileAsync = promisify(execFile);
 const pluginDir = path.dirname(fileURLToPath(import.meta.url));
@@ -18,6 +20,9 @@ const shortcutScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warf
 const lookupScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'lookup.mjs');
 const subscriptionScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'subscriptions.mjs');
 const wishlistScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'wishlist.mjs');
+// R4 保护原语（合并分组/令牌桶/并发上限/合并扫描）位于 skill 树：与
+// wishlist.mjs 同为受管内容，便于 skill 侧直接做真实 Outbox 集成测试。
+const wishlistProtectionScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'wishlist-protection.mjs');
 const dropsScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'drops.mjs');
 const weeklyScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'weekly.mjs');
 const weeklyUsecaseScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'weekly-usecase.mjs');
@@ -209,18 +214,143 @@ async function removeWishlistCron(api: any, target: string): Promise<void> {
   for (const job of existing) await runOpenclawCron(['rm', String(job.id)]);
 }
 
-type WishlistGatewayState = {
-  stopped: boolean;
-  socket: any;
-  itemIds: Set<string>;
-  refreshTimer: any;
-  reconnectTimer: any;
-  reconnectMs: number;
-  liveQueue: Promise<void>;
-};
-
-let wishlistGateway: WishlistGatewayState | null = null;
+// 单例愿望 WebSocket 的健康状态机在 wishlist-gateway.mjs（可注入时钟/定时器/
+// WebSocket，可单测）：未连接/连接中/健康/断线 + 断线起点/最近活动/恢复，
+// 「断线后重新连接成功 → 恰好一次恢复扫描」的单飞触发，以及断开/静默流时的
+// 20～30 秒保护轮询（恢复扫描与保护扫描共用同一单飞执行槽）。
+let wishlistGateway: ReturnType<typeof createWishlistGateway> | null = null;
 let wishlistGatewayRefresh: (() => Promise<void>) | null = null;
+
+// —— R4 第二切片：全局保护 REST 限流/并发（进程级单例，恢复与保护共用）——
+// 令牌桶默认容量 1/每 400ms 补 1（请求起点至少相隔 400ms，低于 Market
+// 公开 3 req/s 上限），并发上限默认 2；
+// 断线→重连→轮询的抖动不会瞬时打满 Market；配置见 CONFIG.md 的 wishlist 段。
+let wishlistProtectionModule: any = null;
+let wishlistProtectionBucket: any = null;
+let wishlistProtectionConcurrency: any = null;
+// 脱敏审计指标文件（独立于愿望账本/Outbox，不改变用户状态语义）
+let wishlistMetrics: ReturnType<typeof createWishlistMetrics> | null = null;
+
+async function wishlistProtectionModuleInstance(): Promise<any> {
+  if (!wishlistProtectionModule) {
+    wishlistProtectionModule = await import(pathToFileURL(wishlistProtectionScript).href);
+  }
+  return wishlistProtectionModule;
+}
+
+// 可调参数：plugins.config['warframe-fast-commands'].wishlist 段，全部带默认值
+// 与钳制边界；staleAfterMs 是「连接健康但事件流静默」的保护阈值。
+function wishlistGatewayTuning(api: any): any {
+  const raw = api?.config?.plugins?.entries?.['warframe-fast-commands']?.config?.wishlist || {};
+  const clamp = (value: unknown, fallback: number, min: number, max: number): number => {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    return Math.min(max, Math.max(min, number));
+  };
+  const protectionMinMs = clamp(raw?.protectionMinMs, 20_000, 5_000, 60_000);
+  return {
+    staleAfterMs: clamp(raw?.staleAfterMs, 5 * 60_000, 30_000, 30 * 60_000),
+    protectionMinMs,
+    protectionMaxMs: Math.max(protectionMinMs, clamp(raw?.protectionMaxMs, 30_000, 5_000, 120_000)),
+    rateCapacity: clamp(raw?.rateCapacity, 1, 1, 10),
+    rateRefillMs: clamp(raw?.rateRefillMs, 400, 250, 30_000),
+    concurrencyLimit: clamp(raw?.concurrencyLimit, 2, 1, 5),
+  };
+}
+
+function wishlistMetricsInstance(): ReturnType<typeof createWishlistMetrics> {
+  if (!wishlistMetrics) {
+    wishlistMetrics = createWishlistMetrics({
+      filePath: path.resolve(path.dirname(wishlistState), 'warframe-wishlist-metrics.json'),
+    });
+  }
+  return wishlistMetrics;
+}
+
+async function wishlistProtectionBucketInstance(api: any): Promise<any> {
+  if (!wishlistProtectionBucket) {
+    const tuning = wishlistGatewayTuning(api);
+    const module = await wishlistProtectionModuleInstance();
+    wishlistProtectionBucket = module.createTokenBucket({ capacity: tuning.rateCapacity, refillMs: tuning.rateRefillMs });
+  }
+  return wishlistProtectionBucket;
+}
+
+async function wishlistProtectionConcurrencyInstance(api: any): Promise<any> {
+  if (!wishlistProtectionConcurrency) {
+    const tuning = wishlistGatewayTuning(api);
+    const module = await wishlistProtectionModuleInstance();
+    wishlistProtectionConcurrency = module.createConcurrencyGate({ limit: tuning.concurrencyLimit });
+  }
+  return wishlistProtectionConcurrency;
+}
+
+// 指标 sink（网关脱敏事件 → 指标文件）：只透传时间/时长/计数/类别。
+// 扫描完成事件只带数字 summary（组数/失败组数），用于诚实标记 Market 可用性。
+async function forwardWishlistGatewayMetrics(event: any): Promise<void> {
+  if (!event || typeof event !== 'object') return;
+  const metrics = wishlistMetricsInstance();
+  const at = String(event.at || '').trim();
+  if (event.type === 'disconnect') {
+    await metrics.recordDisconnected({ at });
+  } else if (event.type === 'recover') {
+    await metrics.recordRecovered({ at, durationMs: event.durationMs });
+  } else if (event.type === 'protection-enter' || event.type === 'protection-exit') {
+    await metrics.recordProtectionEvent(event.type, at);
+  } else if (event.type === 'scan') {
+    const summary = event.summary || null;
+    await metrics.recordScan({
+      at,
+      ok: Boolean(event.ok),
+      durationMs: event.durationMs,
+      scope: String(event.scope || '').trim(),
+      groups: Number(summary?.groups ?? 0),
+      fetched: Number(summary?.fetched ?? 0),
+      failedGroups: Number(summary?.failedGroups ?? 0),
+      error: event.error || '',
+    });
+  }
+}
+
+// QQ 投递延迟（脱敏）：Outbox 入队 createdAt → deliveredAt；只发数字指标。
+async function recordWishlistDeliveryLatency(metrics: any, outbox: any, deliveredIds: any[], logger: any): Promise<void> {
+  try {
+    const ids = (deliveredIds || []).map((value: any) => String(value)).filter(Boolean);
+    if (!ids.length) return;
+    const snapshot = await outbox.snapshot();
+    const byId = new Map((snapshot?.entries || []).map((entry: any) => [String(entry.id), entry]));
+    for (const id of ids) {
+      const entry = byId.get(String(id));
+      const createdMs = Date.parse(String(entry?.createdAt || ''));
+      const deliveredMs = Date.parse(String(entry?.deliveredAt || ''));
+      if (Number.isFinite(createdMs) && Number.isFinite(deliveredMs)) {
+        await metrics.recordDelivery({ at: entry.deliveredAt, latencyMs: Math.max(0, deliveredMs - createdMs) });
+      }
+    }
+  } catch (error) {
+    logger?.warn?.(`Warframe wishlist delivery latency metrics failed: ${String(error)}`);
+  }
+}
+
+// 订单发现延迟（脱敏）：命中入队提交时间 − 上游订单 createdAt（缺失时用事件接收时间）。
+async function recordWishlistLatencyMetrics(api: any, metrics: any, monitorResult: any, outbox: any): Promise<void> {
+  try {
+    const data = monitorResult?.data || {};
+    const committedAt = Date.now();
+    for (const hit of Array.isArray(data.hits) ? data.hits : []) {
+      const sourceAt = String(hit?.order?.createdAt || hit?.order?.created_at || '').trim();
+      const sourceMs = sourceAt ? Date.parse(sourceAt) : NaN;
+      await metrics.recordDiscovery({
+        at: new Date(committedAt).toISOString(),
+        latencyMs: Number.isFinite(sourceMs) ? Math.max(0, committedAt - sourceMs) : null,
+        sourceKnown: Number.isFinite(sourceMs),
+      });
+    }
+    await recordWishlistDeliveryLatency(metrics, outbox, data?.delivery?.deliveredIds || [], api.logger);
+  } catch (error) {
+    api.logger.warn?.(`Warframe wishlist latency metrics failed: ${String(error)}`);
+  }
+}
 
 // —— 愿望命中通知 Outbox（R3 第四片）——
 // Gateway 单例 WebSocket 的命中通知按「先入 Outbox → 提交 wishlist ledger →
@@ -246,16 +376,19 @@ async function wishlistGatewayMailer(api: any, target: string): Promise<((part: 
 
 // 恢复/投递指定 target 的愿望通知 pending（只投本链业务键前缀；Outbox 逐 part
 // 持久化 + 跨进程锁：与 REST 校准 cron 并发也不会重复 send 或互相覆盖）。
+// 投递成功即记录 QQ 投递延迟指标（脱敏：只记时长，不记 target/卖家/订单）。
 async function flushWishlistTargetPending(api: any, target: string): Promise<void> {
   const mailer = await wishlistGatewayMailer(api, target);
   if (!mailer) {
     api.logger.warn?.('Warframe wishlist outbound adapter unavailable; pending stays for next event');
     return;
   }
-  const summary = await (await wishlistOutboxInstance()).deliverPending({ target, mailer, keyPrefix: 'wishlist:' });
+  const outbox = await wishlistOutboxInstance();
+  const summary = await outbox.deliverPending({ target, mailer, keyPrefix: 'wishlist:' });
   if (Number(summary?.sentParts || 0) > 0) {
     api.logger.info?.(`Warframe wishlist delivered pending parts: ${summary.sentParts}`);
   }
+  await recordWishlistDeliveryLatency(wishlistMetricsInstance(), outbox, summary?.deliveredIds || [], api.logger);
 }
 
 // 启动时先恢复相关 target 的 pending（上次投递失败/进程被杀留下的欠账）
@@ -363,107 +496,156 @@ async function runWishlistCommandUseCase(api: any, request: any, enqueuePrimary:
 
 // gateway_start owns exactly one public WFM subscription for the whole plugin.
 // Its itemId index is refreshed from the local ledger, so unrelated events do
-// not spawn a script, render a card, or touch QQ delivery.
+// not spawn a script, render a card, or touch QQ delivery. The connection
+// lifecycle/health is owned by wishlist-gateway.mjs (injectable clock, timers
+// and WebSocket); here we only provide the Market/QQ ports. R4 recovery scan:
+// a successful reconnect after a real disconnect triggers exactly one scan per
+// recovery cycle (single-flight inside the state machine); the first successful
+// connection never scans. R4 protection polling: while disconnected or the
+// event stream is stale beyond the configured threshold, the same coalesced
+// REST scan runs every 20～30 s (shared single-flight slot with the recovery
+// scan; global token bucket + concurrency ceiling avoid reconnect/flap bursts).
 async function startWishlistGateway(api: any): Promise<void> {
-  if (wishlistGateway && !wishlistGateway.stopped) return;
-  const state: WishlistGatewayState = {
-    stopped: false, socket: null, itemIds: new Set(), refreshTimer: null, reconnectTimer: null, reconnectMs: 1000, liveQueue: Promise.resolve(),
-  };
-  wishlistGateway = state;
-  const wishlistModule = async (): Promise<any> => import(pathToFileURL(wishlistScript).href);
-  let connect: () => void;
-  const refresh = async (): Promise<void> => {
-    if (state.stopped) return;
-    try {
-      const ledger = await (await wishlistModule()).readWishlistLedger(wishlistState);
-      state.itemIds = new Set((ledger.wishes || []).filter((wish: any) => wish.status === 'active' && wish.enabled).map((wish: any) => String(wish.itemId || '').trim()).filter(Boolean));
-      if (!state.itemIds.size && state.socket) {
-        try { state.socket.close(); } catch { /* ignore */ }
-      } else if (state.itemIds.size && !state.socket && !state.reconnectTimer) {
-        connect();
-      }
-    } catch (error) {
-      api.logger.warn?.(`Warframe wishlist gateway ledger refresh failed: ${String(error)}`);
-    }
-  };
-  wishlistGatewayRefresh = refresh;
-  const scheduleReconnect = (): void => {
-    if (state.stopped || !state.itemIds.size || state.reconnectTimer) return;
-    const wait = state.reconnectMs;
-    state.reconnectMs = Math.min(60_000, state.reconnectMs * 2);
-    state.reconnectTimer = setTimeout(() => {
-      state.reconnectTimer = null;
-      connect();
-    }, wait);
-  };
-  connect = (): void => {
-    if (state.stopped || !state.itemIds.size || state.socket) return;
-    const WebSocketImpl = (globalThis as any).WebSocket;
-    if (typeof WebSocketImpl !== 'function') {
-      api.logger.warn?.('Warframe wishlist gateway unavailable: Node WebSocket is missing');
-      scheduleReconnect();
-      return;
-    }
-    try {
-      const socket = new WebSocketImpl('wss://ws.warframe.market/socket', 'wfm');
-      state.socket = socket;
-      socket.onopen = () => {
-        state.reconnectMs = 1000;
-        socket.send(JSON.stringify({ route: '@wfm|cmd/subscribe/newOrders', id: `wishlist-gateway-${Date.now().toString(36)}`, payload: { platform: 'pc', crossplay: true } }));
-      };
-      socket.onmessage = (event: any) => {
-        state.liveQueue = state.liveQueue.then(async () => {
-        let payload: any;
-        try { payload = JSON.parse(String(event?.data || '')); } catch { return; }
-        if (payload?.route !== '@wfm|event/subscriptions/newOrder') return;
-        const order = payload.payload || payload.order || payload;
-        const itemId = String(order?.itemId || order?.item?.id || '').trim();
-        if (!itemId || !state.itemIds.has(itemId)) return;
-        try {
-          // 注入共享 Outbox：所有命中 target 全部入队成功后才一次性提交 wishlist
-          // ledger（目标间互不吞提醒），随后逐 target 由注入 mailer 让 Outbox
-          // 自己逐 part 持久化投递结果——不在账本提交后再裸循环发送。
-          const outbox = await wishlistOutboxInstance();
-          const results = await (await wishlistModule()).processWishlistLiveOrder(order, wishlistState, subscriptionCardDir, { outbox });
-          for (const result of results || []) {
-            if (result?.outbox === true && result.target) {
-              await flushWishlistTargetPending(api, String(result.target));
-            } else {
-              api.logger.warn?.('Warframe wishlist live order result without outbox, skipped');
-            }
-          }
-        } catch (error) {
-          api.logger.error(`Warframe wishlist live order failed: ${String(error)}`);
-        }
-        }).catch((error) => api.logger.error(`Warframe wishlist live queue failed: ${String(error)}`));
-      };
-      socket.onerror = () => { try { socket.close(); } catch { /* ignore */ } };
-      socket.onclose = () => {
-        if (state.socket === socket) state.socket = null;
-        scheduleReconnect();
-      };
-    } catch (error) {
-      state.socket = null;
-      api.logger.warn?.(`Warframe wishlist gateway connect failed: ${String(error)}`);
-      scheduleReconnect();
-    }
-  };
+  if (wishlistGateway && !wishlistGateway.status().stopped) return;
+  const wishlistModule = await import(pathToFileURL(wishlistScript).href);
+  const tuning = wishlistGatewayTuning(api);
+  const gateway = createWishlistGateway({
+    wsUrl: 'wss://ws.warframe.market/socket',
+    wsProtocol: 'wfm',
+    logger: api.logger,
+    loadItemIds: async (): Promise<Set<string>> => {
+      const ledger = await wishlistModule.readWishlistLedger(wishlistState);
+      return new Set((ledger.wishes || [])
+        .filter((wish: any) => wish.status === 'active' && wish.enabled)
+        .map((wish: any) => String(wish.itemId || '').trim())
+        .filter(Boolean));
+    },
+    onOpen: (socket: any) => {
+      socket.send(JSON.stringify({
+        route: '@wfm|cmd/subscribe/newOrders',
+        id: `wishlist-gateway-${Date.now().toString(36)}`,
+        payload: { platform: 'pc', crossplay: true },
+      }));
+    },
+    onOrder: async (order: any, activityAtIso?: string) => {
+      await handleWishlistLiveOrder(api, wishlistModule, order, activityAtIso || null);
+    },
+    recoveryScan: async () => { await runWishlistRecoveryScan(api); },
+    protectionScan: async () => { await runWishlistRecoveryScan(api); },
+    metricsSink: (event: any) => {
+      void forwardWishlistGatewayMetrics(event);
+    },
+    staleAfterMs: tuning.staleAfterMs,
+    protectionMinMs: tuning.protectionMinMs,
+    protectionMaxMs: tuning.protectionMaxMs,
+  });
+  wishlistGateway = gateway;
+  wishlistGatewayRefresh = () => gateway.refresh();
   // 启动先恢复相关 target 的 wishlist pending，再刷新索引并连接
   await restoreWishlistPending(api);
-  await refresh();
-  state.refreshTimer = setInterval(refresh, 30_000);
+  await gateway.start();
 }
 
 async function stopWishlistGateway(): Promise<void> {
-  const state = wishlistGateway;
-  if (!state) return;
-  state.stopped = true;
-  if (state.refreshTimer) clearInterval(state.refreshTimer);
-  if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
-  try { state.socket?.close?.(); } catch { /* ignore */ }
-  state.socket = null;
+  wishlistGateway?.stop();
   wishlistGateway = null;
   wishlistGatewayRefresh = null;
+}
+
+// 单例 WebSocket 的相关新订单 → R3 共享 Outbox 事务链（行情过滤由状态机
+// 按 itemId 索引完成）：所有命中 target 全部入队成功后才一次性提交 wishlist
+// ledger（目标间互不吞提醒），随后逐 target 由注入 mailer 让 Outbox 自己
+// 逐 part 持久化投递结果——不在账本提交后再裸循环发送。
+// 入队提交后记录订单发现延迟（脱敏：入队时间 − 上游订单 createdAt/WS 接收时间）。
+async function handleWishlistLiveOrder(api: any, wishlistModule: any, order: any, activityAtIso: string | null): Promise<void> {
+  try {
+    const outbox = await wishlistOutboxInstance();
+    const committedAt = Date.now();
+    const results = await wishlistModule.processWishlistLiveOrder(order, wishlistState, subscriptionCardDir, { outbox });
+    for (const result of results || []) {
+      if (result?.outbox === true && result.target) {
+        await flushWishlistTargetPending(api, String(result.target));
+      } else {
+        api.logger.warn?.('Warframe wishlist live order result without outbox, skipped');
+      }
+    }
+    const sourceAt = String(order?.createdAt || order?.created_at || activityAtIso || '').trim();
+    const sourceMs = sourceAt ? Date.parse(sourceAt) : NaN;
+    await wishlistMetricsInstance().recordDiscovery({
+      at: new Date(committedAt).toISOString(),
+      latencyMs: Number.isFinite(sourceMs) ? Math.max(0, committedAt - sourceMs) : null,
+      sourceKnown: Number.isFinite(sourceMs),
+    });
+  } catch (error) {
+    api.logger.error(`Warframe wishlist live order failed: ${String(error)}`);
+  }
+}
+
+// R4 恢复/保护扫描（恢复扫描只在断线后重新连接成功时由状态机触发一次；
+// 保护轮询在断线/静默流窗口按 20～30 秒节拍调用）——两个入口共用全局合并
+// 编排（runCoalescedWishlistScan）：先按去重后的 itemId+rank 把跨 target 的
+// 相同 Market 请求合并为每组合并一次请求（全局令牌桶 + 并发上限），再逐
+// target 复用现有 REST 校准 + R3 Outbox + 同业务键去重链——命中先原子入队
+// 再提交 seen/calibration 账本；与 10 分钟校准 cron、实时 WS 命中共享同一
+// 业务键，不会重复提醒。QQ outbound 不可用时仍执行校准与入队（欠账留在
+// Outbox，下轮补投），绝不把「未投递」伪装成已投递。Market 完全不可用时
+// 抛出失败（网关留 lastScanError、下次恢复周期/保护轮询重试）并且 per-target
+// 走 restError 分支：不写新鲜 calibration，诚实报告。
+async function runWishlistRecoveryScan(api: any): Promise<any> {
+  const module = await import(pathToFileURL(wishlistScript).href);
+  const ledger = await module.readWishlistLedger(wishlistState);
+  const active = (ledger.wishes || [])
+    .filter((wish: any) => wish.status === 'active' && wish.enabled)
+    .filter((wish: any) => String(wish.target || '').trim() && String(wish.itemId || '').trim() && String(wish.slug || '').trim());
+  if (!active.length) {
+    return { ok: true, reason: 'no_active_wishes', targets: 0, groups: 0, fetched: 0, failedGroups: 0, marketAvailable: null };
+  }
+  const outbox = await wishlistOutboxInstance();
+  const moduleProtection = await wishlistProtectionModuleInstance();
+  const result = await moduleProtection.runCoalescedWishlistScan({
+    wishes: active,
+    tokenBucket: await wishlistProtectionBucketInstance(api),
+    concurrency: await wishlistProtectionConcurrencyInstance(api),
+    logger: api.logger,
+    fetchOne: async (wish: any) => module.fetchTopOrdersForItem(wish, globalThis.fetch),
+    monitorTarget: async (target: string, targetWishes: any[], info: any) => {
+      const mailer = await wishlistGatewayMailer(api, target);
+      const monitorResult = await module.monitorWishlist(target, wishlistState, subscriptionCardDir, false, {
+        forceRest: true,
+        skipWebSocket: true,
+        outbox,
+        ...(mailer ? { mailer } : {}),
+        restIncompleteError: info?.hasFailures
+          ? `Warframe.Market 保护扫描部分请求失败（${Number(info.failedKeys?.length) || 0} 组），未标记完整校准`
+          : null,
+        fetchOrders: async () => {
+          // 该 target 所需组全部失败：走 monitorWishlist 的 restError 分支
+          // （保留旧 lastRestAt、记录 lastError），绝不把不可用伪装成新鲜校准。
+          if (info?.allFailed) throw new Error('Warframe.Market 完全不可用（保护扫描全组失败）');
+          return info?.orders || [];
+        },
+      });
+      await recordWishlistLatencyMetrics(api, wishlistMetricsInstance(), monitorResult, outbox);
+      return monitorResult;
+    },
+  });
+  // 诚实上报：Market 完全不可用 → 抛错让网关记录扫描失败（保护轮询会继续重试）；
+  // 部分失败保留成功组的校准，失败组由指标与 lastError 如实记录。
+  if (result.marketAvailable === false) {
+    const message = `Warframe.Market 完全不可用（${result.failedGroups}/${result.groups} 组失败）`;
+    api.logger.warn?.(`Warframe wishlist recovery scan: ${message}；保护轮询继续按 20～30 秒重试，不伪造新鲜校准`);
+    const error: any = new Error(message);
+    error.scanSummary = {
+      groups: Number(result.groups) || 0,
+      fetched: Number(result.fetched) || 0,
+      failedGroups: Number(result.failedGroups) || 0,
+    };
+    throw error;
+  }
+  if (result.failedGroups > 0) {
+    api.logger.warn?.(`Warframe wishlist recovery scan partial failure: ${result.failedGroups}/${result.groups} 组失败（其余组正常）`);
+  }
+  return result;
 }
 
 // 掉落监测：每分钟只做本地 mtime 检查，快照变化才解密 diff，不联网轮询

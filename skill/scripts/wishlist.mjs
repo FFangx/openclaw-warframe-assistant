@@ -590,7 +590,7 @@ function activeItemIds(ledger, target, ownerId = '') {
   return new Set(ledger.wishes.filter((wish) => wish.target === target && (!ownerId || wish.ownerId === ownerId) && wish.status === 'active' && wish.enabled).map((wish) => wish.itemId));
 }
 
-async function fetchTopOrdersForItem(wish, fetchImpl) {
+export async function fetchTopOrdersForItem(wish, fetchImpl) {
   const rank = wish.rankMode === 'exact' ? wish.rank : wish.rankMode === 'max' ? wish.maxRank : null;
   const rankQuery = Number.isInteger(rank) ? `?rank=${encodeURIComponent(rank)}` : '';
   const url = `${MARKET_BASE}/v2/orders/item/${encodeURIComponent(wish.slug)}\/top${rankQuery}`;
@@ -684,7 +684,7 @@ function resultForHits(hits, now) {
 }
 
 /** Perform REST calibration + bounded websocket monitoring for one target. */
-// options: { ownerId?, forceRest?, restIntervalMs?, skipRest?, skipWebSocket?, fetchOrders?,
+// options: { ownerId?, forceRest?, restIntervalMs?, skipRest?, skipWebSocket?, fetchOrders?, restIncompleteError?,
 //            fetchImpl?, render?, renderCard?, WebSocketImpl?, wsDurationMs?,
 //            outbox?, mailer?, now? }
 // 前几项为 monitor/calibrate/gateway_start 兼容路径（输出与行为不变）；后三项是
@@ -702,8 +702,10 @@ export async function monitorWishlist(targetValue, statePath = DEFAULT_STATE, ca
   // 1) 先补投欠账（R3 第四片）：账本已提交但投递失败（或入队后进程被杀）的 pending，
   //    即使 REST 未到点/无新命中也会先补投；keyPrefix 限定只投本链业务键，
   //    不代投世界状态/周报/掉落记录（它们由各自的 deliver cron 负责）。
+  //    mailer 缺省（如 QQ outbound 暂时不可用）时跳过补投与即时投递，但仍执行
+  //    下方 REST 校准与 Outbox 入队（欠账留盘下轮补投），绝不把未投递伪装成已投递。
   let flushSummary = null;
-  if (useOutbox) {
+  if (useOutbox && mailer) {
     flushSummary = await outbox.deliverPending({ target, mailer, keyPrefix: WISHLIST_KEY_PREFIX });
   }
   if (!active.length) {
@@ -717,6 +719,7 @@ export async function monitorWishlist(targetValue, statePath = DEFAULT_STATE, ca
   let restError = null;
   let deferredDelivery = null;
   let hitBusinessKey = null;
+  const restIncompleteError = String(options.restIncompleteError || '').trim() || null;
   if (due && options.skipRest !== true) {
     try {
       const orders = options.fetchOrders
@@ -733,10 +736,13 @@ export async function monitorWishlist(targetValue, statePath = DEFAULT_STATE, ca
           const latest = await readWishlistLedger(statePath);
           const applied = applyWishlistOrders(latest, orders, { source: 'rest', now: new Date(nowMs).toISOString(), target, ownerId, notifyInitial: true });
           const stamp = new Date(nowMs).toISOString();
+          const previousLastRestAt = latest.calibration.targets?.[target]?.lastRestAt || null;
+          const calibrationLastRestAt = restIncompleteError ? previousLastRestAt : stamp;
           applied.ledger.calibration = {
             ...applied.ledger.calibration,
-            lastRestAt: stamp, lastError: null,
-            targets: { ...(applied.ledger.calibration.targets || {}), [target]: { lastRestAt: stamp, lastError: null } },
+            lastRestAt: restIncompleteError ? (latest.calibration.lastRestAt || null) : stamp,
+            lastError: restIncompleteError,
+            targets: { ...(applied.ledger.calibration.targets || {}), [target]: { lastRestAt: calibrationLastRestAt, lastError: restIncompleteError } },
           };
           let deferred = null;
           let businessKey = null;
@@ -762,6 +768,7 @@ export async function monitorWishlist(targetValue, statePath = DEFAULT_STATE, ca
         ledger = transaction.applied.ledger;
         deferredDelivery = transaction.deferred;
         hitBusinessKey = transaction.businessKey;
+        if (restIncompleteError) restError = restIncompleteError;
       } else {
         const calibrated = await withWishlistLock(statePath, async () => {
           // Reload under the lock: a live gateway event may have updated seen
@@ -769,16 +776,20 @@ export async function monitorWishlist(targetValue, statePath = DEFAULT_STATE, ca
           const latest = await readWishlistLedger(statePath);
           const applied = applyWishlistOrders(latest, orders, { source: 'rest', now: new Date().toISOString(), target, ownerId, notifyInitial: true });
           const stamp = new Date().toISOString();
+          const previousLastRestAt = latest.calibration.targets?.[target]?.lastRestAt || null;
+          const calibrationLastRestAt = restIncompleteError ? previousLastRestAt : stamp;
           applied.ledger.calibration = {
             ...applied.ledger.calibration,
-            lastRestAt: stamp, lastError: null,
-            targets: { ...(applied.ledger.calibration.targets || {}), [target]: { lastRestAt: stamp, lastError: null } },
+            lastRestAt: restIncompleteError ? (latest.calibration.lastRestAt || null) : stamp,
+            lastError: restIncompleteError,
+            targets: { ...(applied.ledger.calibration.targets || {}), [target]: { lastRestAt: calibrationLastRestAt, lastError: restIncompleteError } },
           };
           await writeWishlistLedger(statePath, applied.ledger);
           return applied;
         });
         hits.push(...calibrated.hits);
         ledger = calibrated.ledger;
+        if (restIncompleteError) restError = restIncompleteError;
       }
     } catch (error) {
       restError = String(error?.message || error);

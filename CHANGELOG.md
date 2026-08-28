@@ -23,6 +23,8 @@
 - 周常查看与核销的三个 QQ 快捷入口、模型工具和调度器 fallback 统一使用同一业务用例，集中执行用户 QQ 私聊身份校验、命令规范化与周常模块调用；旧的入口层权限分支和直跑 `weekly.mjs manage` 指引已删除。
 - 个人账号查询的三个 QQ 快捷入口、模型工具和调度器 fallback 统一使用同一业务用例，集中执行注册表命令识别、精确匹配的用户 QQ 私聊身份校验与只读 AlecaFrame 查询；旧的入口层权限分支和直跑 `alecaframe.mjs parse` 指引已删除。
 - 仲裁、实时情报和通用公开短命令的三个 QQ 快捷入口、模型工具与调度器 fallback 统一使用同一公开查询用例；用户私聊增强改为调用级显式权限，不再写入可能污染后续请求的进程全局环境。
+- 愿望单单例 Gateway WebSocket 拆出可单测健康状态机（`extension/wishlist-gateway.mjs`，注入时钟/定时器/WebSocket构造/账本索引/订单处理/恢复扫描）：状态区分 未连接/连接中/健康/断线，记录断线起点、最近活跃与恢复时间及断线/重连计次。只有「曾经健康 → 断线 → 重新连接成功」才立即对活跃愿望执行一次当前订单恢复扫描——逐 target 复用现有 REST `/top` 校准与 R3 Outbox、同业务键去重链（命中先原子入队再提交 seen/calibration），初次正常连接不扫、同一恢复周期单飞（连接抖动不并发重复）、重复 open 不重扫、stop 后不扫、扫描失败留 `lastError` 下次恢复周期重试；QQ outbound 不可用时仍执行校准与入队，欠账留盘下轮补投。现有 10 分钟校准 cron 与 R3 Outbox 语义不变。
+- WebSocket 断线（或构造失败）与「连接健康但事件流静默超过阈值（默认 5 分钟，可配置）」都会进入 REST 保护轮询（`skill/scripts/wishlist-protection.mjs` 纯原语 + 网关状态机集成）：按 20～30 秒抖动间隔（默认，可配置）执行一次合并校准扫描，连接恢复且事件流新鲜即退出并取消轮询。扫描先按去重后的 `itemId+rank` 把多 target/多用户相同的 Market 请求全局合并为每组合并一次请求，再逐 target 走原有 per-target 匹配与 R3 Outbox 原子入队/seen 提交链（10 分钟校准语义与业务键去重不变）；每个 Market 请求经过全局令牌桶（默认容量 1、每 400ms 补 1，请求起点至少相隔 400ms，低于 Market 公开 3 req/s 上限）与真实并发上限（默认 2），断线→重连→轮询不会瞬时打满 Market；恢复扫描与保护轮询共用单飞执行槽，扫描进行中不并发重复。Market 完全不可用时如实标记（per-target 记 restError、不写新鲜 calibration、状态机记 lastScanError 由下一轮重试），绝不伪装新鲜。新增脱敏审计指标文件 `state/warframe-wishlist-metrics.json`：断线时长、订单发现延迟、QQ 投递延迟、保护/扫描计数与 Market 可用性——只存时长/计数/类别，不含 target、订单、卖家等任何标识，也独立于愿望账本与 Outbox（不改用户状态语义）。参数（`staleAfterMs`/`protectionMinMs`/`protectionMaxMs`/`rateCapacity`/`rateRefillMs`/`concurrencyLimit`）见 `CONFIG.md` 可在 `plugins.config['warframe-fast-commands'].wishlist` 配置。
 
 ### 修复
 

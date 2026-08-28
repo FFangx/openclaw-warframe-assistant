@@ -70,10 +70,10 @@ test('index.ts 合同：愿望命中 Outbox 注入与恢复（服务端类别、
   assert.match(entry, /processWishlistLiveOrder\(order, wishlistState, subscriptionCardDir, \{ outbox \}\)/u);
   assert.match(entry, /await flushWishlistTargetPending\(api, String\(result\.target\)\)/u);
   assert.match(entry, /deliverPending\(\{ target, mailer, keyPrefix: 'wishlist:' \}\)/u);
-  // 启动时先恢复相关 target pending（在 refresh/连 socket 之前）
+  // 启动时先恢复相关 target pending（在刷新索引/连 socket 之前）
   assert.match(entry, /await restoreWishlistPending\(api\);/u);
   const startBlock = entry.slice(entry.indexOf('async function startWishlistGateway'), entry.indexOf('async function stopWishlistGateway'));
-  assert.ok(startBlock.indexOf('restoreWishlistPending(api)') < startBlock.indexOf('await refresh();'), '恢复必须在连接前');
+  assert.ok(startBlock.indexOf('restoreWishlistPending(api)') < startBlock.indexOf('await gateway.start();'), '恢复必须在连接前');
   // 裸循环发送只允许留在交互 follow-up（建立后立即行情卡）路径，live order 路径不得使用
   const liveBlock = entry.slice(entry.indexOf('processWishlistLiveOrder(order'), entry.indexOf('Warframe wishlist live order failed'));
   assert.equal(liveBlock.includes('sendWishlistGatewayResult'), false);
