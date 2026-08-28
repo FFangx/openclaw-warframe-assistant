@@ -11,6 +11,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// 规范路由常量（R5 数据源合同）：物品/中文目录本机 → AlecaFrame CDN → warframestat 旧兜底。
+import { ALECA_CDN_BASE_URL, WARFRAMESTAT_ITEMS_ZH_URL } from './data-source-contract.mjs';
 
 const FETCH_TIMEOUT_MS = 20_000;
 // 持久缓存目录（%TEMP% 会被系统清理，兼底层必须活得久）：scripts → … → workspace/.cache/warframe-data
@@ -196,7 +198,7 @@ export function resolveAlecaDir() {
     || path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'AlecaFrame');
 }
 
-const ALECA_CDN = 'https://cdn.alecaframe.com/warframeData';
+const ALECA_CDN = ALECA_CDN_BASE_URL;
 // CDN 上的相对路径与本地 cachedData 相同：json/Relics.json、custom/rivensV2.json
 const ALECA_JSON_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // WARFRAME_OFFLINE=1 禁止词典/目录在线兑底（测试确定性 + doctor 断网态验证）
@@ -237,7 +239,7 @@ export function getLangTable({ alecaDir } = {}) {
             const table = await fetchJson(`${ALECA_CDN}/json/lang.json`);
             if (table && Object.keys(table).length >= 1000) return table;
           } catch { /* warframestat legacy fallback below */ }
-          const items = await fetchJson('https://api.warframestat.us/items?language=zh&only=uniqueName,name');
+          const items = await fetchJson(WARFRAMESTAT_ITEMS_ZH_URL);
           const table = {};
           for (const item of Array.isArray(items) ? items : []) {
             if (item?.uniqueName && item?.name) table[item.uniqueName] = { zh: { name: item.name } };

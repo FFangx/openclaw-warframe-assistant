@@ -9,9 +9,11 @@ import { createHash } from 'node:crypto';
 
 import { getBountyZhMaps, getLangTable, readCachedData, staleCachedJson } from './wfdata.mjs';
 import { resilientJsonRequest } from './http-resilience.mjs';
+// 规范路由常量（R5 数据源合同）：官方主源 / warframestat 全量备用 / Oracle 部分镜像。
+import { DE_OFFICIAL_WORLDSTATE_URL, ORACLE_WORLDSTATE_URL, WARFRAMESTAT_BASE_URL } from './data-source-contract.mjs';
 
-const PRIMARY_BASE = 'https://api.warframestat.us';
-const OFFICIAL_URL = 'https://api.warframe.com/cdn/worldState.php';
+const PRIMARY_BASE = WARFRAMESTAT_BASE_URL;
+const OFFICIAL_URL = DE_OFFICIAL_WORLDSTATE_URL;
 // Browse.wf 实时客户端的公开 Oracle 世界状态端点，实为「部分镜像」：只保留官方 worldState
 // 的裁剪键（实测 Events/Goals/Alerts/Sorties/LiteSorties/ActiveMissions/VoidTraders/VoidStorms/
 // DailyDeals/Conquests/Tmp），没有 Invasions/SyndicateMissions/SeasonInfo/EndlessXpSchedule/
@@ -19,7 +21,7 @@ const OFFICIAL_URL = 'https://api.warframe.com/cdn/worldState.php';
 // 实况（2026-08-27 复核）HTTP 响应**没有顶层 Time 字段**：只有 Date/Last-Modified/ETag/
 // Cache-Control: public,max-age=10，其中 Date 是服务器请求/响应时间而非上游内容时间，
 // 上游内容时间以 HTTP Last-Modified 为准。
-const ORACLE_URL = 'https://oracle.browse.wf/worldState.min.json';
+const ORACLE_URL = ORACLE_WORLDSTATE_URL;
 const TIMEOUT_MS = 20_000;
 // Oracle 使用短超时/熔断的独立端点健康键，作为官方故障后的快速裂缝层探测。
 const ORACLE_TIMEOUT_MS = 6_000;
@@ -614,3 +616,7 @@ async function communityComposite(officialError, { cacheName, dependencies, fetc
     throw error;
   }
 }
+
+// 规范路由常量（R5 数据源合同）：与 data-source-contract.mjs 保持一致；
+// 测试按合同常量核对真实实现路径（合同漂移时两者相等即结构性一致）。
+export { OFFICIAL_URL, ORACLE_URL, PRIMARY_BASE };

@@ -17,11 +17,13 @@ import { resilientJsonRequest } from './http-resilience.mjs';
 import { readAlecaJson, stripDataUriReplacer } from './wfdata.mjs';
 import { loadWorldState } from './worldstate-source.mjs';
 import { buildHelpSections, getHelpSection, listHelpSections, matchCommandText, resolveHelpTopic } from './command-registry.mjs';
+// 规范路由常量（R5 数据源合同）：Market 只读端点基址。
+import { MARKET_BASE_URL } from './data-source-contract.mjs';
 
 const execFileAsync = promisify(execFile);
 
 const RELICS_DATA_URL = 'https://raw.githubusercontent.com/WFCD/warframe-items/master/data/json/Relics.json';
-const MARKET_BASE = 'https://api.warframe.market';
+const MARKET_BASE = MARKET_BASE_URL;
 const TIMEOUT_MS = 20_000;
 const DEFAULT_PLATFORM = 'pc';
 const DEFAULT_CROSSPLAY = true;
@@ -201,7 +203,9 @@ function tradingTaxForRank(detail, rank) {
   return Math.round(baseTax * triangularRankCopies(rank));
 }
 
-function marketEndpoint(url) {
+// Market URL → 端点健康键（与 data-source-contract.mjs 的 market-readonly 端点注册表
+// 一一对应，合同测试核对真实映射；主机不符返回 null 走裸 fetch）。
+export function marketEndpoint(url) {
   const parsed = new URL(url);
   if (parsed.hostname !== 'api.warframe.market') return null;
   const pathname = parsed.pathname;

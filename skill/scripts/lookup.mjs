@@ -20,6 +20,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { staleCachedJson } from './wfdata.mjs';
+// 规范路由常量（R5 数据源合同）：掉率查询 warframestat 主源 → WFCD GitHub 备用。
+import { WARFRAMESTAT_DROPS_SEARCH_URL, WFCD_DROPS_SLIM_URL } from './data-source-contract.mjs';
 
 const UA = { 'User-Agent': 'Mozilla/5.0' };
 const TIMEOUT_MS = 20_000;
@@ -158,13 +160,13 @@ async function sectionDict(query) {
   return hits.slice(0, 10);
 }
 
-// —— 掉落表搜索（warframestat drops，社区维护的官方掉率表） ——
+// —— 掉落表搜索（warframestat drops，社区维护的官方掉率表；失败回退 WFCD GitHub 全量缓存） ——
 async function sectionDrops(query) {
   try {
-    const data = await fetchJson(`https://api.warframestat.us/drops/search/${encodeURIComponent(query)}`);
+    const data = await fetchJson(`${WARFRAMESTAT_DROPS_SEARCH_URL}${encodeURIComponent(query)}`);
     return { source: 'https://api.warframestat.us/drops', data: (Array.isArray(data) ? data : []).slice(0, 30) };
   } catch {
-    const githubUrl = 'https://raw.githubusercontent.com/WFCD/warframe-drop-data/gh-pages/data/all.slim.json';
+    const githubUrl = WFCD_DROPS_SLIM_URL;
     const result = await staleCachedJson('drop-search-all-slim', { ttlMs: 24 * 60 * 60 * 1000, version: 1 }, async () => {
       try { return await fetchJson(githubUrl); }
       catch {
@@ -270,3 +272,6 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
+
+// 导出供数据源合同测试（R5）验证真实掉率降级路由；CLI 行为不变。
+export { sectionDrops };

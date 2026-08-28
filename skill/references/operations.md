@@ -97,6 +97,10 @@ SKILL.md 瘦身移入（2026-08-07）。这些规则的执行主体是脚本与 
 - DE 官方 worldState 结构漂移：关键集合缺失/畸形 → `cacheable=false`（拒绝写可靠缓存），与 `hasCompleteArchimedeas` 的周报可靠缓存口径叠加
 - 完整覆盖见 `scripts/drift-report.test.mjs`（随 `verify.ps1 -SourceOnly` 运行）
 
+### 数据源合同（R5，机器可读）
+
+- 四条公共数据链的提供者、顺序与降级语义由 `skill/scripts/data-source-contract.mjs` 单一维护：① PC 世界状态（DE 官方 `api.warframe.com/cdn/worldState.php` 为主 → warframestat 全量备用 → 可靠缓存末级；Oracle `oracle.browse.wf/worldState.min.json` 部分镜像仅在官方失败且 warframestat 成功时叠加裂缝字段，绝不单独、绝不写可靠缓存）；② Warframe.Market 只读四端点（v2 目录/详情/订单 + v1 成交统计，分端点健康；`statistics_closed` 历史口径不得冒充实时）；③ 掉率查询（warframestat drops → WFCD GitHub）；④ 物品/中文目录（本机 AlecaFrame → AlecaFrame CDN → warframestat 旧兜底）。**数据源合同**由 `data-source-contract.test.mjs`（随 `verify.ps1 -SourceOnly` 运行）按合同校验真实实现常量/路由与 `references/sources.md`、本文档（缺失/重复/未知 provider、错误顺序/角色、文档漂移都失败）
+
 ## AlecaFrame 快照边界
 
 - 快照只在登录/加载场景时更新；结果必须显示快照时间；`刷新账号` 只提示用户过加载点，不得伪称已强制刷新

@@ -16,10 +16,12 @@ import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resilientJsonRequest } from './http-resilience.mjs';
+// 规范路由常量（R5 数据源合同）：Market 只读端点基址与官方 worldState/warframestat。
+import { DE_OFFICIAL_WORLDSTATE_URL, MARKET_BASE_URL, WARFRAMESTAT_BASE_URL } from './data-source-contract.mjs';
 
-const WORLDSTATE_BASE = 'https://api.warframestat.us';
-const OFFICIAL_WORLDSTATE_URL = 'https://api.warframe.com/cdn/worldState.php';
-const MARKET_BASE = 'https://api.warframe.market';
+const WORLDSTATE_BASE = WARFRAMESTAT_BASE_URL;
+const OFFICIAL_WORLDSTATE_URL = DE_OFFICIAL_WORLDSTATE_URL;
+const MARKET_BASE = MARKET_BASE_URL;
 // 官方 worldState.php 体积大（实测 ~9s），独立宽松超时；Market 端点沿用 resilience 的 8s×2
 const OFFICIAL_WORLDSTATE_TIMEOUT_MS = 20_000;
 const OFFICIAL_TRADER_CACHE_TTL_MS = 2 * 60 * 1000;
@@ -70,7 +72,8 @@ const OWNED_GROUPS = [
 const DUCAT_ITEM_TYPE = '/Lotus/Types/Items/MiscItems/PrimeBucks';
 
 // 端点健康键：与 shortcuts/wfdata 共用同一份 health 文件，熔断与累计遥测跨入口一致。
-function endpointFor(url) {
+// 键名与 data-source-contract.mjs 的 market-readonly 端点注册表一一对应（合同测试核对）。
+export function endpointFor(url) {
   if (url.includes('worldState.php')) return 'worldstate:official:raw';
   if (url.includes('/pc/voidTrader/')) return 'worldstate:warframestat:trader';
   if (url.includes('/v2/orders/item/')) return 'market:v2:orders';

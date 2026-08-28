@@ -65,6 +65,10 @@ Language: zh-hans
 - 中文奖励名、杜卡德与实时在线挂单由 Warframe.Market v2 补全
 - 纪元映射：古纪=Lith，前纪=Meso，中纪=Neo，后纪=Axi；不得把“前纪 X1”误写成 Lith X1
 
+## 掉率查询
+
+- 掉率查询：`GET https://api.warframestat.us/drops/search/{英文关键词}` 优先（社区维护的官方掉率表，只读）；失败回退 WFCD GitHub 全量表 `https://raw.githubusercontent.com/WFCD/warframe-drop-data/gh-pages/data/all.slim.json`（`staleCachedJson` 缓存 24h，本地按关键词过滤再裁剪输出）
+
 ## 入侵/警报奖励译名兜底链
 
 世界状态里的入侵奖励是内部路径尾段（如 `GrineerCombatKnifeHeatsink`）。翻译顺序：拆词 → 别名归一（`grineer combat knife`→`sheev`、`sheev sortie blueprint`→`sheev blueprint` 等，灰机wiki 口径，见 `scripts/reward-zh-fallback.mjs`；配方尾段夹带的 `Sortie` 是 DE 路径词，不归一就无法与 Market 的 `Sheev Blueprint` 整词对上）→ Market v2 zh-hans 整词 → 官方词典（bounty maps）→ 学习词典（`.cache/warframe-data/reward-zh-fallback.json`，种子：希芙及部件含蓝图）→ 组件词元（亡魂/破坏者/枪机/散热片…）。全链查无才落「未收录奖励」；别名+词元组合出的译名会自动写回学习词典。别名新增必须有灰机wiki/官方词典依据，禁止凭猜测加泛词。官方源有时已把奖励预翻译成中文（如「异融 Alad V 导航坐标」），输入本身含中文且仅残留官方简中刻意保留的拉丁专名（Alad V/Forma）时直接放行，不落占位也不进 inbox。仍查无的内部名自动进入 `.cache/warframe-data/reward-zh-inbox.json`，由每日 AI 定时任务查证 Market/灰机wiki 后按同键回填学习词典（`learn`）或 `dismiss`；AI 只回填有据译名，不参与热路径。每日任务有可部署定义 `config/cron/reward-zh-ai.job.json`（安装/修复合同与并发原子细节见 `references/operations.md`）。
@@ -91,6 +95,17 @@ Language: zh-hans
 | Nightwave | 午夜电波 |
 | Platinum / Ducats | 白金 / 杜卡德金币 |
 
+## 数据源优先级（机器可读合同，R5）
+
+四条公共数据链（降级语义以代码为准，本合同校验真实实现与文档一致）：
+
+1. **PC 世界状态**：DE 官方 `https://api.warframe.com/cdn/worldState.php` 为主 → `https://api.warframestat.us/{platform}` 全量备用 → 可靠缓存末级；browse.wf Oracle `https://oracle.browse.wf/worldState.min.json` 是部分镜像（无 Invasions/SyndicateMissions 等，也没有顶层 Time），只在**官方失败且 warframestat 成功**时叠加裂缝字段，绝不单独返回、绝不写入可靠缓存
+2. **Warframe.Market 只读**：v2 目录/详情/订单 + v1 只读成交统计，四端点各自维护端点健康；`statistics_closed` 是已成交历史口径，v2 订单才是实时挂单，历史价不得冒充实时
+3. **掉率查询**：warframestat `drops/search` 优先 → WFCD GitHub `all.slim.json` 备用（见「掉率查询」）
+4. **物品/中文目录**：本机 AlecaFrame `cachedData` → AlecaFrame CDN → warframestat 旧兜底（见「AlecaFrame 本机账号快照」末条）
+
+由 `scripts/data-source-contract.mjs` 单一维护；`data-source-contract.test.mjs`（随 `verify.ps1 -SourceOnly` 运行）校验注册表完整性（缺失/重复/未知 provider、错误顺序/角色、Oracle 越权、Market 口径混淆都失败）与真实实现常量、路由及本文档（文档漂移失败）。
+
 ## 限制
 
 - 仅支持 Digital Extremes 国际服；WeGame 国服没有本技能可用的公开 API
@@ -105,3 +120,4 @@ Language: zh-hans
 - 可靠个人查询：段位、货币余额、剩余交易、物品数量、遗物精炼与数量、赋能等级与数量
 - 周常字段只按证据强度展示：`DescentRewards` 可显示沉沦之地层数；`EntratiVaultCountLastPeriod` 明确属于上一周期；最近突击/执刑官奖励和午夜电波历史没有可靠周期归属时不得自动标记本周完成
 - 快照不是实时 API。所有结果必须显示 `LastInventorySync` 对应时间，并提示进入任务、中继站或道场后才可能刷新
+- 物品/中文目录降级链（公开功能不依赖安装 AlecaFrame）：本机 `cachedData\json\*.json` 优先（快、离线可用）→ AlecaFrame CDN `https://cdn.alecaframe.com/warframeData/json/*`（与本地同构文件，缓存 7 天，失败退陈旧）→ warframestat 旧兜底 `https://api.warframestat.us/items?language=zh&only=uniqueName,name`（仅用于 lang 中文名表重建，重建表 <1000 条拒收；目录 json 没有该层）
