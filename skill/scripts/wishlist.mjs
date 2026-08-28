@@ -25,7 +25,7 @@ const WS_ROUTE = '@wfm|cmd/subscribe/newOrders';
 const WS_EVENT_ROUTE = '@wfm|event/subscriptions/newOrder';
 const PLATFORM = 'pc';
 const CROSSPLAY = true;
-const REST_INTERVAL_MS = 10 * 60 * 1000;
+export const REST_INTERVAL_MS = 10 * 60 * 1000;
 // 愿望命中通知的保守业务 TTL（R3 第四片）：市场快照 10 分钟就过期，
 // 逾期不盲发；Outbox 对每条记录再按默认 TTL（48h）封顶，10 分钟生效的
 // 是业务过期（expiresAt），不影响掉落/世界状态/周报的既有 TTL 行为。
