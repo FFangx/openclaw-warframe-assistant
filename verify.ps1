@@ -104,6 +104,11 @@ Invoke-Checked 'command registry documentation contracts' {
   & node --test (Join-Path $repoRoot 'tools\generate-command-docs.test.mjs')
   if ($LASTEXITCODE -ne 0) { throw "command documentation tests failed: $LASTEXITCODE" }
   & node (Join-Path $repoRoot 'tools\generate-command-docs.mjs') --check
+  if ($LASTEXITCODE -ne 0) { throw "command directory check failed: $LASTEXITCODE" }
+  & node --test (Join-Path $repoRoot 'tools\behavior-coverage.test.mjs')
+  if ($LASTEXITCODE -ne 0) { throw "behavior documentation coverage tests failed: $LASTEXITCODE" }
+  & node (Join-Path $repoRoot 'tools\behavior-coverage.mjs') --check
+  if ($LASTEXITCODE -ne 0) { throw "behavior documentation coverage failed: $LASTEXITCODE" }
 }
 if (-not $SkipInstallerTest) { Invoke-Checked 'installer lifecycle and stale-file quarantine' { Test-InstallerLifecycle } }
 Invoke-Checked 'release changelog contract tests' {

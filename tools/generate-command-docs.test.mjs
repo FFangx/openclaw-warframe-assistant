@@ -28,3 +28,8 @@ test('正式命令目录与注册表 commandId 双向覆盖且无重复', () => 
   assert.equal(tableIds.length, registryIds.length);
   assert.equal(new Set(tableIds).size, tableIds.length);
 });
+
+test('能力详单行为文档覆盖注册表每个 commandId 且恰好一次', async () => {
+  const { capabilitiesCoverageErrors } = await import('./behavior-coverage.mjs');
+  assert.deepEqual(await capabilitiesCoverageErrors(), []);
+});
