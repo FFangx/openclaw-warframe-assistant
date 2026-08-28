@@ -23,6 +23,7 @@ import { getArbyTiers, getBountyZhMaps, getOracleEventMap, stripDataUriReplacer 
 import { applyRewardAliases, learnReward, mergeLearnedRewards, queuePendingReward } from './reward-zh-fallback.mjs';
 import { loadWorldState } from './worldstate-source.mjs';
 import { createOutbox, parseLegacyMessage, targetKeyOf } from './notification-outbox.mjs';
+import { OUTBOX_FILE_NAME, ROUTING_FAMILIES } from './notification-routing-contract.mjs';
 
 const MARKET_ITEMS_URL = 'https://api.warframe.market/v2/items';
 const ARBITRATION_SCHEDULE_URL = 'https://browse.wf/arbys.txt';
@@ -90,9 +91,9 @@ export async function deliverMonitorResult(result, target, send = sendQQDirect, 
 // ---------- 通知 Outbox（R3 第二片：世界状态订阅 deliver 路径；第三片：weekly 主动周报） ----------
 // 订阅/掉落/周报状态同目录，Outbox 文件共用（业务键前缀不同，按 targetKey 过滤）。
 
-// Outbox 默认路径：与订阅状态同目录（warframe-delivery-outbox.json）
+// Outbox 默认路径：与订阅状态同目录（warframe-delivery-outbox.json，路由合同共享文件名）
 function defaultOutboxPath(statePath) {
-  return path.join(path.dirname(String(statePath)), 'warframe-delivery-outbox.json');
+  return path.join(path.dirname(String(statePath)), OUTBOX_FILE_NAME);
 }
 
 // 业务幂等键：脱敏 targetKey + 稳定「事件 × 命中订阅」集合（fresh 与 closing 区分）。
@@ -112,7 +113,7 @@ export function worldStateBusinessKey(target, fresh, closing) {
     closing: stableItems(closing),
   };
   const digest = createHash('sha256').update(JSON.stringify(stable)).digest('hex');
-  return `worldstate:${targetKeyOf(target)}:${digest}`;
+  return `${ROUTING_FAMILIES.worldstate.prefix}${targetKeyOf(target)}:${digest}`;
 }
 
 // 聚合通知的业务过期：取本次卡片（fresh+closing）中最早的有效事件 expiry——
@@ -133,7 +134,7 @@ export function weeklyBusinessKey(target, weeklyId, subscriptionIds = []) {
     weekly: String(weeklyId || ''),
     subscriptions: ids,
   })).digest('hex');
-  return `weekly:${targetKeyOf(target)}:${digest}`;
+  return `${ROUTING_FAMILIES.weekly.prefix}${targetKeyOf(target)}:${digest}`;
 }
 
 // 周常业务过期：本周下次重置边界（过周不补发旧周报）；Outbox 入队时再按 48h 默认 TTL 封顶。
@@ -146,7 +147,7 @@ export function weeklyDeliveryExpiry(nowMs = Date.now()) {
 export function weeklyPartsFor(result) {
   const mediaUrl = String(result?.data?.mediaUrl || '');
   if (mediaUrl) {
-    const parts = [{ kind: 'media', value: mediaUrl, transport: 'lossless' }];
+    const parts = [{ kind: 'media', value: mediaUrl, transport: ROUTING_FAMILIES.weekly.media.primary }];
     const dealsMediaUrl = String(result?.data?.dealsMediaUrl || '');
     if (dealsMediaUrl) parts.push({ kind: 'media', value: dealsMediaUrl });
     return parts;

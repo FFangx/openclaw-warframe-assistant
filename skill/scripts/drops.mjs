@@ -22,6 +22,7 @@ import { getMarketPriceIndex, stripDataUriReplacer } from './wfdata.mjs';
 import { promisify } from 'node:util';
 import { buildDropsAlertCard, renderWarframeCard } from './warframe-cards.mjs';
 import { createOutbox, migrateLegacyDeliveryQueue, parseLegacyMessage, targetKeyOf } from './notification-outbox.mjs';
+import { OUTBOX_FILE_NAME, ROUTING_FAMILIES } from './notification-routing-contract.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -482,7 +483,13 @@ async function activeDropSubscriptions(ledgerPath, target) {
 // 不会重发图片）；进程重启后 pending 从磁盘恢复，同一业务键不会重复入队。
 
 function defaultOutboxPath(statePath) {
-  return path.join(path.dirname(String(statePath)), 'warframe-delivery-outbox.json');
+  return path.join(path.dirname(String(statePath)), OUTBOX_FILE_NAME);
+}
+
+// 掉落通知业务键（R5 路由合同）：脱敏 targetKey + 同步事件（快照 syncedAt 时间戳）——
+// 同一同步事件不会重复入队；前缀取自路由注册表，与其余家族平级。
+export function dropsBusinessKey(target, syncedAt) {
+  return `${ROUTING_FAMILIES.drops.prefix}${targetKeyOf(target)}:${String(syncedAt)}`;
 }
 
 // 自己发消息并确认结果（cron announce 是 best-effort，失败即丢）；有 messageId 才算送达。
@@ -676,7 +683,7 @@ async function monitorDrops(options = {}) {
     // 先入 Outbox 再写基线再投递：即使 cron 在发送期间被强杀，下一轮仍能从
     // Outbox 补投（pending 恢复）；同一同步事件（businessKey 含 syncedAt）不会重复入队。
     const enqueued = await outbox.enqueue({
-      businessKey: `drops:${targetKeyOf(target)}:${String(snapshot.syncedAt)}`,
+      businessKey: dropsBusinessKey(target, snapshot.syncedAt),
       target,
       parts: partsForMessage(message),
     });

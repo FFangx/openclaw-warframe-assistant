@@ -35,7 +35,6 @@ const dropsState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-
 const weeklyState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-weekly.json');
 // 愿望命中通知与掉落/世界状态/周报共用同一个 R3 通知 Outbox（业务键前缀区分）
 const notificationOutboxScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'notification-outbox.mjs');
-const wishlistOutboxPath = path.resolve(path.dirname(wishlistState), 'warframe-delivery-outbox.json');
 const cardDir = path.resolve(pluginDir, '..', '..', '..', '.cache', 'warframe-cards');
 const subscriptionCardDir = path.resolve(pluginDir, '..', '..', '..', 'media', 'qqbot', 'warframe-cards');
 const shortCommandContext = createContextBridge();
@@ -359,10 +358,22 @@ async function recordWishlistLatencyMetrics(api: any, metrics: any, monitorResul
 // 逐 part 持久化结果，不在账本提交后再裸循环发送（下面 sendWishlistGatewayResult
 // 只保留给「建立后立即行情卡」等交互用例顺序）。
 let wishlistOutbox: any = null;
+let wishlistRoutingContract: { keyPrefix: string; outboxFileName: string } | null = null;
+async function wishlistRouting(): Promise<{ keyPrefix: string; outboxFileName: string }> {
+  if (!wishlistRoutingContract) {
+    const module = await import(pathToFileURL(wishlistScript).href);
+    wishlistRoutingContract = {
+      keyPrefix: String(module.WISHLIST_KEY_PREFIX),
+      outboxFileName: String(module.WISHLIST_OUTBOX_FILE_NAME),
+    };
+  }
+  return wishlistRoutingContract;
+}
 async function wishlistOutboxInstance(): Promise<any> {
   if (!wishlistOutbox) {
     const { createOutbox } = await import(pathToFileURL(notificationOutboxScript).href);
-    wishlistOutbox = createOutbox({ filePath: wishlistOutboxPath });
+    const routing = await wishlistRouting();
+    wishlistOutbox = createOutbox({ filePath: path.resolve(path.dirname(wishlistState), routing.outboxFileName) });
   }
   return wishlistOutbox;
 }
@@ -384,7 +395,8 @@ async function flushWishlistTargetPending(api: any, target: string): Promise<voi
     return;
   }
   const outbox = await wishlistOutboxInstance();
-  const summary = await outbox.deliverPending({ target, mailer, keyPrefix: 'wishlist:' });
+  const routing = await wishlistRouting();
+  const summary = await outbox.deliverPending({ target, mailer, keyPrefix: routing.keyPrefix });
   if (Number(summary?.sentParts || 0) > 0) {
     api.logger.info?.(`Warframe wishlist delivered pending parts: ${summary.sentParts}`);
   }

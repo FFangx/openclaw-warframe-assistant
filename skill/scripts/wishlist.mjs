@@ -16,6 +16,7 @@ import { renderWarframeCard } from './warframe-cards.mjs';
 import { fetchMarketItems, resolveMarketItem } from './shortcuts.mjs';
 import { createSubscriptionsMailer, deliverMonitorResult } from './subscriptions.mjs';
 import { createOutbox, targetKeyOf } from './notification-outbox.mjs';
+import { OUTBOX_FILE_NAME, ROUTING_FAMILIES } from './notification-routing-contract.mjs';
 
 const MARKET_BASE = 'https://api.warframe.market';
 const WS_URL = 'wss://ws.warframe.market/socket';
@@ -29,8 +30,9 @@ const REST_INTERVAL_MS = 10 * 60 * 1000;
 // 逾期不盲发；Outbox 对每条记录再按默认 TTL（48h）封顶，10 分钟生效的
 // 是业务过期（expiresAt），不影响掉落/世界状态/周报的既有 TTL 行为。
 const WISHLIST_TTL_MS = 10 * 60 * 1000;
-// 愿望通知 Outbox 业务键前缀（与 worldstate:/weekly:/drops:/legacy: 平级）
-const WISHLIST_KEY_PREFIX = 'wishlist:';
+// 愿望通知 Outbox 业务键前缀（路由合同统一维护，与 worldstate:/weekly:/drops:/legacy: 平级）
+export const WISHLIST_KEY_PREFIX = ROUTING_FAMILIES.wishlist.prefix;
+export const WISHLIST_OUTBOX_FILE_NAME = OUTBOX_FILE_NAME;
 const DEFAULT_WS_WINDOW_MS = 52 * 1000;
 const DEFAULT_STATE = path.resolve(process.cwd(), 'warframe-wishlist.json');
 const SHORT_ID_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -339,9 +341,9 @@ function hitNotificationText(hits) {
 // ---------- 愿望命中通知 Outbox（R3 第四片：REST 校准 deliver + Gateway 实时命中） ----------
 // 与掉落/世界状态/周报共用同一状态文件（业务键前缀不同，按 targetKey 过滤）。
 
-// Outbox 默认路径：与愿望状态同目录（warframe-delivery-outbox.json），与其余切片一致
+// Outbox 默认路径：与愿望状态同目录（warframe-delivery-outbox.json，路由合同共享文件名），与其余切片一致
 export function defaultOutboxPath(statePath) {
-  return path.join(path.dirname(String(statePath)), 'warframe-delivery-outbox.json');
+  return path.join(path.dirname(String(statePath)), WISHLIST_OUTBOX_FILE_NAME);
 }
 
 // 命中 → 稳定「orderIdentity × 命中 wishId 集合」对（集合语义：顺序无关、同单去重）。

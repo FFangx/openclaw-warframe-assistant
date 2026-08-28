@@ -64,12 +64,13 @@ test('Gateway adapter mailer：缺配套方法或缺 target → 固定类别，�
 test('index.ts 合同：愿望命中 Outbox 注入与恢复（服务端类别、锁外逐 part、启动恢复）', async () => {
   const entry = await readFile(new URL('./index.ts', import.meta.url), 'utf8');
   assert.match(entry, /import \{ createGatewayWishlistMailer \} from '\.\/wishlist-gateway-mailer\.mjs'/u);
-  assert.match(entry, /wishlistOutboxPath = path\.resolve\(path\.dirname\(wishlistState\), 'warframe-delivery-outbox\.json'\)/u);
-  assert.match(entry, /createOutbox\(\{ filePath: wishlistOutboxPath \}\)/u);
+  assert.match(entry, /WISHLIST_OUTBOX_FILE_NAME/u);
+  assert.match(entry, /createOutbox\(\{ filePath: path\.resolve\(path\.dirname\(wishlistState\), routing\.outboxFileName\) \}\)/u);
   // live order 路径必须注入 Outbox，账本提交后由注入 mailer 逐 part 持久化（keyPrefix 只投本链）
   assert.match(entry, /processWishlistLiveOrder\(order, wishlistState, subscriptionCardDir, \{ outbox \}\)/u);
   assert.match(entry, /await flushWishlistTargetPending\(api, String\(result\.target\)\)/u);
-  assert.match(entry, /deliverPending\(\{ target, mailer, keyPrefix: 'wishlist:' \}\)/u);
+  assert.match(entry, /WISHLIST_KEY_PREFIX/u);
+  assert.match(entry, /deliverPending\(\{ target, mailer, keyPrefix: routing\.keyPrefix \}\)/u);
   // 启动时先恢复相关 target pending（在刷新索引/连 socket 之前）
   assert.match(entry, /await restoreWishlistPending\(api\);/u);
   const startBlock = entry.slice(entry.indexOf('async function startWishlistGateway'), entry.indexOf('async function stopWishlistGateway'));

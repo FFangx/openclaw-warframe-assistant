@@ -48,6 +48,7 @@ SKILL.md 瘦身移入（2026-08-07）。这些规则的执行主体是脚本与 
   无业务 expiry 时用保守的 6h 明确默认，且不晚于 48h 默认 TTL——入队成功但账本写失败下轮同键去重不重复入队，
   账本已提交但投递失败下一轮即使调度 `not_due` 也先补投 pending；图片成功文字失败只补投文字，进程重启 pending 自动恢复。
   `monitor`（announce）子命令不经过 Outbox，输出保持原样；周常已于第三片迁入同一 Outbox（见「订阅 周常」），愿望主动命中通知已于第四片迁入（见「Warframe.Market 愿望单」）
+- **路由合同（R5，机器可读）**：上述四类主动通知的业务键前缀、共享 Outbox 文件名、monitor/dry-run 例外与周报主图无损运输由 `skill/scripts/notification-routing-contract.mjs` 单一维护，drops/subscriptions/wishlist 从这里取前缀、文件名与运输模式；`notification-routing-contract.test.mjs`（随 `verify.ps1 -SourceOnly` 运行）按合同校验注册表完整性（缺失/重复/未知/错路由都失败）与真实投递路径。
 - `订阅 掉落`（个人）：独立 cron 每分钟只查快照 mtime，变化才解密 diff；首次只建基线；
   筛选词支持 全部/prime/部件/mod/赋能/稀有/具体物品名，缺省只推 Prime 部件/赋能/稀有传说 MOD；
   通知先写入 R3 共享 Outbox 第一版（`state/warframe-delivery-outbox.json`：脱敏目标哈希、业务幂等键、内容哈希、媒体/文字
