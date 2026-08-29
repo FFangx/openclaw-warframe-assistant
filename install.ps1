@@ -233,8 +233,9 @@ function Sync-ManagedTree([string]$Source, [string]$Destination, [string]$TreeNa
 # 每日「奖励译名 AI 查证」任务合同（config/cron/reward-zh-ai.job.json）
 #
 # 该任务是 agent 型 cron（查证需要网页搜索与判断）。本函数幂等安装/修复：
-# 按 declarationKey 找现有任务，缺则创建、合同字段漂移则 edit 修复；投递目标
-# 只在创建时按主人配置写入，修复时绝不改动用户既有的投递目标。
+# 按 declarationKey 找现有任务，缺则创建、合同字段漂移则 edit 修复。
+# 该任务只维护本地学习词典，必须强制 delivery=none；升级会清理旧 channel/to，
+# 防止 agent 的计划、进度或最终摘要泄漏到 QQ。
 # 只在「真实 OpenClaw 工作区」执行：工作区旁没有 openclaw.json（如安装器
 # 生命周期测试的临时工作区）或 openclaw.cmd 不在 PATH 时直接跳过，
 # 避免测试过程触碰真实 cron 存储。
@@ -265,22 +266,6 @@ function Get-JobField($Job, [string]$Camel, [string]$Snake) {
   return $null
 }
 
-function Resolve-OwnerC2C {
-  $openClawJson = Join-Path (Split-Path -Parent $workspacePath) 'openclaw.json'
-  if (-not (Test-Path -LiteralPath $openClawJson -PathType Leaf)) { return $null }
-  try {
-    $config = Read-Utf8 $openClawJson | ConvertFrom-Json
-    $owner = $null
-    if (Get-JobField $config.plugins.entries.'warframe-fast-commands' 'config' 'config') {
-      $owner = [string](Get-JobField $config.plugins.entries.'warframe-fast-commands'.config 'ownerOpenId' 'ownerOpenId')
-    } elseif (Get-JobField $config.plugins.config.'warframe-fast-commands' 'ownerOpenId' 'ownerOpenId') {
-      $owner = [string]$config.plugins.config.'warframe-fast-commands'.ownerOpenId
-    }
-    if (-not $owner) { return $null }
-    return 'qqbot:c2c:' + $owner.Trim().ToLowerInvariant()
-  } catch { return $null }
-}
-
 function Ensure-RewardZhCronContract {
   if ($SkipCron) { Write-Host 'Skipping reward-zh AI cron contract (-SkipCron).'; return }
   $openClawJson = Join-Path (Split-Path -Parent $workspacePath) 'openclaw.json'
@@ -299,8 +284,6 @@ function Ensure-RewardZhCronContract {
   $scriptsDir = (Join-Path $workspacePath 'skills\warframe-assistant\scripts').Replace('\', '/')
   $expectedMessage = ([string]$job.payload.message).Replace('{{SKILL_SCRIPTS_DIR}}', $scriptsDir)
   if ($expectedMessage.Contains('{{')) { throw "Cron contract placeholders unresolved in: $jobPath" }
-  $ownerC2C = Resolve-OwnerC2C
-
   $all = @()
   $jobs = Get-CliJson @('cron', 'list', '--json')
   try {
@@ -319,13 +302,9 @@ function Ensure-RewardZhCronContract {
       '--session', [string]$job.sessionTarget,
       '--message', $expectedMessage,
       '--timeout-seconds', [string]$job.payload.timeoutSeconds,
+      '--no-deliver',
       '--json'
     )
-    if ($ownerC2C) {
-      $addArgs += @('--announce', '--channel', 'qqbot', '--to', $ownerC2C, '--best-effort-deliver')
-    } else {
-      Write-Host 'ownerOpenId 未配置：任务将安装但不投递 QQ（结果只在 cron 日志）'
-    }
     if ($PSCmdlet.ShouldProcess($declarationKey, 'Create reward-zh AI cron job')) {
       Get-CliJson $addArgs | Out-Null
       Write-Host "Created cron job $declarationKey"
@@ -358,12 +337,21 @@ function Ensure-RewardZhCronContract {
   if ([string](Get-JobField $current 'description' 'description') -cne [string]$job.description) { $patch.Add('--description'); $patch.Add([string]$job.description) }
   if ([string](Get-JobField $current 'sessionTarget' 'session_target') -ne [string]$job.sessionTarget) { $patch.Add('--session'); $patch.Add([string]$job.sessionTarget) }
 
-  # 投递目标只在「从未配置投递且现在能解析出主人」时补上，绝不改动既有目标
+  # 纯后台维护任务永不投递；升级时清理历史 announce/channel/to 配置。
   $delivery = Get-JobField $current 'delivery' 'delivery'
+  $deliveryMode = $null
   $deliveryTo = $null
-  if ($null -ne $delivery) { $deliveryTo = [string](Get-JobField $delivery 'to' 'to') }
-  if ($ownerC2C -and -not $deliveryTo) {
-    $patch.Add('--announce'); $patch.Add('--channel'); $patch.Add('qqbot'); $patch.Add('--to'); $patch.Add($ownerC2C); $patch.Add('--best-effort-deliver')
+  $deliveryChannel = $null
+  $deliveryBestEffort = $false
+  if ($null -ne $delivery) {
+    $deliveryMode = [string](Get-JobField $delivery 'mode' 'mode')
+    $deliveryTo = [string](Get-JobField $delivery 'to' 'to')
+    $deliveryChannel = [string](Get-JobField $delivery 'channel' 'channel')
+    $bestEffortValue = Get-JobField $delivery 'bestEffort' 'best_effort'
+    if ($null -ne $bestEffortValue) { $deliveryBestEffort = [bool]$bestEffortValue }
+  }
+  if ($deliveryMode -ne 'none' -or $deliveryTo -or $deliveryChannel -or $deliveryBestEffort) {
+    $patch.Add('--no-deliver'); $patch.Add('--clear-channel'); $patch.Add('--clear-to'); $patch.Add('--no-best-effort-deliver')
   }
 
   if ($patch.Count -gt 0) {

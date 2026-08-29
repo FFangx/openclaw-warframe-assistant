@@ -221,7 +221,10 @@ if (-not $SourceOnly) {
       if ($everyMs -ne 86400000) { throw "daily reward-zh AI cron schedule is not daily (everyMs=$everyMs)" }
       $sessionTarget = if ($entryProps -contains 'sessionTarget') { [string]$entry.sessionTarget } else { '' }
       if ($sessionTarget -ne 'isolated') { throw 'daily reward-zh AI cron session target is not isolated' }
-      Write-Host 'reward-zh AI cron contract verified: enabled, daily, isolated agent job'
+      $deliveryObj = if ($entryProps -contains 'delivery') { $entry.delivery } else { $null }
+      $deliveryMode = if ($null -ne $deliveryObj) { [string]$deliveryObj.mode } else { '' }
+      if ($deliveryMode -ne 'none') { throw "daily reward-zh AI cron delivery must be none (actual=$deliveryMode)" }
+      Write-Host 'reward-zh AI cron contract verified: enabled, daily, isolated agent job, delivery disabled'
     }
     if (-not $SkipDoctor) { Invoke-Checked 'runtime environment doctor' { & node (Join-Path $skillTarget 'scripts\doctor.mjs') } }
     if (-not $SkipPluginDoctor) {

@@ -93,4 +93,8 @@ test('reward-zh 源码声明是每日 isolated agent cron', async () => {
   assert.equal(job.schedule.everyMs, rule.everyMs);
   assert.equal(job.sessionTarget, rule.sessionTarget);
   assert.equal(job.payload.kind, rule.payloadKind);
+  assert.equal(job.delivery.mode, rule.deliveryMode);
+  assert.equal(job.delivery.bestEffort, false);
+  assert.equal(Object.hasOwn(job.delivery, 'channel'), false);
+  assert.equal(Object.hasOwn(job.delivery, 'to'), false);
 });

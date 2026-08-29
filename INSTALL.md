@@ -36,7 +36,7 @@ WFInfo 默认安装到 `%LOCALAPPDATA%\OpenClaw\WFInfo`；可用 `-WFInfoInstall
 1. 先运行当前源码的脚本测试与插件合同测试；失败时不改运行时
 2. 将 `skill/` 与 `extension/` 通过 staging 同步到运行时，并逐文件校验 SHA-256
 3. 将 `config/AGENTS.warframe.md` 的受控安全片段追加到工作区 `AGENTS.md` 末尾；再次运行会原地更新，不会重复追加
-4. 按 `config/cron/reward-zh-ai.job.json` 幂等安装/修复每日「奖励译名 AI 查证」agent 任务（declarationKey `warframe-assistant:reward-zh-ai:default`；缺则创建、字段漂移则修复、不动既有投递目标；工作区旁没有 `openclaw.json` 或加 `-SkipCron` 时跳过，测试工作区不会触碰真实 cron）
+4. 按 `config/cron/reward-zh-ai.job.json` 幂等安装/修复每日「奖励译名 AI 查证」agent 任务（declarationKey `warframe-assistant:reward-zh-ai:default`；缺则创建、字段漂移则修复；该纯后台任务强制无投递并清理旧 channel/to，避免过程播报进入 QQ；工作区旁没有 `openclaw.json` 或加 `-SkipCron` 时跳过，测试工作区不会触碰真实 cron）
 5. 仅在指定 `-WithWFInfo` 时安装或校验 WFInfo 配套版；它是单独的 Apache-2.0 组件，不并入本项目 MIT 源码
 
 修改 `AGENTS.md` 前会保留 `AGENTS.md.warframe-assistant.bak`。只更新安全片段可加 `-AgentsOnly`；完全不改 `AGENTS.md` 可加 `-SkipAgents`；删除该受控片段可运行 `-RemoveAgents`。脚本不会覆盖片段以外的个人规则。

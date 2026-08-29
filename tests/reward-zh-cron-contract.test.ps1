@@ -53,6 +53,9 @@ if ($null -ne $job) {
   Assert-Contains 'message: learn contract' $message 'learn'
   Assert-Contains 'message: dismiss contract' $message 'dismiss'
   Assert-Contains 'message: empty-inbox NO_REPLY' $message 'NO_REPLY'
+  Assert-Contains 'message: forbids progress narration' $message '禁止在执行前或执行过程中输出计划、进度'
+  Assert-Contains 'message: emits exactly one final response' $message '只产生一次最终响应'
+  Assert-Contains 'message: final report is Chinese only' $message '最终响应仅用中文'
   Assert-Contains 'message: pure-Chinese requirement' $message '纯中文'
   Assert-Contains 'message: evidence sources only Market/huijiwiki' $message '灰机wiki'
   Assert-Contains 'message: learn ok:false contract (conflict/seed)' $message 'ok:false'
@@ -71,11 +74,11 @@ if ($null -ne $job) {
   Assert-Contains 'message: calendar write failure keeps inbox' $message '写入失败'
   Assert-Contains 'message: calendar unknown paths are searched against Huiji wiki' $message 'PunchToPrimary=打孔纸带'
   Assert-Contains 'message: calendar example uses both name and effect' $message 'CompanionsBuffNearbyPlayer=人多势众'
-  Assert-True 'delivery is best-effort announce to owner placeholder' (
-    [string]$job.delivery.mode -eq 'announce' -and
-    [string]$job.delivery.channel -eq 'qqbot' -and
-    [string]$job.delivery.to -eq '{{OWNER_C2C}}' -and
-    [bool]$job.delivery.bestEffort -eq $true)
+  Assert-True 'delivery is disabled for the pure background task' (
+    [string]$job.delivery.mode -eq 'none' -and
+    [bool]$job.delivery.bestEffort -eq $false -and
+    -not ($job.delivery.PSObject.Properties.Name -contains 'channel') -and
+    -not ($job.delivery.PSObject.Properties.Name -contains 'to'))
 }
 
 # --- install.ps1 wiring: idempotent create/repair, never runs in test workspaces ---
@@ -86,7 +89,11 @@ Assert-Contains 'install.ps1 has the ensure function' $installText 'function Ens
 Assert-Contains 'install.ps1 wires the ensure call' $installText 'Ensure-RewardZhCronContract'
 Assert-Contains 'install.ps1 has -SkipCron opt-out' $installText '[switch]$SkipCron'
 Assert-Contains 'install.ps1 guards non-runtime workspaces' $installText 'openclaw.json beside the workspace'
-Assert-Contains 'install.ps1 preserves existing delivery targets' $installText '绝不改动用户既有的投递目标'
+Assert-Contains 'install.ps1 creates the job with delivery disabled' $installText "'--no-deliver'"
+Assert-Contains 'install.ps1 clears legacy delivery channel' $installText "'--clear-channel'"
+Assert-Contains 'install.ps1 clears legacy delivery target' $installText "'--clear-to'"
+Assert-Contains 'install.ps1 repairs legacy best-effort delivery' $installText "'--no-best-effort-deliver'"
+Assert-True 'install.ps1 no longer resolves an owner target for this task' (-not $installText.Contains('Resolve-OwnerC2C'))
 Assert-Contains 'install.ps1 uses declarationKey lookup' $installText 'declarationKey'
 
 # --- verify.ps1 wiring: source contract test + read-only runtime check ---

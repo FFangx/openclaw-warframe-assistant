@@ -5,7 +5,7 @@ export const SCHEDULE_CONTRACT = Object.freeze({
   weekly: Object.freeze({ weekdayUtc: 1, hourUtc: 0, minuteUtc: 0 }),
   rewardZh: Object.freeze({
     declarationKey: 'warframe-assistant:reward-zh-ai:default', scheduleKind: 'every',
-    everyMs: 24 * 60 * 60_000, sessionTarget: 'isolated', payloadKind: 'agentTurn',
+    everyMs: 24 * 60 * 60_000, sessionTarget: 'isolated', payloadKind: 'agentTurn', deliveryMode: 'none',
   }),
 });
 
@@ -25,7 +25,8 @@ export function validateScheduleContract(value = SCHEDULE_CONTRACT) {
   if (value.weekly?.weekdayUtc !== 1 || value.weekly?.hourUtc !== 0 || value.weekly?.minuteUtc !== 0) errors.push('weekly Monday 00:00 UTC');
   const reward = value.rewardZh;
   if (reward?.scheduleKind !== 'every' || reward?.everyMs !== 24 * 60 * 60_000
-    || reward?.sessionTarget !== 'isolated' || reward?.payloadKind !== 'agentTurn') errors.push('reward-zh daily agent cron');
+    || reward?.sessionTarget !== 'isolated' || reward?.payloadKind !== 'agentTurn'
+    || reward?.deliveryMode !== 'none') errors.push('reward-zh daily agent cron');
   if (errors.length) throw new Error(`调度合同无效: ${errors.join(', ')}`);
   return true;
 }
