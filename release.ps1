@@ -1,6 +1,5 @@
 ﻿[CmdletBinding(SupportsShouldProcess = $true)]
 param(
-  [string]$Version,
   [switch]$DryRun,
   [switch]$Push,
   [switch]$SkipVerify
@@ -9,7 +8,6 @@ param(
 # Release loop for the OpenClaw Warframe assistant.
 #
 #   .\release.ps1                # release the version recorded in .\VERSION
-#   .\release.ps1 -Version 1.1.0 # bump VERSION to 1.1.0 and release it
 #   .\release.ps1 -DryRun        # preview the release without changing anything
 #   .\release.ps1 -Push          # also push main and the new tag to origin
 #
@@ -67,11 +65,7 @@ function Invoke-Git([string[]]$Arguments) {
 }
 
 function Get-Version {
-  if ($Version) {
-    if ($Version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') { throw "Invalid semver: $Version" }
-    return $Version
-  }
-  if (-not (Test-Path -LiteralPath $versionPath -PathType Leaf)) { throw 'VERSION file is missing. Create it or pass -Version.' }
+  if (-not (Test-Path -LiteralPath $versionPath -PathType Leaf)) { throw 'VERSION file is missing; prepare the release metadata before running release.ps1.' }
   $fromFile = (Read-Utf8 $versionPath).Trim()
   if ($fromFile -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') { throw "VERSION file contains an invalid semver: $fromFile" }
   return $fromFile
@@ -122,15 +116,11 @@ if (-not $DryRun -and -not $SkipVerify) {
   Write-Host 'DryRun: verification gate skipped.'
 }
 
-$versionChanged = $false
-if ($Version -and (Read-Utf8 $versionPath).Trim() -ne $Version) { $versionChanged = $true }
-
 $newChangelog = Get-ChangelogRelease $releaseVersion
 
 if ($DryRun) {
   Write-Host 'DryRun: nothing was written. Changelog header would become:'
   ($newChangelog -split "`n") | Select-Object -First 10 | ForEach-Object { Write-Host "  $_" }
-  if ($versionChanged) { Write-Host "DryRun: VERSION would change to $releaseVersion" }
   Write-Host "DryRun: commit message: release v$releaseVersion"
   exit 0
 }

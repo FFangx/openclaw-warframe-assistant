@@ -24,7 +24,7 @@
 | `裂缝 速刷` | `赏金 阿耶精华` |
 |:---:|:---:|
 | <img src="img/showcase-fissure-speed.png" width="440"/> | <img src="img/showcase-bounty-aya.png" width="440"/> |
-| *普通/钢铁分区、任务标签与剩余时间* | *当前轮次、地点、任务等级与命中概率* |
+| *普通/钢铁/九重天筛选、任务标签与剩余时间* | *当前轮次、地点、任务等级与命中概率* |
 
 **个人库存直接参与决策**——不是只会查数据，而是回答「我现在开什么」「怎样凑够杜卡德最省白金」：
 
@@ -58,7 +58,7 @@
 
 卡片底部会按当前结果给出最多两条“下一步”命令，例如获取路线发现遗物均已入库时提示`wm 夜灵p`，Market 整套卡则提示`获取 夜灵p`。
 
-所有回答生成 600~800px 深色图片卡，官方中文译名，货币带游戏图标。
+主要确定性命令生成 600～800px 宽的深色图片卡；无法渲染或没有卡片模板时会诚实回退为中文文字，不会为了“有图”而编造结果。
 
 ## 架构一眼看懂
 
@@ -72,7 +72,7 @@ flowchart LR
     S --> C[🎴 图片卡]
     S -.本地策略.-> W[WFInfo 游戏覆盖层]
     S -.只读.-> A[(AlecaFrame<br/>本机快照)]
-    S --> API[(warframestat<br/>warframe.market<br/>browse.wf)]
+    S --> API[(DE worldState<br/>warframestat / browse.wf<br/>warframe.market / relics.run)]
     CRON[OpenClaw cron] -->|订阅蹲守| S
 ```
 
@@ -80,7 +80,7 @@ flowchart LR
 - `extension/`：OpenClaw 插件（严格裸命令硬拦截 + 自然语言结构化工具；工具生成的卡片由插件直接投递 QQ）
 - `config/AGENTS.warframe.md`：安装器追加到用户 `AGENTS.md` 的只读与隐私安全边界
 
-数据源：api.warframestat.us、api.warframe.market v2、browse.wf（官方导出）、DE 官方 worldState、AlecaFrame 本机快照（只读）。详见 [NOTICE.md](NOTICE.md)。
+数据源：DE 官方 worldState（PC 首选）、api.warframestat.us（备用/交叉验证）、browse.wf（官方导出与词典；Oracle 只作条件式裂缝字段叠加）、api.warframe.market v2、relics.run（批量估值加速）与 AlecaFrame 本机快照（只读）。完整降级顺序见 [数据源说明](skill/references/sources.md) 与 [NOTICE.md](NOTICE.md)。
 
 ## 快速开始
 
@@ -100,7 +100,7 @@ https://github.com/FFangx/openclaw-warframe-assistant
 4. 默认只安装 OpenClaw 助手。只有我明确同意时才给 install.ps1 加 -WithWFInfo；WFInfo 是独立的 Apache-2.0 配套组件，不得把它并入本仓库。
 5. 使用仓库提供的 install.ps1，不要手工复制受管文件，也不要使用 -SkipPreflight、-SkipAgents 或 -SkipCron 绕过默认安全步骤。优先使用 PowerShell 7（pwsh）；若本机没有，再按 INSTALL.md 的兼容命令执行。
 6. 保留现有 openclaw.json、AGENTS.md、自定义插件、cron、订阅、状态、缓存和个人文件。不得读取、上传或回显 API Key、QQ/OpenID、Market Token、AlecaFrame 原始快照等敏感数据；缺少 ownerOpenId 时只说明应由我在本机填写的位置，不得猜测。
-7. 安装后运行 doctor.mjs 和 verify.ps1。全部通过后再重启 Gateway，并只读确认插件已加载、Gateway 仅按现有配置监听。不得发送真实 QQ 消息，不得操作游戏、交易、聊天或账号资产。
+7. 安装后先重启 Gateway，再运行 doctor.mjs 和 verify.ps1，确认插件加载的是本次受管构建、Gateway 仅按现有配置监听。不得发送真实 QQ 消息，不得操作游戏、交易、聊天或账号资产。
 8. 最后用简短中文报告：安装版本与提交、实际安装路径、是否安装 WFInfo、doctor/verify/Gateway 结果、仍需我手动完成的配置；报告中不得包含凭据或个人标识。
 
 遇到文档与实际环境不一致、验证失败或任何可能破坏现有数据的情况，请停止并说明，不要用跳过检查或删除数据的方式硬装。
@@ -126,6 +126,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
 # 同时安装经固定版本和 SHA-256 校验的 WFInfo 配套版（启用游戏内开奖决策）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -WithWFInfo
+
+# 让 Gateway 重新加载本次安装的 Skill/插件
+openclaw.cmd gateway restart
 
 # 装好后自检环境，输出功能矩阵
 node "$env:USERPROFILE\.openclaw\workspace\skills\warframe-assistant\scripts\doctor.mjs"
@@ -173,12 +176,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\verify.ps1
 
 ## 发布
 
-版本唯一来源是仓库根目录的 `VERSION`（当前 `1.1.3`）。GitHub Actions 在每次 push/PR/tag 时于 **Node 20 与 24** 两个版本上运行
+版本唯一来源是仓库根目录的 [`VERSION`](VERSION)。GitHub Actions 在每次 push/PR/tag 时于 **Node 20 与 24** 两个版本上运行
 `verify.ps1 -SourceOnly`（源码测试 + 安装器生命周期 + 全部合同测试），并校验 `skill/package-lock.json` 可复现；
-第三方 action 固定完整 commit SHA、`checkout` 关闭凭据持久化、权限保持最小只读。正式发布走 `release.ps1`：它校验干净工作树、`main` 与远端一致、源码验证通过、tag 不存在，然后把 `CHANGELOG.md` 的 `[Unreleased]` 章节落成版本章节并打 `vX.Y.Z` 标签：
+第三方 action 固定完整 commit SHA、`checkout` 关闭凭据持久化、权限保持最小只读。正式发布走 `release.ps1`：版本号与包元数据先在发布准备提交中对齐；脚本再校验干净工作树、`main` 与远端一致、源码验证通过、tag 不存在，将待发布版本章节盖上日期并打 `vX.Y.Z` 标签：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\release.ps1 -Version 1.1.3   # 预览用 -DryRun，推送加 -Push
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\release.ps1 -DryRun
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\release.ps1 -Push
 ```
 
 ## 三条实话（装之前必读）
@@ -199,7 +203,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\release.ps1 -Version 1
 | [SECURITY.md](SECURITY.md) | 安全漏洞报告（私有漏洞报告渠道） |
 | [SUPPORT.md](SUPPORT.md) | 支持边界（个人项目，无 SLA） |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南与测试要求 |
-| [PUBLIC-RELEASE.md](PUBLIC-RELEASE.md) | 公开仓库转换的风险核对清单与维护方式 |
 | [config/AGENTS.warframe.md](config/AGENTS.warframe.md) | 安装器维护的全局只读与隐私边界 |
 | skill/references/capabilities.md | 全部能力的完整行为说明与降级矩阵 |
 

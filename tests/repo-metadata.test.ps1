@@ -14,8 +14,9 @@
 #   - LICENSES/ retains the full Apache-2.0 text for genesis-assets-derived
 #     icons plus a provenance/verification note (upstream URL, no-NOTICE finding).
 #   - DE game assets obtained through the AlecaFrame channel are retained under
-#     the DE non-commercial fan-content terms, honestly channel-noted, and are
-#     NOT release blockers; img/ screenshots are a recorded deferred owner risk.
+#     the DE non-commercial fan-content terms and honestly channel-noted.
+#   - img/ contains only the six reviewed README showcases; superseded card-*.png
+#     screenshots do not return.
 #   - Governance files exist and contain no personal contact identifiers
 #     (no emails, no QQ numbers), no SLA promises, and no fixed disclosure window.
 $ErrorActionPreference = 'Stop'
@@ -107,11 +108,16 @@ Assert-True 'ASSET-LICENSES flags AlecaFrame-extracted assets' ($assetLicenses.C
 Assert-True 'ASSET-LICENSES keeps the channel != rights-source principle' $assetLicenses.Contains('取得渠道 ≠ 权利来源')
 Assert-True 'ASSET-LICENSES confirms no non-DE evidence for the four DE asset groups' $assetLicenses.Contains('未发现任何「非 DE 素材」的证据')
 Assert-True 'ASSET-LICENSES no longer lists release blockers for DE assets' (-not ($assetLicenses -match '发布前阻塞'))
-Assert-True 'ASSET-LICENSES records img/ as an owner-accepted deferred risk' ($assetLicenses.Contains('所有者接受并延后处理') -and -not ($assetLicenses -match 'img/.*⛔'))
-
-$publicRelease = Read-File 'PUBLIC-RELEASE.md'
-Assert-True 'PUBLIC-RELEASE no longer blocks on AlecaFrame-channel DE assets' (-not ($publicRelease -match '发布前阻塞项'))
-Assert-True 'PUBLIC-RELEASE records img/ as deferred, not a conversion blocker' ($publicRelease.Contains('延后处理') -and $publicRelease.Contains('不作为本次公开转换的阻塞项'))
+$showcaseFiles = @(
+  'showcase-fissure-speed.png', 'showcase-bounty-aya.png', 'showcase-open-relic.png',
+  'showcase-ducat-600.png', 'showcase-weekly.png', 'showcase-my-rivens.png'
+)
+foreach ($name in $showcaseFiles) {
+  Assert-True "ASSET-LICENSES documents current showcase: $name" $assetLicenses.Contains($name)
+  Assert-True "current showcase exists: $name" (Test-Path -LiteralPath (Join-Path $repoRoot "img\$name") -PathType Leaf)
+}
+Assert-True 'superseded card screenshots are absent' (
+  @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'img') -Filter 'card-*.png' -File).Count -eq 0)
 
 # --- LICENSES/ retention for genesis-assets-derived icons ---
 $apacheText = Read-File 'LICENSES\Apache-2.0.txt'
@@ -147,8 +153,20 @@ Assert-True 'CODEOWNERS assigns the repository owner' ((Read-File 'CODEOWNERS').
 $installDoc = Read-File 'INSTALL.md'
 Assert-True 'INSTALL.md states the current version' ($installDoc.Contains("当前 ``$version``"))
 
+# --- release workflow stays reviewable ---
+$releaseScript = Read-File 'release.ps1'
+Assert-True 'release script reads prepared VERSION instead of mutating it through a parameter' (
+  -not $releaseScript.Contains('[string]$Version') -and
+  $releaseScript.Contains('$releaseVersion = Get-Version'))
+Assert-True 'release docs require a prepared metadata commit' (
+  $installDoc.Contains('版本准备') -and
+  $installDoc.Contains('release.ps1 -DryRun') -and
+  $installDoc.Contains('release.ps1 -Push') -and
+  -not $installDoc.Contains('-Version X.Y.Z'))
+
 # --- uninstall lifecycle is documented ---
 $readme = Read-File 'README.md'
 Assert-True 'README documents the uninstall lifecycle' ($readme.Contains('uninstall.ps1'))
+Assert-True 'README does not hard-code an obsolete current version' (-not ($readme -match '当前 `\d+\.\d+\.\d+`'))
 
 Write-Host "`nrepo metadata contract tests: $passed passed"

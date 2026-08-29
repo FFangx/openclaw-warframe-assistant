@@ -54,10 +54,18 @@ pwsh -NoProfile -File .\verify.ps1 -SourceOnly
   真实 `%APPDATA%`、真实 cron 或真实 QQ/账号——一律用 GUID 临时目录与假 CLI。
 - 不要为了让测试通过而放松安全断言。
 
+维护者需要重建奸商商品的静态税率/说明清单时，在仓库根目录运行
+`node tools/build-baro-static.mjs`。它会联网并覆盖 `skill/scripts/baro-static.json`；提交前必须审查数据差异。
+这是维护工具，不属于运行时 Skill。
+
+安装器或卸载器有较大改动时，可在一次性 Windows VM 中运行
+`scripts/env-smoke.ps1`，验证干净环境安装、幂等重装、数据保留卸载和完全清理卸载。
+
 ## 分支与提交
 
 - 小改动直接基于 `main` 开分支；提交信息用英文祈使句前缀，如 `fix:`、`feat:`、`test:`、`docs:`、`build:`。
-- 不要提交 `img/` 下的截图改动（用户暂缓）；不要提交任何凭据、个人快照、`tests/cn-reward-result.json` 之类本机输出。
+- `img/` 只保留 README 实际引用且已在 `ASSET-LICENSES.md` 登记的展示图；不要提交任何凭据、
+  个人快照、`tests/cn-reward-result.json` 之类本机输出。
 - 发布流程由维护者用 `release.ps1` 执行；贡献者不需要打标签。
 
 ## 发布前素材核对
@@ -65,4 +73,4 @@ pwsh -NoProfile -File .\verify.ps1 -SourceOnly
 公开仓库发布的素材处置见 [ASSET-LICENSES.md](ASSET-LICENSES.md) 第 4 节处置清单：
 内置 DE 游戏素材（货币/遗物/源力石/未开封紫卡）按 DE Content Policy 非商业条件保留（渠道如实记录、不主张 AlecaFrame 授权）；
 genesis-assets 派生图标随附 `LICENSES/` 的 Apache-2.0 全文与来源说明；
-`img/` 截图是所有者接受并延后处理的已知隐私/展示风险。新增内置素材前先读该文件。
+`img/` 展示图必须逐项登记并经过隐私检查。新增内置素材前先读该文件。

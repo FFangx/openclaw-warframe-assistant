@@ -2,7 +2,8 @@
 // 一次性构建工具：生成 baro-static.json
 // 奸商商品的 tradingTax/description 是不变信息 → 收录成本地清单，
 // 运行时不再对每个商品打 /v2/item/{slug} 详情（仅清单外商品在线兜底）。
-// 用法：node build-baro-static.mjs   （输出 skill/scripts/baro-static.json）
+// 用法：在仓库根目录运行 node tools/build-baro-static.mjs
+// 输出 skill/scripts/baro-static.json。
 import { writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,7 +59,8 @@ const out = {
   source: 'Warframe.Market /v2/item/{slug} (i18n zh-hans description + tradingTax), one-time build',
   items: results,
 };
-const target = path.join(path.dirname(fileURLToPath(import.meta.url)), 'baro-static.json');
+const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const target = path.join(repoRoot, 'skill', 'scripts', 'baro-static.json');
 mkdirSync(path.dirname(target), { recursive: true });
 writeFileSync(target, JSON.stringify(out, null, 2) + '\n', 'utf8');
 console.log(`slugs=${list.length} ok=${ok} missing404=${missing} failed=${failed}`);

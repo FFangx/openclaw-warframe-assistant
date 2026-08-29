@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [1.1.7]
+
 ### 新增
 
 - 帮助收敛为清晰的两层结构：`帮助` 简要展示全部 9 个功能模块、简介和准确入口，`帮助 <模块>` 逐项展示该模块的完整指令与具体说明；订阅模块覆盖裂缝、仲裁、警报、入侵、活动、突击、钢铁侵袭、赏金、商人、轮换、周常、商店、商品、掉落与管理动作。命令别名只作为模块跳转，不再维护重复的单命令帮助页。未知主题会直接列出可用模块，不进入模型。新增由唯一命令注册表生成的正式命令目录与 CI 字节一致性合同，帮助卡缓存键改为内容哈希，避免命令、帮助和文档再次漂移。
@@ -13,11 +15,11 @@
 
 ### 变更
 
+- 仓库文档按当前实现重新核对：README/安装顺序、数据源分层、九重天筛选、正式获取/购买命令、版本与发布流程已同步；公开仓库的一次性转换清单已移除。`img/` 只保留 README 当前使用且完成内容复核的六张展示图，删除四张无引用旧卡片截图；一次性奸商静态清单生成器移至 `tools/`，不再随运行时 Skill 部署；新机环境冒烟、安装/卸载、许可证、治理和运行时合同文件继续保留。
 - `开遗物`新增`九重天`硬筛选（同义`航道星舰/虚空风暴/storm`）：只保留虚空风暴裂缝（复用现有 isStorm 数据），与`钢铁`一样是确定性过滤而非`收益`偏好，也不再被当成奸商商品名进入货单搜索（`开遗物 单人 九重天` 直接出风暴路线）。新增更明确的`开遗物 对标 商品名`写法（旧写法`开遗物 商品名`/`开遗物 杜卡德 商品名`继续兼容）。参数改为严格逐词解析：筛选词、队伍、币种、偏好与商品目标可区分；任务类型词（`生存/歼灭`…）、`普通/全部`、互相冲突的组合（钢铁+九重天、白金+杜卡德、单人+4人、未入库+已入库）与空`对标`确定性拒绝并回显「已理解」与下一步命令，失败不再出现与输入无关的奸商错误。新增小型共享用户错误合同 `user-error-contract.mjs`（unsupported_input/no_match/source_unavailable/permission_denied/stale_fallback/internal_error + 安全 HTTP status/重试说明/下一步命令，复用 EndpointRequestError.diagnostic 映射，绝不透出 URL、响应体、堆栈、账号或目标标识），接入个人/公共确定性命令边界与开遗物/裂缝流程；成功但用离线快照的结果只以 `degraded` 提示缓存来源，不伪装成失败。
 - PC 世界状态改为 DE 官方 `worldState.php` 首选并在本地统一规范化；warframestat 降为非阻塞交叉验证与官方故障备用，其 404、超时或熔断不再拖慢已验证的官方结果。官方 HTTP 200 但关键集合缺失时会拒绝写入可靠缓存，两源都不可用时继续诚实回退最近可靠规范化缓存。
-- PC 世界状态新增第二全量源：browse.wf Oracle 全量镜像（`https://oracle.browse.wf/worldState.min.json`，公开开源 browse.wf 实时客户端端点）接管 DE 官方 `worldState.php` 故障，随后才是 warframestat 备用，最后回退最近可靠规范化缓存。Oracle 镜像必须通过与官方完全相同的原始/规范化双层完整性合同：陈旧内层缓存、HTTP 200 但结构残缺、规范化结果不完整，一律拒绝接管（不写入可靠缓存）；镜像拥有独立端点健康键 `worldstate:oracle:pc`、6 秒短超时与熔断退避，来源元数据与用户可见降级文案单独标注为「browse.wf Oracle」。官方成功路径仍不等待任何社区源（warframestat 非阻塞交叉验证保持不变）。本切片不引入 Tenno Tools 或 tenno.gg。
-- 每一个在线 PC 世界状态来源快照现在附可审计来源质量信封（`_envelope`：provider、fetchedAt、上游 `Time`、请求延迟、关键集合完整性缺失清单、内容哈希），并对规范化结果按顶层字段记录 `_fieldProviders`，doctor 与巡检可直接判断「哪个字段来自哪个提供者、多新鲜、是否完整」；Oracle 镜像接管前还必须通过上游年龄门禁（上游 `Time` 超过 15 分钟拒绝，避免镜像滞后覆盖新鲜现实）与裂缝事件 ID 连续性核对（与最近 10 分钟内的可靠规范化快照零交集即判定分歧并拒绝接管）。官方主源不设年龄门禁（官方即权威，仅由完整性合同判定）。
-- 【更正 2026-08-27 复审】上一条「Oracle 全量镜像接管」是**失效假设**：实况 `oracle.browse.wf/worldState.min.json` 是部分镜像（实测只有 Events/Goals/Alerts/Sorties/LiteSorties/ActiveMissions/VoidTraders/VoidStorms/DailyDeals/Conquests/Tmp 等 11 键，无 Invasions、SyndicateMissions、SeasonInfo、EndlessXpSchedule、KnownCalendarSeasons），旧「与官方完全相同的双层完整性合同」必然拒收，Oracle 层在生产恒失败。现改为字段级设计：Oracle 专属字段合同只要求合法 `ActiveMissions`、`VoidStorms`（**实况端点无顶层 `Time`**——HTTP 响应只有 Date/Last-Modified/ETag/Cache-Control: public,max-age=10，Date 是服务器响应时间不是内容时间，上游内容时间以 HTTP Last-Modified 为准），仅归一化为裂缝/虚空风暴；官方失败且 warframestat 全量成功时，把通过上游年龄门禁（HTTP Last-Modified 缺失/无效/超过 15 分钟一律拒绝，绝不拿响应 Date 或本机 fetchedAt 冒充上游内容时间）与裂缝事件 ID 连续性核对（最近 10 分钟可靠快照零交集拒绝）的 Oracle 裂缝叠加到 warframestat 结果上（`_fieldProviders.fissures='oracle.browse.wf'`、其余字段=`api.warframestat.us`，附 `_oracleEnvelope`（`partial:true`，scope=ActiveMissions/VoidStorms，upstreamTime=已验证的 Last-Modified）与 `_composite` 元数据）；叠加结果**不写入可靠缓存**、不伪装成单一全量来源；Oracle 失败则返回 warframestat 并附诊断；全在线源失败维持「可靠缓存 + 真实 `_dataStale`/`_cachedAt`」回退，绝不单独返回 Oracle 裂缝作为完整状态。Oracle 内层缓存升级到 v3 存「原始载荷 + 已验证的 Last-Modified/ETag/Cache-Control 元数据」包，部署中的 v2 纯载荷缓存不会被误读，缓存命中保留原始 Last-Modified、不因读取而刷新年龄。15 分钟上游年龄门禁与 10 分钟可靠性裂缝 ID 连续性门禁保持不变。
+- PC 世界状态的备用链按实况能力收口：DE 官方 `worldState.php` 成功时直接返回；官方失败后以 warframestat 构成完整基座，browse.wf Oracle 只在 `ActiveMissions`/`VoidStorms` 字段合同、HTTP `Last-Modified` 15 分钟年龄门禁和最近可靠裂缝 ID 连续性核对全部通过时叠加裂缝。Oracle 部分镜像不能单独构成完整状态，组合结果不写可靠缓存；所有在线源失败才回退最近可靠规范化缓存并明确陈旧时间。
+- 世界状态快照增加可审计质量信封与逐字段来源：官方/warframestat 记录 provider、抓取时间、上游时间、延迟、关键集合完整性和内容哈希；Oracle 叠加另带只覆盖裂缝的部分信封与已验证 `Last-Modified`，doctor 与巡检可判断字段来自哪里、多新鲜、是否完整。
 - 个人账号命令的识别正则、执行动作与参数来源统一归入命令注册表；AlecaFrame 执行器只消费注册表匹配结果并清洗参数，不再维护第二套命令白名单。注册表合同会拒绝缺少执行适配元数据的个人命令，避免快捷路由、权限门和实际执行再次漂移。
 - 愿望单的裸 QQ 命令、模型命令和兼容订阅入口统一使用同一业务用例，固定执行身份校验、账本更新、校准任务同步、实时索引刷新、主反馈和当前行情跟随；备用入口不再漏掉即时行情，通用调度器也不再执行缺少监控编排的半套愿望写入。
 - 普通订阅的三个 QQ 快捷入口与模型工具 `operation=command/subscription` 统一使用同一业务用例，集中执行可信身份归一、账本管理、世界状态与掉落监测任务同步，并以一致的降级警告报告后台任务同步失败；入口层不再复制订阅编排。
@@ -29,6 +31,7 @@
 
 ### 修复
 
+- 发布准备元数据统一到 `1.1.7`，并修正发布说明与脚本接口：版本号必须在可审查的准备提交中同时更新 VERSION、两个 package manifest、lockfile、INSTALL 与待发布 CHANGELOG；`release.ps1` 只负责验证、盖日期、提交和打 tag，不再提供会在验证后单独改 VERSION、造成包版本漂移的 `-Version` 路径。
 - 每日奖励译名/1999 日历增益 AI 维护任务改为纯后台运行，强制 `delivery.mode=none` 并在安装升级时清理旧 QQ channel/to；模型的英文计划、进度或最终摘要不再进入 QQ。提示词同时要求禁止过程播报、只生成一次最终响应，空 inbox 仍严格返回 `NO_REPLY`。
 - 深层/时光科研词缀不再把 Oracle 词典说明里未解析的 `|val|` 参数占位符直接上卡：DE 官方 worldState Conquests 的个人词缀（`Variables`）只给键、不携带数值（TimeDilation 实锤），此前会显示「技能持续时间减少 |val|%。」。现在先用 warframestat 说明中的数字填充占位符（保留 ShieldDelay 500% 等动态替换），仍有 `|...|` 残留时优先采用同键完整审核静态说明（TimeDilation 按官方 Update 36.0 与 Hotfix 36.1.6 口径显示「缩短技能：技能持续时间减少 50%」），否则用诚实中文缺数值提示（`ARCHIMEDEA_UNRESOLVED_DESC_ZH`）；漂移监控把未解析占位符计为说明漂移（`descPlaceholder`，样本 `reason=unresolved-placeholder`），官方备用源 tailMap 路径行为不变。
 - 1999 日历增益中文名+效果改为成对收录与展示：以用户核验的灰机wiki「1999日历」页六人组覆写表为权威源更新静态路径表（硬化装甲/特浓咖啡/吸引力/强制输血/打孔纸带/人多势众/重型标枪/有福同享 等），社区状态行自带的 `description` 不再被丢弃；周报卡增益行同时显示中文名与效果说明并自动换行（去掉 ellipsis 截断），行高按估算保守留白。新增逐条季度实拍路径的 CI 离线用例。
@@ -44,11 +47,6 @@
 - 命令注册表改为同步 CommonJS 核心加 ESM 兼容门面，使 OpenClaw 插件加载器无需顶层 `await` 即可读取同一注册表；同时修正完整验收，使 `plugins doctor` 即使错误地返回零退出码，只要报告插件加载失败也会阻断部署。
 - 周一订阅改走 QQ 原图直传并关闭 runner announce；周报保持与手动“周常”相同的单张原始 PNG，使用 QQ `/files` 的 `srv_send_msg=true` 一步发送，绕开会把主动长图缩成约 2048px JPEG 的 `file_info + msg_type=7` 两步链路。周报与本周好货全部发送成功后才写入本周去重标记，发送失败可在下一轮重试。
 - 本周好货的已购计数按本期轮换到期时间精确核销：不再把泰辛服务端提前写入的未来三周购买记录，或圣言者无法归入本期的旧账/常驻长周期记录，误显示为“本周已购”。
-
-## [1.1.7]
-
-### 修复
-
 - 周常「周日收尾提醒」不再因零网络而过报未完成：提醒前拉取一次本周世界状态（每周一次、带 5 分钟缓存，失败自动退回保守模式），执刑官猎杀与午夜电波周常也能像交互式「周常」那样按快照自动核销——修复「已完成执刑官猎杀、提醒仍列未完成」的实机问题。
 - 安装器与卸载器不再被 OpenClaw CLI 的 stderr 配置警告打断（Windows PowerShell 5.1 下该警告会被当作 NativeCommandError 中止 cron 合同步骤）。
 

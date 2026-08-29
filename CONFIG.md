@@ -30,6 +30,7 @@ openclaw.json → `plugins.config.warframe-fast-commands.wishlist`，全部可�
 | `WARFRAME_DATA_CACHE_DIR` | workspace `.cache/warframe-data` | 数据缓存目录（词典/价格/图片） |
 | `OPENCLAW_CLI_PATH` | `%APPDATA%\npm\node_modules\openclaw\openclaw.mjs` | OpenClaw CLI 位置（订阅 cron 管理用） |
 | `WARFRAME_BROWSER` | 自动探测 Chrome→Edge | headless 截图浏览器 exe 完整路径 |
+| `WFINFO_INSTALL_DIR` | `%LOCALAPPDATA%\OpenClaw\WFInfo` | 仅供 doctor 检查非标准位置的 WFInfo OpenClaw 配套版；不改变 WFInfo 自身配置 |
 | `WARFRAME_OFFLINE` | 关 | 设 `1` 硬离线：禁词典/目录在线兜底（测试与排障用，日常别开） |
 
 ## 数据缓存说明（无需配置，知道即可）
@@ -39,7 +40,7 @@ openclaw.json → `plugins.config.warframe-fast-commands.wishlist`，全部可�
 | 官方词典（本地缺失时在线重建） | 7 天 | 刷新失败退陈旧快照 |
 | market 价格整表 | 1 小时 | 同上，卡片标注「离线快照」 |
 | 物品小图 | 永久（内容哈希） | 缺图不影响出卡 |
-| 世界状态 | 实时 | 失败明示，绝不伪造 |
+| 世界状态 | 45 秒外层缓存（官方内层 60 秒） | 在线源失败时只回退最近可靠规范化快照，并明确标注陈旧时间；无可靠快照则明示失败 |
 
 清缓存：删 `WARFRAME_DATA_CACHE_DIR` 目录即可，下次查询自动重建。
 
