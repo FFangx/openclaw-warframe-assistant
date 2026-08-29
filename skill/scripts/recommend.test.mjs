@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildWfInfoDucatStrategy, classifyFissure, formatRecommend, normalizeOfficialFissureWorldState, parseDucatRecommendTarget, parseFissurePreference, parseFissureScope, parseFissureTier, parseRelicVaultFilter, recommendFissures, recommendRefinement } from './recommend.mjs';
+import { buildWfInfoDucatStrategy, classifyFissure, formatRecommend, formatRecommendUnderstanding, normalizeOfficialFissureWorldState, parseDucatRecommendTarget, parseFissurePreference, parseFissureScope, parseFissureTier, parseRecommendCommand, parseRelicVaultFilter, recommendFissures, recommendRefinement } from './recommend.mjs';
 import { parseAlecaMessage } from './alecaframe.mjs';
 import { parseNaturalWorldQuestion, parseShortcutMessage } from './shortcuts.mjs';
 import { buildFissureQueryCard, buildFissureRecommendCard, buildRefineRecommendCard } from './warframe-cards.mjs';
@@ -98,6 +98,37 @@ test('parses a dedicated Steel Path fissure scope', () => {
   assert.equal(parseFissureScope('开遗物 钢铁之路 速刷'), 'steel');
   assert.equal(parseFissureScope('开遗物 速刷'), 'all');
   assert.deepEqual(parseDucatRecommendTarget('钢铁 速刷'), { type: 'none', query: '' });
+});
+
+test('九重天是开遗物硬筛选，不会再被解释成奸商商品', () => {
+  const parsed = parseRecommendCommand('单人 九重天');
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.squad, 1);
+  assert.equal(parsed.fissureScope, 'storm');
+  assert.deepEqual(parsed.traderTarget, { type: 'none', query: '' });
+  assert.match(formatRecommendUnderstanding(parsed.understanding), /仅九重天.*单人/u);
+  assert.equal(parseFissureScope('开遗物 航道星舰'), 'storm');
+  assert.deepEqual(parseDucatRecommendTarget('单人 九重天'), { type: 'none', query: '' });
+});
+
+test('开遗物严格区分商品目标、明确对标、不支持筛选与冲突参数', () => {
+  const legacyTarget = parseRecommendCommand('单人 电冲弹药');
+  assert.deepEqual(legacyTarget.traderTarget, { type: 'item', query: '电冲弹药', explicit: false });
+  const explicitTarget = parseRecommendCommand('对标 电冲弹药');
+  assert.deepEqual(explicitTarget.traderTarget, { type: 'item', query: '电冲弹药', explicit: true });
+
+  const unsupported = parseRecommendCommand('单人 生存');
+  assert.equal(unsupported.ok, false);
+  assert.equal(unsupported.userError.code, 'unsupported_input');
+  assert.deepEqual(unsupported.unsupported, ['生存']);
+
+  const conflict = parseRecommendCommand('钢铁 九重天');
+  assert.equal(conflict.ok, false);
+  assert.equal(conflict.issues[0].reason, 'conflicting_scope');
+  assert.match(formatRecommend({
+    ok: false, error: 'unsupported_input', understanding: formatRecommendUnderstanding(conflict.understanding),
+    unsupported: conflict.unsupported, issues: conflict.issues, userError: conflict.userError,
+  }), /参数冲突.*帮助 遗物/us);
 });
 
 test('parses fissure eras as filters instead of trader item names', () => {
@@ -283,6 +314,23 @@ test('Steel Path scope only returns Steel Path fissures', async () => {
   });
   assert.equal(empty.error, 'no_steel_fissures');
   assert.match(formatRecommend(empty), /当前没有.*钢铁裂缝/u);
+});
+
+test('九重天 scope 只返回虚空风暴，并为当前无风暴给出相关下一步', async () => {
+  const data = await recommendFissures(relics, { fissureScope: 'storm', worldState, localDb, prices });
+  assert.equal(data.ok, true);
+  assert.equal(data.fissureScope, 'storm');
+  assert.equal(data.rows.length, 1);
+  assert.equal(data.rows[0].storm, true);
+  assert.match(buildFissureRecommendCard(data).html, /仅九重天/u);
+
+  const empty = await recommendFissures(relics, {
+    fissureScope: 'storm', worldState: { fissures: [fissure('normal', 'Capture')] }, localDb, prices,
+    understanding: '开遗物 · 赚白金 · 仅九重天 · 单人',
+  });
+  assert.equal(empty.error, 'no_storm_fissures');
+  assert.equal(empty.userError.code, 'no_match');
+  assert.match(formatRecommend(empty), /已理解.*仅九重天.*当前没有.*九重天.*裂缝.*裂缝 九重天/us);
 });
 
 test('ranks distinct relics by value before expanding each to at most two routes', async () => {

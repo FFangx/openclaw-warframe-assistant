@@ -506,7 +506,11 @@ export function buildFissureRecommendCard(data) {
   const preference = data.preference || 'balanced';
   const preferenceZh = { balanced: '综合', speed: '速刷', comfort: '舒适', yield: '收益' }[preference] || '综合';
   const fissureScope = data.fissureScope || 'all';
-  const fissureScopeZh = fissureScope === 'steel' ? '仅钢铁' : '全部裂缝';
+  const fissureScopeZh = fissureScope === 'steel'
+    ? '仅钢铁'
+    : fissureScope === 'storm'
+      ? '仅九重天'
+      : '全部裂缝';
   const vaultFilter = data.vaultFilter || 'all';
   const vaultFilterZh = { all: '全部遗物', unvaulted: '未入库', vaulted: '已入库' }[vaultFilter] || '全部遗物';
   const tagColors = { speed: '#57c98b', comfort: '#8ab8ec', endless: '#c39ae8', bonus: '#f0c765' };

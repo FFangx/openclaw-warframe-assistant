@@ -1130,17 +1130,31 @@ export async function runAlecaMessage(message, options = {}) {
     };
   }
   if (parsed.command === 'recommend') {
-    const { recommendFissures, formatRecommend, parseFissurePreference, parseRelicVaultFilter, parseFissureScope, parseDucatRecommendTarget, FISSURE_PREFERENCES, RELIC_VAULT_FILTERS, FISSURE_SCOPES } = await import('./recommend.mjs');
+    const { recommendFissures, formatRecommend, parseRecommendCommand, formatRecommendUnderstanding } = await import('./recommend.mjs');
+    const { userErrorFromDiagnostic, formatUserError } = await import('./user-error-contract.mjs');
+    // R19/R17 切片：严格解析开遗物参数——筛选词、队伍、币种、偏好与商品目标必须可区分；
+    // 未知或不支持的筛选不得静默落入不相关业务（「九重天」曾是奸商商品名误判）。
+    const parsedRecommend = parseRecommendCommand(parsed.query);
+    if (!parsedRecommend.ok) {
+      const understanding = formatRecommendUnderstanding(parsedRecommend.understanding);
+      const data = {
+        ok: false,
+        kind: 'fissure-recommend',
+        query: parsed.query,
+        error: 'unsupported_input',
+        understanding,
+        unsupported: parsedRecommend.unsupported,
+        issues: parsedRecommend.issues,
+        userError: parsedRecommend.userError,
+        fetchedAt: new Date().toISOString(),
+      };
+      return { handled: true, ok: false, command: 'recommend', query: parsed.query, data, mediaUrl: null, followupText: null, text: formatRecommend(data) };
+    }
+    const { mode, squad, preference, vaultFilter, fissureScope, tierFilter, traderTarget } = parsedRecommend;
+    const understanding = formatRecommendUnderstanding(parsedRecommend.understanding);
     const relics = await loadRelics(snapshot);
-    // 直接写当前奸商商品名也进入商品目标模式；旧写法「杜卡德 商品名」继续兼容。
-    const ducatTarget = parseDucatRecommendTarget(parsed.query);
-    const mode = /杜卡德|金币|ducat/iu.test(parsed.query) || ['trader', 'item'].includes(ducatTarget.type) ? 'ducat' : 'plat';
-    const squad = parseSquad(parsed.query);
-    const preference = parseFissurePreference(parsed.query);
-    const vaultFilter = parseRelicVaultFilter(parsed.query);
-    const fissureScope = parseFissureScope(parsed.query);
     let ducatGoal = options.recommendOptions?.ducatGoal || null;
-    if (mode === 'ducat' && ['trader', 'item'].includes(ducatTarget.type) && !ducatGoal) {
+    if (['trader', 'item'].includes(traderTarget.type) && !ducatGoal) {
       try {
         const { traderShopping, selectTraderGoal } = await import('./trader-shopping.mjs');
         let inventoryValuation = null;
@@ -1157,16 +1171,44 @@ export async function runAlecaMessage(message, options = {}) {
           ...(zhOf ? { zhOf } : {}),
           ...(options.traderOptions || {}),
         });
-        const selected = selectTraderGoal(traderData, ducatTarget);
+        const selected = selectTraderGoal(traderData, traderTarget);
         if (!selected.ok) {
-          const targetError = selected.error === 'trader_not_arrived' ? '奸商尚未到货，无法自动建立商品盈亏线。'
-            : selected.error === 'trader_item_not_found' ? `当前奸商货单中没有可交易商品“${selected.query}”。`
+          // 失败必须回显系统如何理解输入，并给相关帮助/替代命令（不出现不相关奸商错误）。
+          const message = selected.error === 'trader_not_arrived'
+            ? '奸商尚未到货，无法自动建立商品盈亏线。'
+            : selected.error === 'trader_item_not_found'
+              ? `当前奸商货单中没有可交易商品「${selected.query}」。`
               : '当前货单没有适合自动对标的可交易奸商商品。';
-          return { handled: true, ok: false, command: 'recommend', query: parsed.query, text: targetError };
+          const userError = userErrorFromDiagnostic({ category: 'not_found', status: 404 }, {
+            category: selected.error === 'trader_not_arrived' ? 'trader-not-arrived' : 'trader-target-not-found',
+            fallbackUsed: false,
+            nextSteps: selected.error === 'trader_not_arrived'
+              ? ['奸商推荐', '帮助 商店']
+              : ['奸商推荐', '开遗物 杜卡德 奸商', '帮助 遗物'],
+          });
+          const data = {
+            ok: false, kind: 'fissure-recommend', query: parsed.query, error: 'no_match',
+            understanding, userError, traderTarget, fetchedAt: new Date().toISOString(),
+          };
+          const steps = [...(userError.nextSteps || [])];
+          return {
+            handled: true, ok: false, command: 'recommend', query: parsed.query,
+            data, mediaUrl: null, followupText: null,
+            text: `${understanding}\n${message}${steps.length ? `\n下一步：${steps.join('｜')}` : ''}`,
+          };
         }
         ducatGoal = { ...selected.goal, expiresAt: traderData.expiry || null };
-      } catch {
-        return { handled: true, ok: false, command: 'recommend', query: parsed.query, text: '奸商商品或市场成交数据读取失败，暂时无法计算动态盈亏线。' };
+      } catch (error) {
+        // 商品/市场数据源失败：安全映射端点诊断（404/403/429/超时/熔断），不透出 URL 或响应体。
+        const userError = userErrorFromDiagnostic(error?.diagnostic, {
+          nextSteps: ['奸商推荐', '开遗物 杜卡德', '帮助 遗物'],
+        });
+        const data = {
+          ok: false, kind: 'fissure-recommend', query: parsed.query, error: 'source_unavailable',
+          understanding, userError, traderTarget, fetchedAt: new Date().toISOString(),
+        };
+        const text = `${formatRecommendUnderstanding(parsedRecommend.understanding)}\n${formatUserError(userError, { message: '奸商商品或市场成交数据读取失败，暂时无法计算动态盈亏线。' })}`;
+        return { handled: true, ok: false, command: 'recommend', query: parsed.query, data, mediaUrl: null, followupText: null, text };
       }
     }
     const configuredStrategyPath = options.recommendOptions?.strategyOutputPath;
@@ -1174,7 +1216,8 @@ export async function runAlecaMessage(message, options = {}) {
       ? null
       : configuredStrategyPath || (process.env.APPDATA ? path.join(process.env.APPDATA, 'WFInfo', 'ducat_strategy.json') : null);
     const data = await recommendFissures(relics, {
-      mode, squad, preference, vaultFilter, fissureScope, alecaDir: snapshot.alecaDir,
+      mode, squad, preference, vaultFilter, fissureScope, tierFilter, alecaDir: snapshot.alecaDir,
+      understanding,
       ...(options.recommendOptions || {}),
       ducatGoal,
       strategyOutputPath,

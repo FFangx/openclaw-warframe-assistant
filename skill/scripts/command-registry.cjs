@@ -121,7 +121,7 @@ const COMMAND_REGISTRY = freeze([
     executor: 'shortcuts.runShortcut',
     helpSectionId: 'relics',
     helpTitle: '裂缝',
-    helpSummary: '全部普通/钢铁任务与筛选；用户私聊逐任务配库存遗物',
+    helpSummary: '全部普通/钢铁/九重天任务与筛选；用户私聊逐任务配库存遗物',
     helpExamples: ['裂缝 [筛选]'],
     nextActions: ['开遗物'],
     matchers: [
@@ -332,7 +332,7 @@ const COMMAND_REGISTRY = freeze([
   }),
   command({
     commandId: 'recommend',
-    canonicalSyntax: '开遗物 [商品名|未入库|已入库] [白金|杜卡德] [钢铁] [速刷|舒适|收益] [单人]',
+    canonicalSyntax: '开遗物 [商品名|对标 商品名|未入库|已入库] [白金|杜卡德] [钢铁|九重天] [速刷|舒适|收益] [单人]',
     aliases: ['遗物推荐', '开什么遗物', '开什么'],
     argumentSchema: { type: 'string', required: false, snapshot: true },
     privacyScope: 'userPrivate',
@@ -341,10 +341,12 @@ const COMMAND_REGISTRY = freeze([
     executor: 'alecaframe.runAlecaMessage',
     helpSectionId: 'relics',
     helpTitle: '开遗物',
-    helpSummary: '按库存、目标和队伍偏好推荐遗物；可同步 WFInfo',
+    helpSummary: '按库存、目标和队伍偏好推荐；九重天为虚空风暴硬筛选',
     helpExamples: [
       { command: '开遗物 [条件] 🔒', description: '按库存、目标、裂缝和队伍偏好推荐' },
-      { command: '开遗物 商品名 🔒', description: '围绕当前奸商商品保本线规划' },
+      { command: '开遗物 九重天 单人 🔒', description: '只匹配当前九重天虚空风暴路线（全部风暴裂缝）' },
+      { command: '开遗物 对标 商品名 🔒', description: '明确对标当前奸商货单中的指定商品' },
+      { command: '开遗物 商品名 🔒', description: '围绕当前奸商商品保本线规划（旧写法兼容）' },
     ],
     nextActions: [],
     matchers: [

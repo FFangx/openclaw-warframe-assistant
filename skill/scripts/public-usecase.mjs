@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { userError } from './user-error-contract.mjs';
 
 const { matchCommandText, matchArbitrationCommand, matchIntelCommand } = createRequire(import.meta.url)('./command-registry.cjs');
 
@@ -39,11 +40,27 @@ export async function executePublicUseCase(request, ports) {
       : await ports.queryIntel(command);
     else result = await ports.runShortcut(command);
     if (!result || (result.ok === false && !normalizeText(result.text))) {
-      result = { handled: true, ok: false, kind: 'public-failed', text: 'Warframe 查询暂时失败，请稍后重试。' };
+      result = {
+        handled: true, ok: false, kind: 'public-failed',
+        text: 'Warframe 查询暂时失败，请稍后重试。',
+        userError: userError({
+          code: 'internal_error', category: 'public-execute', retryable: true, nextSteps: ['帮助'],
+        }),
+      };
     }
     return { ok: result.ok !== false && result.handled !== false, commandId: matched.commandId, result: { ...result, commandId: matched.commandId } };
   } catch (error) {
     ports.log?.('error', 'public command execution failed', error);
-    return { ok: false, commandId: matched.commandId, result: { handled: true, ok: false, kind: 'public-failed', commandId: matched.commandId, text: 'Warframe 查询暂时失败，请稍后重试。' } };
+    return {
+      ok: false,
+      commandId: matched.commandId,
+      result: {
+        handled: true, ok: false, kind: 'public-failed', commandId: matched.commandId,
+        text: 'Warframe 查询暂时失败，请稍后重试。',
+        userError: userError({
+          code: 'internal_error', category: 'public-execute', retryable: true, nextSteps: ['帮助'],
+        }),
+      },
+    };
   }
 }

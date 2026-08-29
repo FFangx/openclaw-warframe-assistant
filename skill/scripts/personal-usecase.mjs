@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { userError } from './user-error-contract.mjs';
 
 const { matchCommandText } = createRequire(import.meta.url)('./command-registry.cjs');
 
@@ -35,7 +36,13 @@ export async function executePersonalUseCase(request, ports) {
     return {
       ok: false,
       commandId: null,
-      result: { ok: false, handled: false, kind: 'personal-unparsed', error: 'unsupported_command', text: '' },
+      result: {
+        ok: false, handled: false, kind: 'personal-unparsed', error: 'unsupported_command', text: '',
+        userError: userError({
+          code: 'unsupported_input', category: 'personal-input', retryable: false,
+          nextSteps: ['帮助 账号', '帮助 遗物'],
+        }),
+      },
     };
   }
 
@@ -44,7 +51,12 @@ export async function executePersonalUseCase(request, ports) {
     return {
       ok: false,
       commandId: matched.commandId,
-      result: { ok: false, handled: true, kind: 'personal-denied', commandId: matched.commandId, error: 'untrusted_identity', text: identityError },
+      result: {
+        ok: false, handled: true, kind: 'personal-denied', commandId: matched.commandId, error: 'untrusted_identity', text: identityError,
+        userError: userError({
+          code: 'permission_denied', category: 'personal-identity', retryable: false, nextSteps: ['帮助'],
+        }),
+      },
     };
   }
 
@@ -66,10 +78,24 @@ export async function executePersonalUseCase(request, ports) {
     result = await ports.execute(normalized);
   } catch (error) {
     ports.log?.('error', 'personal account execution failed', error);
-    result = { ok: false, handled: true, kind: 'personal-failed', error: 'execute_failed', text: '个人账号查询暂时失败，请稍后重试。' };
+    result = {
+      ok: false, handled: true, kind: 'personal-failed', error: 'execute_failed',
+      text: '个人账号查询暂时失败，请稍后重试。',
+      userError: userError({
+        code: 'internal_error', category: 'personal-execute', retryable: true,
+        nextSteps: ['帮助 账号'],
+      }),
+    };
   }
   if (!result || (result.ok === false && !normalizeText(result.text))) {
-    result = { ok: false, handled: true, kind: 'personal-failed', error: 'execute_failed', text: '个人账号查询暂时失败，请稍后重试。' };
+    result = {
+      ok: false, handled: true, kind: 'personal-failed', error: 'execute_failed',
+      text: '个人账号查询暂时失败，请稍后重试。',
+      userError: userError({
+        code: 'internal_error', category: 'personal-execute', retryable: true,
+        nextSteps: ['帮助 账号'],
+      }),
+    };
   }
 
   const decorated = { ...result, commandId: matched.commandId };

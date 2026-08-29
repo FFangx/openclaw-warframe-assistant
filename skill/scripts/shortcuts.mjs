@@ -17,6 +17,7 @@ import { resilientJsonRequest } from './http-resilience.mjs';
 import { readAlecaJson, stripDataUriReplacer } from './wfdata.mjs';
 import { loadWorldState } from './worldstate-source.mjs';
 import { buildHelpSections, getHelpSection, listHelpSections, matchCommandText, resolveHelpTopic } from './command-registry.mjs';
+import { formatUserError, userError, userErrorFromDiagnostic } from './user-error-contract.mjs';
 // 规范路由常量（R5 数据源合同）：Market 只读端点基址。
 import { MARKET_BASE_URL } from './data-source-contract.mjs';
 
@@ -461,6 +462,11 @@ async function queryMarket(rawQuery, platform = DEFAULT_PLATFORM, crossplay = DE
       : (await recallPrice(resolved.match.slug, wanted ?? '-')) || (await recallPrice(resolved.match.slug, 0));
     const table = await readCachedData('market-price-table', 3);
     const wa = table?.data?.[resolved.match.slug] || null;
+    // 复用 EndpointRequestError.diagnostic 的脱敏诊断：把 404/403/429/超时/熔断安全映射到用户错误合同。
+    const userError = userErrorFromDiagnostic(upstreamError?.diagnostic, {
+      fallbackUsed: Boolean(memory || wa),
+      nextSteps: ['wm <物品>（稍后再试）', '帮助 查价'],
+    });
     return {
       ok: false,
       kind: 'market',
@@ -470,6 +476,7 @@ async function queryMarket(rawQuery, platform = DEFAULT_PLATFORM, crossplay = DE
       lastKnown: memory ? { platinum: memory.platinum, at: memory.at } : null,
       snapshot: wa ? { waPrice: wa.p, ducats: wa.d, at: table.cachedAt } : null,
       upstream: upstreamError?.diagnostic || null,
+      userError,
       fetchedAt: new Date().toISOString(),
     };
   };
@@ -878,7 +885,21 @@ function splitFissureNode(value) {
 
 async function queryFissures(rawQuery = '', platform = DEFAULT_PLATFORM, options = {}) {
   if (platform === 'mobile') return { ok: false, kind: 'fissure', error: 'unsupported_platform', query: rawQuery };
-  const state = await loadWorldState(platform);
+  let state;
+  try {
+    state = options.worldState || await (options.loadWorldState || loadWorldState)(platform);
+  } catch (error) {
+    return {
+      ok: false,
+      kind: 'fissure',
+      error: 'source_unavailable',
+      query: rawQuery,
+      fetchedAt: new Date().toISOString(),
+      userError: userErrorFromDiagnostic(error?.diagnostic, {
+        nextSteps: [`裂缝${rawQuery ? ` ${rawQuery}` : ''}（稍后重试）`, '帮助 遗物'],
+      }),
+    };
+  }
   const filters = parseFissureFilters(rawQuery);
   const now = Date.now();
   let fissures = (Array.isArray(state.fissures) ? state.fissures : [])
@@ -968,11 +989,25 @@ async function queryFissures(rawQuery = '', platform = DEFAULT_PLATFORM, options
     fetchedAt: new Date().toISOString(),
     sourceTimestamp: state.timestamp || null,
     error: fissures.length ? null : 'no_matches',
+    userError: fissures.length ? null : userError({
+      code: 'no_match',
+      category: 'fissure-filter',
+      retryable: false,
+      nextSteps: filters.stormOnly ? ['开遗物 九重天', '裂缝', '帮助 裂缝'] : ['开遗物', '裂缝（去掉筛选）', '帮助 裂缝'],
+    }),
   };
 }
 
 function formatFissures(result) {
-  if (!result.ok) return `当前没有符合“${result.query || '裂缝'}”的活动裂缝。`;
+  if (!result.ok) {
+    if (result.error === 'source_unavailable') {
+      return formatUserError(result.userError, {
+        message: `当前无法取得“${result.query || '全部'}”裂缝的最新世界状态。`,
+      });
+    }
+    const steps = result.userError?.nextSteps?.length ? `\n下一步：${result.userError.nextSteps.join('｜')}` : '';
+    return `当前没有符合“${result.query || '裂缝'}”的活动裂缝。${steps}`;
+  }
   const lines = [`当前裂缝：${result.total} 条`];
   for (const item of [...result.normal, ...result.hard]) {
     const tags = (item.tags || []).map((tag) => tag.zh).join('/');
@@ -1007,7 +1042,10 @@ function formatMarket(result) {
     if (result.error === 'rank_out_of_range') return `${result.item.zhName}最高为${result.maxRank}级，不能查询${result.requestedRank}级。`;
     if (result.error === 'market_down') {
       const fmtTime = (at) => new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(at));
-      const lines = [`⚠ warframe.market 暂时连不上，无法获取「${result.item.zhName}」的实时报价。`];
+      const message = result.userError?.code === 'no_match'
+        ? `Warframe.Market 目录已识别「${result.item.zhName}」，但详情当前不存在。`
+        : `Warframe.Market 暂时无法提供「${result.item.zhName}」的实时报价。`;
+      const lines = [`⚠ ${formatUserError(result.userError, { message })}`];
       if (result.lastKnown) lines.push(`上次成功查询（${fmtTime(result.lastKnown.at)}）：在线最低卖单 ${result.lastKnown.platinum} 白金。`);
       if (result.snapshot) lines.push(`离线快照（${fmtTime(result.snapshot.at)}）：市场加权均价约 ${result.snapshot.waPrice} 白金${result.snapshot.ducats ? `，杜卡德 ${result.snapshot.ducats}` : ''}。`);
       if (!result.lastKnown && !result.snapshot) lines.push('本地也没有该物品的历史记录，请稍后重试。');

@@ -7,6 +7,7 @@
 //   → 库存遗物全量估值，不做候选裁剪（曾按囤量 top4 取候选，把量少但值钱的遗物漏掉了）
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { degradedNotice, userError } from './user-error-contract.mjs';
 
 const MARKET_BASE = 'https://api.warframe.market';
 const TIMEOUT_MS = 20_000;
@@ -54,6 +55,7 @@ export const RELIC_VAULT_FILTERS = Object.freeze({
 export const FISSURE_SCOPES = Object.freeze({
   all: { zh: '全部裂缝', command: '' },
   steel: { zh: '仅钢铁', command: '钢铁' },
+  storm: { zh: '仅九重天', command: '九重天' },
 });
 
 export const FISSURE_TIERS = Object.freeze({
@@ -83,7 +85,10 @@ export function parseRelicVaultFilter(value) {
 }
 
 export function parseFissureScope(value) {
-  return /钢铁(?:之路)?/u.test(String(value || '').normalize('NFKC')) ? 'steel' : 'all';
+  const text = String(value || '').normalize('NFKC');
+  if (/钢铁(?:之路)?/u.test(text)) return 'steel';
+  if (/九重天|航道星舰|虚空风暴|风暴|storm|skirmish|前哨战/iu.test(text)) return 'storm';
+  return 'all';
 }
 
 export function parseFissureTier(value) {
@@ -107,11 +112,269 @@ export function parseDucatRecommendTarget(value) {
   const text = String(value || '').normalize('NFKC').trim();
   const hasDucatMode = /杜卡德|金币|ducat/iu.test(text);
   if (/(?:^|\s)奸商(?:\s|$)/u.test(text)) return { type: 'trader', query: '' };
-  const modifiers = /^(?:杜卡德|金币|ducat|白金|未入库|已入库|当前可获取|可获取|现役|钢铁|钢铁之路|古纪|古|lith|前纪|前|meso|中纪|中|neo|后纪|后|axi|安魂|requiem|全能|omnia|速刷|快速|快开|效率|舒适|轻松|挂机|收益|额外|长线|单人|solo|1人|一人|组队|4人|四人)$/iu;
+  const modifiers = /^(?:杜卡德|金币|ducat|白金|未入库|已入库|当前可获取|可获取|现役|钢铁|钢铁之路|九重天|航道星舰|虚空风暴|storm|古纪|古|lith|前纪|前|meso|中纪|中|neo|后纪|后|axi|安魂|requiem|全能|omnia|速刷|快速|快开|效率|舒适|轻松|挂机|收益|额外|长线|单人|solo|1人|一人|组队|4人|四人)$/iu;
   const query = text.split(/\s+/u).filter((token) => !modifiers.test(token)).join(' ').trim();
   if (query) return { type: 'item', query };
   if (hasDucatMode) return { type: 'ordinary', query: '' };
   return { type: 'none', query: '' };
+}
+
+// —— 开遗物严格参数解析（R19/R17 用户错误切片） ——
+// 目标：支持的筛选词、队伍、币种、偏好与商品目标必须可区分；未知或不支持的筛选
+// 不得静默落入不相关业务（曾把「九重天」当成奸商商品名去货单里找）。
+// 每个 token 按整词归类；归类不出的 token 按旧写法「开遗物 商品名」兼容为商品目标，
+// 失败时由 formatRecommend（理解回显）说明系统如何理解输入。
+const RECOMMEND_TARGET_WORD = /^对标(?:商品)?$/u;
+const SQUAD_TOKENS = new Map([
+  ['单人', 1], ['单排', 1], ['solo', 1], ['1人', 1], ['一人', 1],
+  ['组队', 4], ['四人', 4], ['2人', 2], ['3人', 3], ['4人', 4],
+]);
+const CURRENCY_TOKENS = new Map([
+  ['白金', 'plat'], ['白金模式', 'plat'], ['plat', 'plat'],
+  ['杜卡德', 'ducat'], ['金币', 'ducat'], ['ducat', 'ducat'],
+]);
+const VAULT_TOKENS = new Map([
+  ['未入库', 'unvaulted'], ['当前可获取', 'unvaulted'], ['可获取', 'unvaulted'], ['现役', 'unvaulted'],
+  ['已入库', 'vaulted'], ['入库', 'vaulted'], ['绝版', 'vaulted'],
+]);
+const TIER_TOKENS = new Map([
+  ['古纪', 'Lith'], ['古', 'Lith'], ['lith', 'Lith'],
+  ['前纪', 'Meso'], ['前', 'Meso'], ['meso', 'Meso'],
+  ['中纪', 'Neo'], ['中', 'Neo'], ['neo', 'Neo'],
+  ['后纪', 'Axi'], ['后', 'Axi'], ['axi', 'Axi'],
+  ['安魂', 'Requiem'], ['requiem', 'Requiem'],
+  ['全能', 'Omnia'], ['omnia', 'Omnia'],
+]);
+const SCOPE_TOKENS = new Map([
+  ['钢铁', 'steel'], ['钢铁之路', 'steel'], ['steel', 'steel'],
+  ['九重天', 'storm'], ['航道星舰', 'storm'], ['虚空风暴', 'storm'], ['风暴', 'storm'],
+  ['storm', 'storm'], ['skirmish', 'storm'], ['前哨战', 'storm'],
+]);
+const PREFERENCE_TOKENS = new Map([
+  ['速刷', 'speed'], ['快速', 'speed'], ['快开', 'speed'], ['效率', 'speed'],
+  ['舒适', 'comfort'], ['轻松', 'comfort'], ['挂机', 'comfort'],
+  ['收益', 'yield'], ['额外', 'yield'], ['长线', 'yield'],
+]);
+// 开遗物明确不支持的写法（属于裂缝查询/其他命令的词汇）：命中即拒绝并给出替代。
+const UNSUPPORTED_TOKENS = new Map([
+  ['普通', 'scope-normal'], ['普通裂缝', 'scope-normal'], ['normal', 'scope-normal'],
+  ['全部', 'redundant-all'], ['所有', 'redundant-all'], ['全部裂缝', 'redundant-all'],
+  ['生存', 'mission'], ['防御', 'mission'], ['歼灭', 'mission'], ['捕获', 'mission'],
+  ['间谍', 'mission'], ['救援', 'mission'], ['移动防御', 'mission'], ['拦截', 'mission'],
+  ['挖掘', 'mission'], ['中断', 'mission'], ['虚空覆涌', 'mission'], ['虚空洪流', 'mission'],
+  ['炼金术', 'mission'], ['extermination', 'mission'], ['capture', 'mission'],
+  ['defense', 'mission'], ['survival', 'mission'], ['spy', 'mission'], ['rescue', 'mission'],
+  ['interception', 'mission'], ['excavation', 'mission'], ['disruption', 'mission'],
+  ['alchemy', 'mission'], ['void cascade', 'mission'], ['void flood', 'mission'],
+]);
+
+function recommendUnderstanding({ mode, squad, preference, vaultFilter, fissureScope, tierFilter, itemTarget, traderAuto }) {
+  return {
+    mode,
+    squad,
+    preference,
+    vaultFilter,
+    fissureScope,
+    tierFilter,
+    itemTarget: itemTarget ? { ...itemTarget } : null,
+    traderAuto: Boolean(traderAuto),
+  };
+}
+
+/**
+ * 严格解析开遗物参数。
+ * 返回 { ok:true, mode, squad, preference, vaultFilter, fissureScope, tierFilter,
+ *        traderTarget:{type:'none'|'ordinary'|'trader'|'item',query,explicit}, understanding, ... }
+ * 或 { ok:false, unsupported:[token], issues:[{token,reason}], understanding, userError }。
+ * 未知 token 不在此处报错：按「开遗物 商品名」旧写法兼容为商品目标，
+ * 由后续商品目标失败路径回显理解并给替代命令。
+ */
+export function parseRecommendCommand(rawQuery) {
+  const text = String(rawQuery ?? '').normalize('NFKC').trim().replace(/\s+/gu, ' ');
+  const tokens = text ? text.split(' ') : [];
+  const unsupported = [];
+  const issues = [];
+  let currency = null;
+  let squad = null;
+  let preference = null;
+  let vaultFilter = null;
+  let scope = null;
+  let tierFilter = null;
+  let autoTrader = false;
+  let explicitTarget = false;
+  const itemTokens = [];
+
+  let index = 0;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    const key = token.toLowerCase();
+    if (RECOMMEND_TARGET_WORD.test(key)) {
+      // 「对标」标记：之后的词仍逐词归类（筛选词照常生效），剩余未归类词作为商品目标。
+      explicitTarget = true;
+      index += 1;
+      continue;
+    }
+    if (key.startsWith('对标') && [...key].length > 2) {
+      // 紧贴写法「对标电冲弹药」：前缀剥掉后按普通 token 继续（剩余词仍逐词归类）。
+      explicitTarget = true;
+      const rest = token.replace(/^对标/u, '');
+      if (rest) itemTokens.push(rest);
+      index += 1;
+      continue;
+    }
+    if (key === '奸商') {
+      autoTrader = true;
+      index += 1;
+      continue;
+    }
+    const lowerKey = key;
+    if (SQUAD_TOKENS.has(lowerKey)) {
+      const value = SQUAD_TOKENS.get(lowerKey);
+      if (squad != null && squad !== value) issues.push({ token, reason: 'conflicting_squad' });
+      else squad = value;
+      index += 1;
+      continue;
+    }
+    if (CURRENCY_TOKENS.has(lowerKey)) {
+      const value = CURRENCY_TOKENS.get(lowerKey);
+      if (currency != null && currency !== value) issues.push({ token, reason: 'conflicting_currency' });
+      else currency = value;
+      index += 1;
+      continue;
+    }
+    if (VAULT_TOKENS.has(lowerKey)) {
+      const value = VAULT_TOKENS.get(lowerKey);
+      if (vaultFilter != null && vaultFilter !== value) issues.push({ token, reason: 'conflicting_vault' });
+      else vaultFilter = value;
+      index += 1;
+      continue;
+    }
+    if (TIER_TOKENS.has(lowerKey)) {
+      const value = TIER_TOKENS.get(lowerKey);
+      if (tierFilter != null && tierFilter !== value) issues.push({ token, reason: 'conflicting_tier' });
+      else tierFilter = value;
+      index += 1;
+      continue;
+    }
+    if (SCOPE_TOKENS.has(lowerKey)) {
+      const value = SCOPE_TOKENS.get(lowerKey);
+      if (scope != null && scope !== value) issues.push({ token, reason: 'conflicting_scope' });
+      else scope = value;
+      index += 1;
+      continue;
+    }
+    if (PREFERENCE_TOKENS.has(lowerKey)) {
+      const value = PREFERENCE_TOKENS.get(lowerKey);
+      if (preference != null && preference !== value) issues.push({ token, reason: 'conflicting_preference' });
+      else preference = value;
+      index += 1;
+      continue;
+    }
+    if (UNSUPPORTED_TOKENS.has(lowerKey)) {
+      unsupported.push(lowerKey);
+      index += 1;
+      continue;
+    }
+    // 未归类 token：旧写法兼容的商品目标（含空格商品名逐 token 收集）
+    itemTokens.push(token);
+    index += 1;
+  }
+
+  if (unsupported.length || issues.length) {
+    const partial = recommendUnderstanding({
+      mode: currency === 'ducat' || autoTrader || itemTokens.length ? 'ducat' : 'plat',
+      squad: squad ?? 4,
+      preference: preference ?? 'balanced',
+      vaultFilter: vaultFilter ?? 'all',
+      fissureScope: scope ?? 'all',
+      tierFilter: tierFilter ?? 'all',
+      itemTarget: itemTokens.length ? { query: itemTokens.join(' ').trim(), explicit: true } : null,
+      traderAuto: autoTrader,
+    });
+    const nextSteps = unsupported.some((token) => UNSUPPORTED_TOKENS.get(token) === 'mission')
+      ? ['裂缝 <任务词>', '开遗物 九重天', '帮助 遗物']
+      : ['开遗物 钢铁', '开遗物 九重天', '帮助 遗物'];
+    return {
+      ok: false,
+      unsupported,
+      issues,
+      understanding: partial,
+      userError: userError({
+        code: 'unsupported_input',
+        category: 'recommend-input',
+        retryable: false,
+        nextSteps,
+      }),
+    };
+  }
+
+  const itemQuery = itemTokens.join(' ').trim();
+  const itemTarget = itemQuery
+    ? { query: itemQuery, explicit: Boolean(explicitTarget) }
+    : null;
+  const mode = currency === 'ducat' || autoTrader || itemTarget ? 'ducat' : 'plat';
+  if (explicitTarget && !itemTarget) {
+    const partial = recommendUnderstanding({
+      mode, squad: squad ?? 4, preference: preference ?? 'balanced',
+      vaultFilter: vaultFilter ?? 'all', fissureScope: scope ?? 'all', tierFilter: tierFilter ?? 'all',
+      itemTarget: null, traderAuto: autoTrader,
+    });
+    return {
+      ok: false,
+      unsupported: [],
+      issues: [{ token: '对标', reason: 'empty_target' }],
+      understanding: partial,
+      userError: userError({
+        code: 'unsupported_input',
+        category: 'recommend-input',
+        retryable: false,
+        retryHint: null,
+        nextSteps: ['开遗物 对标 商品名', '奸商推荐', '帮助 遗物'],
+      }),
+    };
+  }
+  const traderTarget = autoTrader
+    ? { type: 'trader', query: '', explicit: false }
+    : itemTarget
+      ? { type: 'item', query: itemTarget.query, explicit: itemTarget.explicit }
+      : { type: currency === 'ducat' ? 'ordinary' : 'none', query: '' };
+  return {
+    ok: true,
+    mode,
+    squad: squad ?? 4,
+    preference: preference ?? 'balanced',
+    vaultFilter: vaultFilter ?? 'all',
+    fissureScope: scope ?? 'all',
+    tierFilter: tierFilter ?? 'all',
+    traderTarget,
+    understanding: recommendUnderstanding({
+      mode,
+      squad: squad ?? 4,
+      preference: preference ?? 'balanced',
+      vaultFilter: vaultFilter ?? 'all',
+      fissureScope: scope ?? 'all',
+      tierFilter: tierFilter ?? 'all',
+      itemTarget,
+      traderAuto: autoTrader,
+    }),
+  };
+}
+
+/** 用户可读的参数理解回显（失败与成功都要能说明系统如何理解输入）。 */
+export function formatRecommendUnderstanding(understanding = {}) {
+  const parts = ['开遗物'];
+  const mode = understanding.mode === 'ducat' ? '杜卡德' : '白金';
+  if (understanding.itemTarget) parts.push(`对标「${understanding.itemTarget.query}」`);
+  else if (understanding.traderAuto) parts.push('奸商自动');
+  else parts.push(mode === '杜卡德' ? '赚杜卡德' : '赚白金');
+  parts.push(FISSURE_SCOPES[understanding.fissureScope]?.zh || FISSURE_SCOPES.all.zh);
+  if (understanding.tierFilter && understanding.tierFilter !== 'all') {
+    parts.push(`仅${FISSURE_TIERS[understanding.tierFilter]?.zh || understanding.tierFilter}`);
+  }
+  parts.push(FISSURE_PREFERENCES[understanding.preference]?.zh || FISSURE_PREFERENCES.balanced.zh);
+  parts.push(RELIC_VAULT_FILTERS[understanding.vaultFilter]?.zh || RELIC_VAULT_FILTERS.all.zh);
+  parts.push((understanding.squad ?? 4) > 1 ? `${understanding.squad ?? 4}人组队` : '单人');
+  return parts.join(' · ');
 }
 
 export function classifyFissure(fissure) {
@@ -545,6 +808,12 @@ export async function recommendFissures(relics, options = {}) {
   const vaultFilter = RELIC_VAULT_FILTERS[options.vaultFilter] ? options.vaultFilter : parseRelicVaultFilter(options.vaultFilter);
   const fissureScope = FISSURE_SCOPES[options.fissureScope] ? options.fissureScope : parseFissureScope(options.fissureScope);
   const tierFilter = FISSURE_TIERS[options.tierFilter] ? options.tierFilter : parseFissureTier(options.tierFilter);
+  const understanding = options.understanding || null;
+  const scopeNoMatch = {
+    steel: { error: 'no_steel_fissures', nextSteps: ['开遗物', '裂缝', '帮助 遗物'] },
+    storm: { error: 'no_storm_fissures', nextSteps: ['开遗物 单人', '裂缝 九重天', '帮助 遗物'] },
+    all: { error: 'no_fissures', nextSteps: ['开遗物 单人', '裂缝', '帮助 遗物'] },
+  }[fissureScope] || { error: 'no_fissures', nextSteps: ['开遗物 单人', '裂缝', '帮助 遗物'] };
   const ducatGoal = mode === 'ducat' && options.ducatGoal ? options.ducatGoal : null;
   const ducatStrategy = mode === 'ducat' ? (ducatGoal ? 'trader' : 'ordinary') : null;
   // 奸商商品模式面向“自己带一枚遗物进野队”，不能把默认 4 人误算成四枚相同遗物。
@@ -569,10 +838,23 @@ export async function recommendFissures(relics, options = {}) {
       ? !entry.vaulted
       : true);
   if (!owned.length && vaultFilter !== 'all' && !ducatGoal) {
-    return { ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, fissureScope, tierFilter, error: 'no_relics_for_vault_filter', fetchedAt: new Date().toISOString() };
+    return {
+      ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, fissureScope, tierFilter,
+      error: 'no_relics_for_vault_filter', fetchedAt: new Date().toISOString(), understanding,
+      userError: userError({
+        code: 'no_match', category: 'relic-vault-filter', retryable: false,
+        nextSteps: ['开遗物（去掉入库筛选）', '我的库存 遗物', '帮助 遗物'],
+      }),
+    };
   }
   if (!owned.length && tierFilter !== 'all' && !ducatGoal) {
-    return { ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, fissureScope, tierFilter, error: 'no_relics_for_tier', fetchedAt: new Date().toISOString() };
+    return {
+      ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, fissureScope, tierFilter,
+      error: 'no_relics_for_tier', fetchedAt: new Date().toISOString(), understanding,
+      userError: userError({
+        code: 'no_match', category: 'relic-tier-filter', retryable: false, nextSteps: ['我的库存 遗物', '开遗物', '帮助 遗物'],
+      }),
+    };
   }
   const requiemCount = owned.filter((entry) => entry.era === 'Requiem').reduce((sum, entry) => sum + entry.count, 0);
 
@@ -582,16 +864,30 @@ export async function recommendFissures(relics, options = {}) {
   const fissures = (Array.isArray(worldState.fissures) ? worldState.fissures : [])
     .filter((f) => !f.expired && Date.parse(f.expiry) - now > minRemainMs)
     .filter((f) => fissureScope !== 'steel' || Boolean(f.isHard))
+    .filter((f) => fissureScope !== 'storm' || Boolean(f.isStorm))
     .filter((f) => tierFilter === 'all' || f.tier === tierFilter || (f.tier === 'Omnia' && tierFilter !== 'Requiem'));
   if (!fissures.length) {
-    return { ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, fissureScope, error: fissureScope === 'steel' ? 'no_steel_fissures' : 'no_fissures', fetchedAt: new Date().toISOString() };
+    return {
+      ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, fissureScope, tierFilter,
+      error: scopeNoMatch.error, fetchedAt: new Date().toISOString(), understanding,
+      userError: userError({
+        code: 'no_match', category: 'fissure-scope', retryable: false, nextSteps: [...scopeNoMatch.nextSteps],
+      }),
+    };
   }
   let localDb = options.localDb ?? null;
   if (!localDb && options.alecaDir) {
     try { localDb = await loadLocalRelicDb(options.alecaDir); } catch { localDb = null; }
   }
   if (!localDb) {
-    return { ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, error: 'no_local_relic_db', fetchedAt: new Date().toISOString() };
+    return {
+      ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, error: 'no_local_relic_db',
+      fetchedAt: new Date().toISOString(), understanding,
+      userError: userError({
+        code: 'source_unavailable', category: 'local-relic-db', retryable: false,
+        nextSteps: ['我的库存 遗物', '帮助 账号'],
+      }),
+    };
   }
   // 指定商品额外扫描“未拥有、未入库、当前有常规掉点”的遗物。来源索引一次构建、七天缓存，
   // 不会为每枚遗物单独请求。查源失败时安全降级为只展示立即可开。
@@ -726,6 +1022,8 @@ export async function recommendFissures(relics, options = {}) {
       appraisedCount: appraisedAll.length,
       economicallyViableCount: ducatGoal ? eligibleAll.length : null,
       error: null,
+      understanding,
+      degraded: priceStaleAt ? degradedNotice({ cachedUsed: true }) : null,
       requiem: requiemFissures > 0 && requiemCount > 0 ? { fissures: requiemFissures, relics: requiemCount } : null,
     };
   }
@@ -793,6 +1091,14 @@ export async function recommendFissures(relics, options = {}) {
     appraisedCount: appraised.length,
     economicallyViableCount: ducatGoal ? appraised.filter((entry) => valueOf(entry) > 0).length : null,
     error: hasResults ? null : (ducatGoal ? 'market_route_better' : 'no_matching_fissures'),
+    understanding,
+    degraded: priceStaleAt ? degradedNotice({ cachedUsed: true }) : null,
+    userError: hasResults ? null : userError({
+      code: 'no_match',
+      category: ducatGoal ? 'trader-target' : 'relic-routes',
+      retryable: false,
+      nextSteps: ducatGoal ? ['奸商推荐', '开遗物 杜卡德', '帮助 遗物'] : ['开遗物（放宽筛选）', '裂缝', '帮助 遗物'],
+    }),
     requiem: requiemFissures > 0 && requiemCount > 0 ? { fissures: requiemFissures, relics: requiemCount } : null,
   };
 }
@@ -900,17 +1206,39 @@ export function formatRefineRecommend(data) {
 
 // 文字兜底（卡片渲染失败时用）
 export function formatRecommend(data) {
+  // 失败必须回显系统如何理解输入（理解行），并给相关帮助/替代命令（下一步）。
+  const echoLine = data.understanding ? `🎯 已理解：${data.understanding}\n` : '';
+  const nextLine = (nextSteps) => (Array.isArray(nextSteps) && nextSteps.length
+    ? `\n下一步：${nextSteps.join('｜')}`
+    : '');
   if (!data.ok) {
-    if (data.error === 'no_local_relic_db') return '本地遗物数据表读取失败，请确认 AlecaFrame 数据完整。';
+    if (data.error === 'unsupported_input') {
+      const hints = (data.unsupported || []).length
+        ? `不支持的写法：${data.unsupported.map((token) => `「${token}」`).join('、')}。`
+        : '';
+      const reasons = (data.issues || []);
+      const ambiguous = reasons.length
+        ? `参数冲突：${reasons.map((issue) => issue.token).join('、')}（同类参数只能写一个）。`
+        : '';
+      const alternatives = Array.isArray(data.userError?.nextSteps) ? data.userError.nextSteps : ['帮助 遗物'];
+      return `${echoLine}${hints}${ambiguous}开遗物当前支持：筛选词＝钢铁/九重天/纪元/未入库/已入库；队伍＝单人/N人；币种＝白金/杜卡德；偏好＝速刷/舒适/收益；商品目标＝「对标 商品名」。${nextLine(alternatives)}`;
+    }
+    if (data.error === 'no_local_relic_db') return `${echoLine}本地遗物数据表读取失败，请确认 AlecaFrame 数据完整。${nextLine(data.userError?.nextSteps)}`;
     if (data.error === 'no_relics_for_vault_filter') {
-      return data.vaultFilter === 'vaulted'
+      const message = data.vaultFilter === 'vaulted'
         ? '你的库存中没有“已入库”遗物，无法按该条件推荐裂缝。'
         : '你的库存中没有“未入库”遗物，无法按该条件推荐裂缝。';
+      return `${echoLine}${message}${nextLine(data.userError?.nextSteps)}`;
     }
-    if (data.error === 'no_relics_for_tier') return `你的库存中没有“${FISSURE_TIERS[data.tierFilter]?.zh || data.tierFilter}”遗物，无法按该条件推荐裂缝。`;
-    if (data.error === 'market_route_better') return `按「${data.ducatGoal?.name || '目标商品'}」当前行情，库存与当前可获取遗物中都没有达到商品保本线的候选；先拿当屏最高白金奖励更稳。`;
-    if (data.error === 'no_steel_fissures') return '当前没有剩余时间足够的钢铁裂缝；去掉“钢铁”可查看全部路线。';
-    return '当前没有能配上你库存遗物的裂缝（或裂缝列表为空）。';
+    if (data.error === 'no_relics_for_tier') {
+      return `${echoLine}你的库存中没有“${FISSURE_TIERS[data.tierFilter]?.zh || data.tierFilter}”遗物，无法按该条件推荐裂缝。${nextLine(data.userError?.nextSteps)}`;
+    }
+    if (data.error === 'market_route_better') {
+      return `${echoLine}按「${data.ducatGoal?.name || '目标商品'}」当前行情，库存与当前可获取遗物中都没有达到商品保本线的候选；先拿当屏最高白金奖励更稳。${nextLine(data.userError?.nextSteps)}`;
+    }
+    if (data.error === 'no_steel_fissures') return `${echoLine}当前没有剩余时间足够的钢铁裂缝；“钢铁”是硬筛选，去掉“钢铁”可查看全部路线。${nextLine(data.userError?.nextSteps)}`;
+    if (data.error === 'no_storm_fissures') return `${echoLine}当前没有剩余时间足够的九重天虚空风暴裂缝；“九重天”是硬筛选（只保留虚空风暴），不是收益偏好。去掉“九重天”可查看全部路线，或发「裂缝 九重天」看是否有即将到期的风暴。${nextLine(data.userError?.nextSteps)}`;
+    return `${echoLine}当前没有能配上你库存遗物的裂缝（或裂缝列表为空）。${nextLine(data.userError?.nextSteps)}`;
   }
   const ducatMode = data.mode === 'ducat';
   const squadZh = (data.squad ?? 4) > 1 ? `${data.squad ?? 4}人组队` : '单人';
