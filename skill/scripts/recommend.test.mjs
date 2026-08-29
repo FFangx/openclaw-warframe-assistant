@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { buildWfInfoDucatStrategy, classifyFissure, formatRecommend, formatRecommendFollowup, formatRecommendUnderstanding, normalizeOfficialFissureWorldState, parseDucatRecommendTarget, parseFissurePreference, parseFissureScope, parseFissureTier, parseRecommendCommand, parseRelicVaultFilter, recommendFissures, recommendRefinement } from './recommend.mjs';
 import { parseAlecaMessage } from './alecaframe.mjs';
-import { parseNaturalWorldQuestion, parseShortcutMessage } from './shortcuts.mjs';
+import { parseNaturalWorldQuestion, parseShortcutMessage, runShortcut } from './shortcuts.mjs';
 import { buildFissureQueryCard, buildFissureRecommendCard, buildRefineRecommendCard } from './warframe-cards.mjs';
 
 const relics = [{ baseName: 'Lith T1', count: 7, refinement: 'Intact', vaulted: true }];
@@ -387,6 +387,26 @@ test('fissure-first perspective keeps every fissure once and may repeat its best
   assert.equal(data.rows.every((row) => row.relic.base === 'Lith T1'), true);
 });
 
+test('fissure-first perspective keeps owned relics when platinum statistics are incomplete', async () => {
+  const incompletePrices = Object.fromEntries(Object.entries(prices).map(([slug, entry], index) => [slug, {
+    ...entry,
+    reliable: index !== 0,
+  }]));
+  const data = await recommendFissures(relics, {
+    perspective: 'fissure', minRemainMs: 0, worldState, localDb, prices: incompletePrices,
+  });
+  assert.equal(data.rows.length, worldState.fissures.length);
+  assert.equal(data.rows.every((row) => row.relic.base === 'Lith T1'), true);
+  assert.equal(data.rows.every((row) => row.valuation.priceReliable === false), true);
+  assert.equal(data.rows.every((row) => row.valuation.fallback === 'ducat'), true);
+  assert.equal(data.rows.every((row) => row.expectedValue === null), true);
+  assert.equal(data.valuationIncompleteCount, worldState.fissures.length);
+  const card = buildFissureRecommendCard(data).html;
+  assert.match(card, /白金估值暂缺/u);
+  assert.match(card, /已按杜卡德兜底/u);
+  assert.doesNotMatch(card, /当前没有能配上库存遗物的裂缝/u);
+});
+
 test('fissure-first perspective also recommends owned Requiem relics for Requiem fissures', async () => {
   const requiemRelics = [{ baseName: 'Requiem I', count: 2, refinement: 'Intact', vaulted: false }];
   const requiemDb = { rewardsByBase: new Map([['Requiem I', rewards]]) };
@@ -431,6 +451,62 @@ test('merged fissure card shows all task labels and only exposes inventory in pe
   }).html;
   assert.match(personalHtml, /推荐 古纪 T1/u);
   assert.match(personalHtml, /已入库/u);
+
+  const incompleteHtml = buildFissureQueryCard({
+    title: '当前虚空裂缝',
+    normal: [{ ...baseRow, recommendation: {
+      relic: { zh: '古纪 T1', count: 7, vaulted: true }, expectedValue: null, expectedDucats: 40,
+      refineZh: null, valuation: { priceReliable: false, missingPriceCount: 1, fallback: 'ducat' },
+    } }],
+    hard: [], normalTotal: 1, hardTotal: 0, total: 1, fetchedAt: new Date().toISOString(),
+    personalized: true, recommendationModeZh: '白金', recommendationValuationIncompleteCount: 1,
+  }).html;
+  assert.match(incompleteHtml, /推荐 古纪 T1/u);
+  assert.match(incompleteHtml, /白金估值暂缺/u);
+  assert.match(incompleteHtml, /已按杜卡德兜底/u);
+  assert.doesNotMatch(incompleteHtml, /未匹配库存遗物/u);
+});
+
+test('裂缝九重天真实命令链保留估值不完整的库存推荐', async () => {
+  const expiry = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  let renderedData = null;
+  const result = await runShortcut('裂缝 九重天', {
+    personalAllowed: true,
+    worldState: {
+      timestamp: new Date().toISOString(),
+      fissures: [{
+        id: 'axi-storm', tier: 'Axi', missionType: 'Skirmish', enemy: 'Corpus',
+        node: 'Veil Node (Veil Proxima)', expiry, expired: false, isStorm: true,
+      }],
+    },
+    runAlecaMessage: async () => ({
+      handled: true,
+      ok: true,
+      data: {
+        perspective: 'fissure', mode: 'plat', valuationIncompleteCount: 1,
+        rows: [{
+          id: 'axi-storm', relic: { base: 'Axi T1', zh: '后纪 T1', count: 3, vaulted: false },
+          expectedValue: null, expectedDucats: 42, targetEconomy: null, refineZh: null,
+          valuation: { priceReliable: false, missingPriceCount: 1, fallback: 'ducat' },
+        }],
+      },
+    }),
+    renderCard: async (data) => {
+      renderedData = data;
+      return 'synthetic-fissure.png';
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.mediaUrl, 'synthetic-fissure.png');
+  assert.equal(result.data.personalized, true);
+  assert.equal(result.data.recommendationValuationIncompleteCount, 1);
+  assert.equal(result.data.normal[0].recommendation.relic.zh, '后纪 T1');
+  assert.equal(result.data.normal[0].recommendation.valuation.priceReliable, false);
+  assert.equal(renderedData, result.data);
+  const html = buildFissureQueryCard(result.data).html;
+  assert.match(html, /推荐 后纪 T1/u);
+  assert.match(html, /白金估值暂缺/u);
+  assert.doesNotMatch(html, /未匹配库存遗物/u);
 });
 
 test('裂缝与精炼推荐保留并展示遗物入库状态', async () => {

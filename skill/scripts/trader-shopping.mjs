@@ -315,9 +315,25 @@ export function summarizeTradeStatistics(payload, rankFilter, now = Date.now()) 
 }
 
 // —— 单件估值：今日 >=10 笔直接采用；5~9 笔且相对 90 日中位偏差 <=30% 时采用；否则回退 90 日中位。——
-export async function fetchTradeStatistics(slug, rankFilter, statisticsFetcher) {
+function safeStatisticsUnavailable(error) {
+  const diagnostic = error?.diagnostic;
+  return {
+    category: diagnostic?.category || 'unknown',
+    status: Number.isInteger(Number(diagnostic?.status)) ? Number(diagnostic.status) : null,
+    retryable: diagnostic?.retryable !== false,
+  };
+}
+
+// 估值批处理需要区分「确实没有成交统计」与「本次请求失败」。旧入口继续只返回 quote/null，
+// 详细入口只暴露脱敏类别，不携带 URL、响应体或物品之外的外部标识。
+export async function fetchTradeStatisticsDetailed(slug, rankFilter, statisticsFetcher) {
   try {
-    if (statisticsFetcher) return summarizeTradeStatistics(await statisticsFetcher(slug, rankFilter), rankFilter);
+    if (statisticsFetcher) {
+      const quote = summarizeTradeStatistics(await statisticsFetcher(slug, rankFilter), rankFilter);
+      return quote
+        ? { quote, unavailable: null }
+        : { quote: null, unavailable: { category: 'no_closed_statistics', status: null, retryable: false } };
+    }
     const { staleCachedJson } = await import('./wfdata.mjs');
     const result = await staleCachedJson(`market-statistics-${slug}`, {
       ttlMs: STATISTICS_CACHE_TTL_MS, version: 2,
@@ -333,10 +349,16 @@ export async function fetchTradeStatistics(slug, rankFilter, statisticsFetcher) 
       }
     });
     const summary = summarizeTradeStatistics(result.data, rankFilter);
-    return summary ? { ...summary, stale: result.stale, cachedAt: result.cachedAt } : null;
-  } catch {
-    return null;
+    return summary
+      ? { quote: { ...summary, stale: result.stale, cachedAt: result.cachedAt }, unavailable: null }
+      : { quote: null, unavailable: { category: 'no_closed_statistics', status: null, retryable: false } };
+  } catch (error) {
+    return { quote: null, unavailable: safeStatisticsUnavailable(error) };
   }
+}
+
+export async function fetchTradeStatistics(slug, rankFilter, statisticsFetcher) {
+  return (await fetchTradeStatisticsDetailed(slug, rankFilter, statisticsFetcher)).quote;
 }
 
 // —— 补足杜卡德缺口的「预计开遗物次数」：全库最优遗物按 Intact 概率 × 杜卡德值求每发期望，±30% 区间 ——

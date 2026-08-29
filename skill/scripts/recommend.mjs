@@ -580,18 +580,29 @@ export async function loadFairPriceTable(rewards, options = {}) {
     prices[slug] = { ...entry };
   }
   const slugs = [...new Set((rewards || []).map((reward) => reward?.slug).filter((slug) => slug && prices[slug]))];
-  const { fetchTradeStatistics } = await import('./trader-shopping.mjs');
+  const coverage = { requested: slugs.length, reliable: 0, unavailable: 0, categories: {} };
+  const { fetchTradeStatisticsDetailed } = await import('./trader-shopping.mjs');
   await mapLimit(slugs, 4, async (slug) => {
     const entry = prices[slug];
-    const quote = await fetchTradeStatistics(slug, Boolean(entry.isMod));
-    if (!quote?.platinum) return;
+    const { quote, unavailable } = await fetchTradeStatisticsDetailed(
+      slug,
+      Boolean(entry.isMod),
+      options.statisticsFetcher,
+    );
+    if (!quote?.platinum) {
+      coverage.unavailable += 1;
+      const category = unavailable?.category || 'unknown';
+      coverage.categories[category] = (coverage.categories[category] || 0) + 1;
+      return;
+    }
     entry.p = quote.platinum;
     entry.marketBasis = quote.basis;
     entry.dailyVolume = quote.dailyVolume;
     entry.reliable = true;
     entry.stale = Boolean(quote.stale);
+    coverage.reliable += 1;
   });
-  prices.__meta = base.__meta;
+  prices.__meta = { ...base.__meta, coverage };
   return prices;
 }
 
@@ -737,8 +748,18 @@ export function appraiseOffline(rewards, prices, squad = 4) {
     };
     if (!topDucat || ducats > (topDucat.ducats || 0)) topDucat = { name: reward.name, zhName, ducats };
   }
-  const priceReliable = rewards.every((reward) => !reward.slug || Boolean(prices[reward.slug]?.reliable));
-  return { expected: Math.round(expected * 10) / 10, expectedDucats: Math.round(expectedDucats), top, topDucat, priceReliable };
+  const tradableRewardCount = rewards.filter((reward) => reward.slug).length;
+  const missingPriceCount = rewards.filter((reward) => reward.slug && !prices[reward.slug]?.reliable).length;
+  const priceReliable = missingPriceCount === 0;
+  return {
+    expected: Math.round(expected * 10) / 10,
+    expectedDucats: Math.round(expectedDucats),
+    top,
+    topDucat,
+    priceReliable,
+    tradableRewardCount,
+    missingPriceCount,
+  };
 }
 
 // 目标商品模式的开局前估算：只计算玩家自己携带的一枚遗物，不假设野队队友
@@ -966,11 +987,23 @@ export async function recommendFissures(relics, options = {}) {
       relic: { base: relic.base, zh: relicZh(relic.base), count: relic.count, refinements: relic.refinements, vaulted: relic.vaulted },
       topReward: relic.top,
       topDucat: relic.topDucat || null,
-      expectedValue: ducatGoal ? (relic.targetEconomy?.expectedPlat || 0) : relic.expected,
+      expectedValue: ducatGoal
+        ? (relic.targetEconomy?.expectedPlat || 0)
+        : relic.priceReliable ? relic.expected : null,
       expectedDucats: ducatGoal ? (relic.targetEconomy?.expectedDucats || 0) : (relic.expectedDucats || 0),
       targetEconomy: relic.targetEconomy || null,
-      refineZh: ducatGoal ? (relic.targetEconomy?.refinement?.zh || null) : (relic.refine?.suggest?.zh || null),
-      refineReason: ducatGoal ? '先满足商品保本线，再取期望杜卡德最高档' : (relic.refine?.suggest?.reason || null),
+      refineZh: ducatGoal
+        ? (relic.targetEconomy?.refinement?.zh || null)
+        : mode === 'plat' && !relic.priceReliable ? null : (relic.refine?.suggest?.zh || null),
+      refineReason: ducatGoal
+        ? '先满足商品保本线，再取期望杜卡德最高档'
+        : mode === 'plat' && !relic.priceReliable ? null : (relic.refine?.suggest?.reason || null),
+      valuation: {
+        priceReliable: relic.priceReliable,
+        tradableRewardCount: relic.tradableRewardCount,
+        missingPriceCount: relic.missingPriceCount,
+        fallback: mode === 'plat' && !relic.priceReliable ? 'ducat' : null,
+      },
       valueScore: Math.round(valueOf(relic) * 10) / 10,
     };
     row.preferenceRank = preferenceRank(row, preference);
@@ -988,12 +1021,24 @@ export async function recommendFissures(relics, options = {}) {
   // 裂缝先行：每条当前裂缝只出现一次，再从兼容库存中挑价值最高的遗物。
   // 用于用户私聊的「裂缝」库存增强；排序由裂缝查询卡负责，这里不再混入旧任务权重。
   if (perspective === 'fissure') {
-    const reliableAll = mode === 'ducat' && !ducatGoal ? appraisedAll : appraisedAll.filter((entry) => entry.priceReliable);
-    const eligibleAll = ducatGoal ? reliableAll.filter((entry) => valueOf(entry) > 0) : reliableAll;
+    // 任务先行首先回答「库存里有没有兼容遗物」。白金统计不完整只影响估值可信度，
+    // 不能再把实际拥有的遗物抹掉。存在可靠白金候选时仍优先按白金价值选；该纪元全部
+    // 缺价时退杜卡德期望挑一枚，并在结果上明确标记估值降级。
+    const eligibleAll = ducatGoal
+      ? appraisedAll.filter((entry) => entry.priceReliable && valueOf(entry) > 0)
+      : appraisedAll;
     const bestForTier = (tier) => {
       const pool = tier === 'Omnia'
         ? eligibleAll.filter((entry) => entry.era !== 'Requiem')
         : eligibleAll.filter((entry) => entry.era === tier);
+      if (mode === 'plat' && !ducatGoal) {
+        const reliablePool = pool.filter((entry) => entry.priceReliable);
+        const rankedPool = reliablePool.length ? reliablePool : pool;
+        return [...rankedPool].sort((a, b) => (reliablePool.length
+          ? valueOf(b) - valueOf(a)
+          : (b.expectedDucats || 0) - (a.expectedDucats || 0))
+          || String(a.base).localeCompare(String(b.base)))[0] || null;
+      }
       return [...pool].sort((a, b) => valueOf(b) - valueOf(a) || String(a.base).localeCompare(String(b.base)))[0] || null;
     };
     const rows = fissures.flatMap((fissure) => {
@@ -1020,6 +1065,8 @@ export async function recommendFissures(relics, options = {}) {
       matchedRelicCount: new Set(rows.map((row) => row.relic.base)).size,
       totalFissures: fissures.length,
       appraisedCount: appraisedAll.length,
+      valuationIncompleteCount: rows.filter((row) => row.valuation?.priceReliable === false).length,
+      priceCoverage: prices.__meta?.coverage || null,
       economicallyViableCount: ducatGoal ? eligibleAll.length : null,
       error: null,
       understanding,

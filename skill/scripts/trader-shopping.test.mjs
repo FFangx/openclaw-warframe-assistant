@@ -4,9 +4,27 @@ import {
   robustOrderLow,
   resolveMarketReference,
   summarizeTradeStatistics,
+  fetchTradeStatisticsDetailed,
   mergeTraderStates,
   formatTraderShopping,
 } from './trader-shopping.mjs';
+
+test('成交统计详细入口区分无成交与请求失败且不泄露底层错误', async () => {
+  const empty = await fetchTradeStatisticsDetailed('empty_item', false, async () => ({
+    payload: { statistics_closed: { '48hours': [], '90days': [] } },
+  }));
+  assert.equal(empty.quote, null);
+  assert.deepEqual(empty.unavailable, { category: 'no_closed_statistics', status: null, retryable: false });
+
+  const failed = await fetchTradeStatisticsDetailed('failed_item', false, async () => {
+    const error = new Error('secret upstream response');
+    error.diagnostic = { category: 'rate_limited', status: 429, retryable: true, url: 'sensitive-url' };
+    throw error;
+  });
+  assert.equal(failed.quote, null);
+  assert.deepEqual(failed.unavailable, { category: 'rate_limited', status: 429, retryable: true });
+  assert.doesNotMatch(JSON.stringify(failed), /secret|sensitive-url/u);
+});
 
 test('robustOrderLow：无有效卖单返回无价', () => {
   assert.deepEqual(robustOrderLow([], 50), { orderLow: null, orderCount: 0, orderLowSuspicious: false });

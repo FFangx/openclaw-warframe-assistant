@@ -91,6 +91,34 @@ test('runs synthetic snapshot through recommendation, card and follow-up branche
       assert.match(result.followupText, new RegExp(detailText, 'u'), message);
       assert.doesNotMatch(result.followupText, /undefined/u, message);
     }
+
+    const incompletePrices = Object.fromEntries(Object.entries(prices).map(([slug, entry], index) => [slug, {
+      ...entry,
+      reliable: index !== 0,
+    }]));
+    let incompleteCard = '';
+    const incomplete = await runAlecaMessage('开遗物 九重天', {
+      alecaDir,
+      cardDir: path.join(root, 'cards'),
+      renderCard: async (card) => {
+        incompleteCard = card.html;
+        return path.join(root, 'cards', 'incomplete.png');
+      },
+      recommendOptions: {
+        perspective: 'fissure',
+        worldState: { fissures: [fissure('storm-partial', { isStorm: true })] },
+        localDb,
+        prices: incompletePrices,
+        minRemainMs: 0,
+      },
+    });
+    assert.equal(incomplete.ok, true);
+    assert.equal(incomplete.data.rows.length, 1);
+    assert.equal(incomplete.data.rows[0].relic.base, 'Lith T1');
+    assert.equal(incomplete.data.rows[0].valuation.priceReliable, false);
+    assert.equal(incomplete.data.rows[0].expectedValue, null);
+    assert.match(incompleteCard, /白金估值暂缺/u);
+    assert.doesNotMatch(incompleteCard, /当前没有能配上库存遗物的裂缝/u);
   } finally {
     if (previousOffline === undefined) delete process.env.WARFRAME_OFFLINE;
     else process.env.WARFRAME_OFFLINE = previousOffline;

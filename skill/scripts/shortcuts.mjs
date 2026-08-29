@@ -935,10 +935,12 @@ async function queryFissures(rawQuery = '', platform = DEFAULT_PLATFORM, options
   // 用户私聊增强：同一张公开裂缝卡，为每条任务补一枚兼容库存遗物；失败时安全降级为纯公开列表。
   let personalized = false;
   let recommendationModeZh = null;
+  let recommendationValuationIncompleteCount = 0;
   if (options.personalAllowed === true || process.env.WARFRAME_PERSONAL_OK === '1') {
     try {
-      const { runAlecaMessage } = await import('./alecaframe.mjs');
-      const recommendation = await runAlecaMessage(`开遗物 ${rawQuery}`.trim(), {
+      const runPersonalRecommendation = options.runAlecaMessage
+        || (await import('./alecaframe.mjs')).runAlecaMessage;
+      const recommendation = await runPersonalRecommendation(`开遗物 ${rawQuery}`.trim(), {
         skipCard: true,
         recommendOptions: { worldState: state, perspective: 'fissure', minRemainMs: 0 },
       });
@@ -953,12 +955,14 @@ async function queryFissures(rawQuery = '', platform = DEFAULT_PLATFORM, options
             expectedDucats: row.expectedDucats,
             targetEconomy: row.targetEconomy,
             refineZh: row.refineZh,
+            valuation: row.valuation,
           };
         }
         personalized = true;
         recommendationModeZh = recommendation.data.mode === 'ducat'
           ? (recommendation.data.ducatGoal ? `奸商对标·${recommendation.data.ducatGoal.name}` : '杜卡德')
           : '白金';
+        recommendationValuationIncompleteCount = recommendation.data.valuationIncompleteCount || 0;
       }
     } catch { /* 库存/行情不可用时保持公开裂缝卡 */ }
   }
@@ -986,6 +990,7 @@ async function queryFissures(rawQuery = '', platform = DEFAULT_PLATFORM, options
     truncated: false,
     personalized,
     recommendationModeZh,
+    recommendationValuationIncompleteCount,
     fetchedAt: new Date().toISOString(),
     sourceTimestamp: state.timestamp || null,
     error: fissures.length ? null : 'no_matches',
@@ -2037,7 +2042,8 @@ export async function runShortcut(message, options = {}) {
   data.nextActions = buildShortcutNextActions(data, parsed);
   let mediaUrl = null;
   try {
-    mediaUrl = await renderCard(data, options.cardDir || process.env.WARFRAME_CARD_DIR);
+    const renderShortcutCard = options.renderCard || renderCard;
+    mediaUrl = await renderShortcutCard(data, options.cardDir || process.env.WARFRAME_CARD_DIR);
   } catch {
     mediaUrl = null;
   }
