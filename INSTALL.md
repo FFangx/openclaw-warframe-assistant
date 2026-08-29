@@ -126,7 +126,7 @@ Gateway 日志确认插件数量包含本插件（搜 `plugins:`）。然后 QQ 
 ## 6. CI 与发布
 
 - **CI**：`.github/workflows/ci.yml` 在每次 push 到 `main`、PR 与 `v*` tag 时于 windows-latest 上运行 `verify.ps1 -SourceOnly`——源码 Skill 测试、扩展契约测试、安装器生命周期、卸载/元数据/发布合同与陈旧文件隔离验证，**Node 20 与 24 两个版本**都跑；第三方 action 固定完整 commit SHA、`checkout` 关闭凭据持久化、权限最小只读；另校验 `skill/package-lock.json` 可复现（`npm ci --ignore-scripts`）。CI 不接触真实 QQ、个人快照或凭据。
-- **版本**：根目录 `VERSION` 是版本唯一来源（当前 `1.1.7`）。受管部署的 `.warframe-assistant-build.json` 会记录 `version`，`verify.ps1` 运行时层强制 Skill 与插件版本一致且等于源码 `VERSION`。`skill/package.json`、`skill/package-lock.json`、`extension/package.json` 与本文版本必须在发布准备提交中一起对齐；`tests/repo-metadata.test.ps1` 强制校验。
+- **版本**：根目录 `VERSION` 是版本唯一来源（当前 `1.2.0`）。受管部署的 `.warframe-assistant-build.json` 会记录 `version`，`verify.ps1` 运行时层强制 Skill 与插件版本一致且等于源码 `VERSION`。`skill/package.json`、`skill/package-lock.json`、`extension/package.json` 与本文版本必须在发布准备提交中一起对齐；`tests/repo-metadata.test.ps1` 强制校验。
 - **发布**：先提交并推送版本准备（版本元数据对齐、`CHANGELOG.md` 顶部 `[Unreleased]` 为空、存在与 `VERSION` 对齐且非空的待发布 `## [X.Y.Z]` 章节），等待 CI 全绿；再运行 `.\release.ps1 -DryRun` 预览，确认后运行 `.\release.ps1 -Push`。脚本只给待发布章节盖日期、提交 `release vX.Y.Z` 并打附注标签，不在打标签时临时改版本号。
 
 ## 7. 卸载（安全边界）

@@ -5,7 +5,7 @@
 
 ## [Unreleased]
 
-## [1.1.7] - 2026-08-29
+## [1.2.0]
 
 ### 新增
 
@@ -31,7 +31,7 @@
 
 ### 修复
 
-- 发布准备元数据统一到 `1.1.7`，并修正发布说明与脚本接口：版本号必须在可审查的准备提交中同时更新 VERSION、两个 package manifest、lockfile、INSTALL 与待发布 CHANGELOG；`release.ps1` 只负责验证、盖日期、提交和打 tag，不再提供会在验证后单独改 VERSION、造成包版本漂移的 `-Version` 路径。
+- 发布准备元数据统一到 `1.2.0`，并修正发布说明与脚本接口：版本号必须在可审查的准备提交中同时更新 VERSION、两个 package manifest、lockfile、INSTALL 与待发布 CHANGELOG；`release.ps1` 只负责验证、盖日期、提交和打 tag，不再提供会在验证后单独改 VERSION、造成包版本漂移的 `-Version` 路径。
 - 每日奖励译名/1999 日历增益 AI 维护任务改为纯后台运行，强制 `delivery.mode=none` 并在安装升级时清理旧 QQ channel/to；模型的英文计划、进度或最终摘要不再进入 QQ。提示词同时要求禁止过程播报、只生成一次最终响应，空 inbox 仍严格返回 `NO_REPLY`。
 - 深层/时光科研词缀不再把 Oracle 词典说明里未解析的 `|val|` 参数占位符直接上卡：DE 官方 worldState Conquests 的个人词缀（`Variables`）只给键、不携带数值（TimeDilation 实锤），此前会显示「技能持续时间减少 |val|%。」。现在先用 warframestat 说明中的数字填充占位符（保留 ShieldDelay 500% 等动态替换），仍有 `|...|` 残留时优先采用同键完整审核静态说明（TimeDilation 按官方 Update 36.0 与 Hotfix 36.1.6 口径显示「缩短技能：技能持续时间减少 50%」），否则用诚实中文缺数值提示（`ARCHIMEDEA_UNRESOLVED_DESC_ZH`）；漂移监控把未解析占位符计为说明漂移（`descPlaceholder`，样本 `reason=unresolved-placeholder`），官方备用源 tailMap 路径行为不变。
 - 1999 日历增益中文名+效果改为成对收录与展示：以用户核验的灰机wiki「1999日历」页六人组覆写表为权威源更新静态路径表（硬化装甲/特浓咖啡/吸引力/强制输血/打孔纸带/人多势众/重型标枪/有福同享 等），社区状态行自带的 `description` 不再被丢弃；周报卡增益行同时显示中文名与效果说明并自动换行（去掉 ellipsis 截断），行高按估算保守留白。新增逐条季度实拍路径的 CI 离线用例。
@@ -203,4 +203,3 @@
 ### 文档
 
 - 用户指南补齐赏金/突击/钢铁侵袭、商店、本周好货、轮换日历、紫卡、订阅诊断与新午夜电波回退语义。
-
