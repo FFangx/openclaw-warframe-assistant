@@ -1130,7 +1130,7 @@ export async function runAlecaMessage(message, options = {}) {
     };
   }
   if (parsed.command === 'recommend') {
-    const { recommendFissures, formatRecommend, parseRecommendCommand, formatRecommendUnderstanding } = await import('./recommend.mjs');
+    const { recommendFissures, formatRecommend, formatRecommendFollowup, parseRecommendCommand, formatRecommendUnderstanding } = await import('./recommend.mjs');
     const { userErrorFromDiagnostic, formatUserError } = await import('./user-error-contract.mjs');
     // R19/R17 切片：严格解析开遗物参数——筛选词、队伍、币种、偏好与商品目标必须可区分；
     // 未知或不支持的筛选不得静默落入不相关业务（「九重天」曾是奸商商品名误判）。
@@ -1225,11 +1225,12 @@ export async function runAlecaMessage(message, options = {}) {
     let mediaUrl = null;
     try {
       const { buildFissureRecommendCard } = await import('./warframe-cards.mjs');
-      if (!options.skipCard) mediaUrl = await renderWarframeCard(buildFissureRecommendCard(data), options.cardDir || process.env.WARFRAME_CARD_DIR);
+      const renderCard = options.renderCard || renderWarframeCard;
+      if (!options.skipCard) mediaUrl = await renderCard(buildFissureRecommendCard(data), options.cardDir || process.env.WARFRAME_CARD_DIR);
     } catch { mediaUrl = null; }
     return {
       handled: true, ok: data.ok, command: 'recommend', query: parsed.query, data, mediaUrl,
-      followupText: mediaUrl ? `当前为${mode === 'ducat' ? (ducatGoal ? `奸商对标·${ducatGoal.name}·自己携带遗物` : '普通杜卡德') : '赚白金'}·${FISSURE_SCOPES[fissureScope].zh}·${FISSURE_PREFERENCES[preference].zh}·${RELIC_VAULT_FILTERS[vaultFilter].zh}${ducatGoal ? '' : `·${(data.squad ?? squad) > 1 ? `${data.squad ?? squad}人组队` : '单人'}口径`}${data.strategySync?.ok ? `；已同步 WFInfo 奸商目标（可靠估值 ${data.strategySync.priceCount} 项）` : ''}。` : null,
+      followupText: mediaUrl ? formatRecommendFollowup(data) : null,
       text: formatRecommend(data),
     };
   }

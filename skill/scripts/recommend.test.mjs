@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildWfInfoDucatStrategy, classifyFissure, formatRecommend, formatRecommendUnderstanding, normalizeOfficialFissureWorldState, parseDucatRecommendTarget, parseFissurePreference, parseFissureScope, parseFissureTier, parseRecommendCommand, parseRelicVaultFilter, recommendFissures, recommendRefinement } from './recommend.mjs';
+import { buildWfInfoDucatStrategy, classifyFissure, formatRecommend, formatRecommendFollowup, formatRecommendUnderstanding, normalizeOfficialFissureWorldState, parseDucatRecommendTarget, parseFissurePreference, parseFissureScope, parseFissureTier, parseRecommendCommand, parseRelicVaultFilter, recommendFissures, recommendRefinement } from './recommend.mjs';
 import { parseAlecaMessage } from './alecaframe.mjs';
 import { parseNaturalWorldQuestion, parseShortcutMessage } from './shortcuts.mjs';
 import { buildFissureQueryCard, buildFissureRecommendCard, buildRefineRecommendCard } from './warframe-cards.mjs';
@@ -21,6 +21,17 @@ const prices = Object.fromEntries(rewards.map((reward, index) => [reward.slug, {
   zh: `奖励 ${index + 1}`,
 }]));
 const localDb = { rewardsByBase: new Map([['Lith T1', rewards]]) };
+
+test('formats recommendation follow-up from result data with safe defaults', () => {
+  assert.equal(
+    formatRecommendFollowup({ mode: 'plat', squad: 1 }),
+    '当前为赚白金·全部裂缝·综合·全部遗物·单人口径。',
+  );
+  assert.equal(
+    formatRecommendFollowup({ mode: 'ducat', fissureScope: 'storm', preference: 'yield', vaultFilter: 'unvaulted', squad: 4 }),
+    '当前为普通杜卡德·仅九重天·收益·未入库·4人组队口径。',
+  );
+});
 
 test('builds a WFInfo target strategy with one consistent fair-price map', () => {
   const reliablePrices = Object.fromEntries(Object.entries(prices).map(([slug, entry], index) => [slug, {

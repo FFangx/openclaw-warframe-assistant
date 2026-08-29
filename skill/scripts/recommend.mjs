@@ -1278,3 +1278,21 @@ export function formatRecommend(data) {
   lines.push(`${preferenceNote}；${ducatMode ? (data.ducatGoal ? '开局前只估自己携带的遗物，先过商品保本线再按期望杜卡德排序；实际四选一由 WFInfo 兜底' : '普通模式按毛杜卡德期望排序，不扣白金') : `期望按完整精炼度·${squadZh}开奖取最优·可靠成交中位估算`}，仅供参考。`);
   return lines.join('\n');
 }
+
+// 卡片发送后的口径说明由推荐结果自身生成，避免宿主重复索引筛选常量。
+// 即使旧缓存或未来调用方缺少某个字段，也应安全回退到默认口径，而不是让整条命令崩溃。
+export function formatRecommendFollowup(data = {}) {
+  const ducatMode = data.mode === 'ducat';
+  const ducatGoal = data.ducatGoal || null;
+  const modeZh = ducatMode
+    ? (ducatGoal ? `奸商对标·${ducatGoal.name || '目标商品'}·自己携带遗物` : '普通杜卡德')
+    : '赚白金';
+  const scopeZh = FISSURE_SCOPES[data.fissureScope]?.zh || FISSURE_SCOPES.all.zh;
+  const preferenceZh = FISSURE_PREFERENCES[data.preference]?.zh || FISSURE_PREFERENCES.balanced.zh;
+  const vaultFilterZh = RELIC_VAULT_FILTERS[data.vaultFilter]?.zh || RELIC_VAULT_FILTERS.all.zh;
+  const squadZh = (data.squad ?? 4) > 1 ? `${data.squad ?? 4}人组队` : '单人';
+  const strategySync = data.strategySync?.ok
+    ? `；已同步 WFInfo 奸商目标（可靠估值 ${data.strategySync.priceCount} 项）`
+    : '';
+  return `当前为${modeZh}·${scopeZh}·${preferenceZh}·${vaultFilterZh}${ducatGoal ? '' : `·${squadZh}口径`}${strategySync}。`;
+}

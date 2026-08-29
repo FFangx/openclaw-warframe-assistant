@@ -4,11 +4,16 @@
   "description": "OpenClaw Warframe assistant deterministic scripts (cards, prices, relics, world state, weekly, subscriptions).",
   "private": true,
   "scripts": {
+    "lint": "eslint scripts --no-warn-ignored",
     "test": "node --test"
   },
   "license": "MIT",
   "type": "commonjs",
   "optionalDependencies": {
     "sharp": "^0.35.3"
+  },
+  "devDependencies": {
+    "eslint": "10.9.1",
+    "globals": "17.11.0"
   }
 }

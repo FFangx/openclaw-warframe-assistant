@@ -54,6 +54,11 @@ jobs:
         # --ignore-scripts 禁止任何依赖生命周期脚本（sharp 的 postinstall 不执行）。
         run: npm ci --ignore-scripts --no-audit --no-fund
 
+      - name: Runtime undefined-symbol lint
+        shell: pwsh
+        working-directory: skill
+        run: npm run lint
+
       - name: Source tests + installer lifecycle (verify.ps1 -SourceOnly)
         shell: pwsh
         run: |
