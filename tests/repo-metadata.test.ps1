@@ -168,5 +168,54 @@ Assert-True 'release docs require a prepared metadata commit' (
 $readme = Read-File 'README.md'
 Assert-True 'README documents the uninstall lifecycle' ($readme.Contains('uninstall.ps1'))
 Assert-True 'README does not hard-code an obsolete current version' (-not ($readme -match '当前 `\d+\.\d+\.\d+`'))
+Assert-True 'README distinguishes Market v2 live data from v1 closed statistics' (
+  $readme.Contains('warframe.market v2 商品/订单与 v1 历史成交统计') -and
+  $readme.Contains('v1 历史成交统计'))
+Assert-True 'README documents the shared user-facing error contract' (
+  $readme.Contains('403/404/429') -and
+  $readme.Contains('来源暂不可用') -and
+  $readme.Contains('下一步命令') -and
+  $readme.Contains('缓存结果不会冒充实时结果'))
+Assert-True 'README does not claim one valuation basis for every non-wm workflow' (
+  -not $readme.Contains('非 `wm` 估值统一') -and
+  $readme.Contains('奸商商品路线则明确使用当前稳健低值作为决策价'))
+
+# --- public runtime source disclosure ---
+# Scan production URL literals only. QQ delivery endpoints and the repository URL used in
+# User-Agent identification are transports/metadata rather than Warframe query sources.
+# Every other host must first be classified here, then disclosed in both README and NOTICE.
+$sourceDisclosure = @{
+  'api.warframe.com'       = @{ Readme = 'DE 官方端点'; Notice = 'api.warframe.com' }
+  'www-static.warframe.com'= @{ Readme = 'DE 官方端点'; Notice = 'www-static.warframe.com' }
+  'api.warframestat.us'    = @{ Readme = 'api.warframestat.us'; Notice = 'api.warframestat.us' }
+  'drops.warframestat.us'  = @{ Readme = 'api.warframestat.us'; Notice = 'drops.warframestat.us' }
+  'api.warframe.market'    = @{ Readme = 'warframe.market'; Notice = 'api.warframe.market' }
+  'warframe.market'        = @{ Readme = 'warframe.market'; Notice = 'warframe.market 静态资源' }
+  'ws.warframe.market'     = @{ Readme = 'WebSocket'; Notice = 'ws.warframe.market' }
+  'browse.wf'              = @{ Readme = 'browse.wf 社区镜像'; Notice = 'browse.wf' }
+  'oracle.browse.wf'       = @{ Readme = 'browse.wf 社区镜像'; Notice = 'oracle.browse.wf' }
+  'cdn.alecaframe.com'     = @{ Readme = 'cdn.alecaframe.com'; Notice = 'cdn.alecaframe.com' }
+  'relics.run'             = @{ Readme = 'relics.run'; Notice = 'relics.run' }
+  'raw.githubusercontent.com' = @{ Readme = 'raw.githubusercontent.com'; Notice = 'raw.githubusercontent.com' }
+}
+$nonDataHosts = @('api.sgroup.qq.com', 'bots.qq.com', 'github.com')
+$productionFiles = @(
+  Get-ChildItem -LiteralPath (Join-Path $repoRoot 'skill\scripts') -Recurse -File -Include '*.mjs', '*.cjs' |
+    Where-Object { $_.Name -notmatch '\.test\.' }
+  Get-ChildItem -LiteralPath (Join-Path $repoRoot 'extension') -Recurse -File -Include '*.mjs', '*.cjs' |
+    Where-Object { $_.Name -notmatch '\.test\.' }
+)
+$runtimeHosts = @($productionFiles | ForEach-Object {
+  [regex]::Matches((Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8), '(?:https?|wss)://([A-Za-z0-9.-]+)') |
+    ForEach-Object { $_.Groups[1].Value.ToLowerInvariant() }
+} | Sort-Object -Unique)
+foreach ($hostName in $runtimeHosts) {
+  if ($nonDataHosts -contains $hostName) { continue }
+  Assert-True "runtime source host is classified: $hostName" $sourceDisclosure.ContainsKey($hostName)
+  if ($sourceDisclosure.ContainsKey($hostName)) {
+    Assert-True "README discloses runtime source host: $hostName" $readme.Contains($sourceDisclosure[$hostName].Readme)
+    Assert-True "NOTICE discloses runtime source host: $hostName" $notice.Contains($sourceDisclosure[$hostName].Notice)
+  }
+}
 
 Write-Host "`nrepo metadata contract tests: $passed passed"

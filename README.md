@@ -52,13 +52,15 @@
 - **周常一图流**：11 项周常清单 + AlecaFrame 快照**自动打卡** + 回廊奖励轨道 + 电波赛季进度与满级预测
 - **杜卡德规划**（需 [AlecaFrame](https://alecaframe.com)）：`杜卡德 600` 按可靠的今日/90 日成交中位寻找白金损失最低的组合，并标日均量；不以最低卖单估值。默认按成品拥有状态智能保留，`保留N/保留N套` 可显式覆盖
 - **奸商路线比较**：Prime 部件机会成本＋奸商现金，对比 0 级市场价＋准确交易税，告诉你该换还是直接买
-- **个人数据**（需 [AlecaFrame](https://alecaframe.com)）：`开遗物`按遗物价值推 TOP8，加`钢铁`只匹配钢铁裂缝，加`九重天`只匹配虚空风暴裂缝（硬筛选）；`开遗物 商品名`/`开遗物 对标 商品名`先按奸商商品保本线筛选，再列“立即可开＋最多三种建议获取”，不假定野队四人开同一遗物。另有库存估值、掉落监测、紫卡估价、精炼/奸商购物推荐、商店已购对账、本周好货；非 `wm` 估值统一优先采用可靠今日成交中位，样本不足回退 90 日中位
+- **个人数据**（需 [AlecaFrame](https://alecaframe.com)）：`开遗物`按遗物价值推 TOP8，加`钢铁`只匹配钢铁裂缝，加`九重天`只匹配虚空风暴裂缝（硬筛选）；`开遗物 商品名`/`开遗物 对标 商品名`先按奸商商品保本线筛选，再列“立即可开＋最多三种建议获取”，不假定野队四人开同一遗物。另有库存估值、掉落监测、紫卡估价、精炼/奸商购物推荐、商店已购对账、本周好货；普通库存与杜卡德等持有价值优先采用可靠今日成交中位，样本不足回退 90 日中位，奸商商品路线则明确使用当前稳健低值作为决策价
 - **WFInfo 游戏内决策（可选）**：指定商品的`开遗物`把目标、保本线和同口径奖励估值同步到 WFInfo OpenClaw 配套版；开奖后按实际四项奖励标出“保留白金 / 兑换杜卡德”，无需切回 QQ。用 `install.ps1 -WithWFInfo` 安装固定且经双哈希校验的独立 Apache-2.0 组件。旧命令`开遗物 杜卡德 商品名`继续兼容；策略缺价时 WFInfo 自动使用同目录全 Prime 估值索引（`prime-reward-index.mjs` 预热，24h 刷新）补缺，索引无效时仍安全停判
 - **自然语言与衔接**：「悟空p多少钱」「哪里刷夜灵p」「这周还剩啥没做」——AI 负责意图路由和一两句点评，数字全部来自脚本；短命令卡会保留短时脱敏实体上下文，因此下一句“这个甲多少钱”能直接续查行情
 
 卡片底部会按当前结果给出最多两条“下一步”命令，例如获取路线发现遗物均已入库时提示`wm 夜灵p`，Market 整套卡则提示`获取 夜灵p`。
 
 主要确定性命令生成 600～800px 宽的深色图片卡；无法渲染或没有卡片模板时会诚实回退为中文文字，不会为了“有图”而编造结果。
+
+输入不受支持、没有匹配结果或公开数据源返回 403/404/429、超时与结构异常时，助手会区分“写法不支持”“确实查无”与“来源暂不可用”，说明是否会自动重试或已使用缓存/备用源，并给出可直接发送的下一步命令；缓存结果不会冒充实时结果，内部 URL、响应体、堆栈和账号标识不会回显给用户。
 
 ## 架构一眼看懂
 
@@ -80,7 +82,7 @@ flowchart LR
 - `extension/`：OpenClaw 插件（严格裸命令硬拦截 + 自然语言结构化工具；工具生成的卡片由插件直接投递 QQ）
 - `config/AGENTS.warframe.md`：安装器追加到用户 `AGENTS.md` 的只读与隐私安全边界
 
-数据源：DE 官方 worldState（PC 首选）、api.warframestat.us（备用/交叉验证）、browse.wf（官方导出与词典；Oracle 只作条件式裂缝字段叠加）、api.warframe.market v2、relics.run（批量估值加速）与 AlecaFrame 本机快照（只读）。完整降级顺序见 [数据源说明](skill/references/sources.md) 与 [NOTICE.md](NOTICE.md)。
+数据源：DE 官方 worldState（PC 首选）、api.warframestat.us（全量备用/交叉验证及掉率查询）、browse.wf 社区镜像（托管 DE Public Export、词典与排期；Oracle 只作条件式裂缝字段叠加）、warframe.market v2 商品/订单与 v1 历史成交统计、relics.run（批量估值加速）、raw.githubusercontent.com 上的 WFCD/社区静态备用数据，以及 AlecaFrame 本机快照（只读）与 cdn.alecaframe.com 目录兜底。完整降级顺序见 [数据源说明](skill/references/sources.md) 与 [NOTICE.md](NOTICE.md)。
 
 ## 快速开始
 
@@ -168,8 +170,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\verify.ps1
 
 ## 隐私摘要
 
-- **离开本机的数据**：只有查询本身（物品名、命令、世界状态请求）发给公开数据源——api.warframestat.us、api.warframe.market、
-  browse.wf、DE 官方 worldState 与 AlecaFrame CDN（词典/图片兜底）。这些请求**不含**你的 QQ openid、账号标识或任何凭据。
+- **离开本机的数据**：只有完成查询所需的关键词或公开状态请求会发给公开数据源——DE 官方端点、api.warframestat.us、
+  warframe.market（v2 商品/订单、WebSocket 与 v1 历史成交统计）、browse.wf 社区镜像、relics.run、raw.githubusercontent.com 上的
+  WFCD/社区静态备用数据，以及 cdn.alecaframe.com（目录/图片兜底）。这些请求**不含**你的 QQ openid、账号标识、AlecaFrame 原始快照或任何凭据。
 - **永不离开本机的数据**：AlecaFrame 个人快照（库存/账号/周报数据）只在本机只读解析；订阅账本、周常状态、卡片与缓存都写在你的
   OpenClaw 工作区内。本项目不读取 warframe.market 登录令牌，不上传任何快照。
 - 安装器写入的 AGENTS.md 受控片段只声明只读与隐私边界，不含任何身份信息。

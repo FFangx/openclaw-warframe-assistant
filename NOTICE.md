@@ -31,12 +31,13 @@
 
 | 来源 | 用途 | 说明 |
 |---|---|---|
-| api.warframestat.us (WFCD) | 世界状态、掉落表、中文物品名 | 社区公益 API |
-| api.warframe.market | 实时价格、拍卖、物品目录 | 官方公开 API，遵守其调用礼仪（限频、UA） |
+| api.warframestat.us / drops.warframestat.us (WFCD) | 世界状态、掉落表、中文物品名 | 社区公益 API |
+| api.warframe.market / ws.warframe.market / warframe.market 静态资源 | v2 商品与实时订单、WebSocket 新单、v1 历史成交统计、物品图片 | 官方公开 API；v1 仅用于 v2 尚未提供的历史成交统计，遵守其调用礼仪（限频、UA） |
 | browse.wf / oracle.browse.wf (OpenWF) | 官方导出数据、词典、仲裁/侵袭排期 | 社区镜像 |
-| content.warframe.com / api.warframe.com | DE 官方 worldState | 官方公开端点 |
+| content.warframe.com / api.warframe.com / www-static.warframe.com | DE 官方 worldState、Manifest 与游戏素材 | 官方公开端点 |
 | cdn.alecaframe.com | 目录数据在线兜底 | AlecaFrame 分发源 |
 | relics.run | 每日价格行情快照 | 社区公益 |
+| raw.githubusercontent.com（WFCD / KingPrimes） | 掉落、遗物与社区维护状态译名的静态备用数据 | GitHub 公共只读文件；失败时按各业务缓存/降级合同处理 |
 | 灰机 wiki (warframe.huijiwiki.com) | 别名表与译名考证 | CC BY-SA 3.0，已注明出处 |
 | 仲裁场地评级表、紫卡神卡表（44bananas） | 社区评级参考 | 卡面已标注来源 |
 
