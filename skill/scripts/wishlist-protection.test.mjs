@@ -116,22 +116,36 @@ test('并发上限：limit=2 时前两任务立即运行、第三个 FIFO 排队
   let running = 0;
   const maxObserved = { value: 0 };
   const trace = [];
-  const task = (name, waitMs) => () => new Promise((resolve) => {
+  const blockers = new Map(['a', 'b', 'c'].map((name) => {
+    let release;
+    const promise = new Promise((resolve) => { release = resolve; });
+    return [name, { promise, release }];
+  }));
+  const task = (name) => async () => {
     running += 1;
     maxObserved.value = Math.max(maxObserved.value, running);
     trace.push(`start-${name}`);
-    setTimeout(() => { running -= 1; trace.push(`end-${name}`); resolve(name); }, waitMs);
-  });
-  const first = gate.run(task('a', 5));
-  const second = gate.run(task('b', 10));
-  const third = gate.run(task('c', 1));
+    await blockers.get(name).promise;
+    running -= 1;
+    trace.push(`end-${name}`);
+    return name;
+  };
+  const first = gate.run(task('a'));
+  const second = gate.run(task('b'));
+  const third = gate.run(task('c'));
   await new Promise((resolve) => setImmediate(resolve)); // 让任务启动微任务落定
   assert.deepEqual(gate.status(), { limit: 2, running: 2, queued: 1 });
   assert.deepEqual(trace, ['start-a', 'start-b']);
+  blockers.get('a').release();
+  await first;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(trace.filter((item) => item.startsWith('start-')), ['start-a', 'start-b', 'start-c']);
+  blockers.get('b').release();
+  blockers.get('c').release();
   await Promise.all([first, second, third]);
   assert.deepEqual(gate.status(), { limit: 2, running: 0, queued: 0 });
   assert.ok(maxObserved.value <= 2, '并发不超过 2');
-  assert.deepEqual(trace.filter((item) => item.startsWith('start-')), ['start-a', 'start-b', 'start-c'], '三个任务全部执行且 c 在第 2 个之后才开始');
+  assert.deepEqual(trace.filter((item) => item.startsWith('start-')), ['start-a', 'start-b', 'start-c'], '三个任务全部执行且 c 在首个槽位释放后才开始');
   assert.equal(trace.filter((item) => item.startsWith('end-')).length, 3);
 });
 
