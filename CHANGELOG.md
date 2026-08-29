@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [1.2.1]
+
 ### 变更
 
 - 修正公开仓库的数据与错误说明：README 现明确区分 warframe.market v2 商品/实时订单与 v1 历史成交统计，按实际业务区分成交中位估值和奸商路线稳健低值，补充不支持输入、无匹配、403/404/429、来源故障与缓存降级的用户反馈语义；README/NOTICE 同步披露 relics.run、WFCD/社区 GitHub 静态备用源及其余生产数据主机。仓库元数据测试会扫描 Skill/扩展生产代码中的 HTTP/WebSocket 主机，任何新增且未分类或未同时写入 README/NOTICE 的数据源都会阻断验证。

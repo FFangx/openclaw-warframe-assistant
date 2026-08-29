@@ -1,6 +1,6 @@
 {
   "name": "warframe-assistant",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "OpenClaw Warframe assistant deterministic scripts (cards, prices, relics, world state, weekly, subscriptions).",
   "private": true,
   "scripts": {
