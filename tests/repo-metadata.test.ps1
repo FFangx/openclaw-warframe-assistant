@@ -166,6 +166,11 @@ Assert-True 'release docs require a prepared metadata commit' (
 
 # --- uninstall lifecycle is documented ---
 $readme = Read-File 'README.md'
+$englishReadme = Read-File 'README.en.md'
+Assert-True 'Chinese README links the English overview' ($readme.Contains('[English](README.en.md)'))
+Assert-True 'English README links the Chinese canonical documentation' (
+  $englishReadme.Contains('[简体中文](README.md)') -and
+  $englishReadme.Contains('This project is built for Simplified Chinese-speaking players'))
 Assert-True 'README documents the uninstall lifecycle' ($readme.Contains('uninstall.ps1'))
 Assert-True 'README does not hard-code an obsolete current version' (-not ($readme -match '当前 `\d+\.\d+\.\d+`'))
 Assert-True 'README distinguishes Market v2 live data from v1 closed statistics' (
