@@ -958,6 +958,37 @@ export const ARCHIMEDEA_PLACEHOLDER_DESC = '效果说明待补录，请在游戏
 // 缺失或占位符多于可用数值时替换不完整——任何 |...| 残留都不得直接上卡。
 export const ARCHIMEDEA_UNRESOLVED_DESC_ZH = '效果数值待上游同步，请以游戏内为准';
 
+// Oracle 简中词典会保留游戏客户端的富文本语义标记（例如 <DT_PUNCTURE>、
+// <DT_POISON_COLOR>）。卡片已经有中文伤害类型文字，这些标记只负责客户端着色，
+// 在 HTML 卡片里没有语义，必须统一剥离；其余未识别的尖括号/竖线模板视为未解析，
+// 绝不能原样进入用户可见内容。
+const ARCHIMEDEA_ENGINE_TAG = /[ \t]*<[A-Z][A-Z0-9_]*>[ \t]*/gu;
+const ARCHIMEDEA_UNRESOLVED_TOKEN = /<[^>]+>|\|[^|]*\||\b(?:DT|GAMEPLAY)_[A-Z0-9_]+\b/iu;
+
+export function sanitizeArchimedeaDescription(value) {
+  return String(value || '')
+    .replace(ARCHIMEDEA_ENGINE_TAG, '')
+    .replace(/[ \t]+/gu, ' ')
+    .trim();
+}
+
+export function hasUnresolvedArchimedeaToken(value) {
+  return ARCHIMEDEA_UNRESOLVED_TOKEN.test(String(value || ''));
+}
+
+export function localizeArchimedeaFaction(mission, factionMap = staticData.factionZh) {
+  const candidates = [mission?.factionKey, mission?.faction].filter(Boolean);
+  for (const candidate of candidates) {
+    const direct = factionMap?.[candidate];
+    if (direct) return direct;
+    const normalized = String(candidate).replace(/^FC_/iu, '').toLowerCase();
+    const match = Object.entries(factionMap || {})
+      .find(([key]) => String(key).replace(/^FC_/iu, '').toLowerCase() === normalized)?.[1];
+    if (match) return match;
+  }
+  return '未知阵营';
+}
+
 function fillOraclePlaceholders(desc, targetNumbers) {
   let text = String(desc || '');
   if (text.includes('|') && targetNumbers.length) {
@@ -995,11 +1026,11 @@ export function localizeArchimedeaModifier(mod, oracleMap = new Map(), fallbackM
   // Oracle 说明先用 warframestat 描述里的数字填充 |val| 占位符（保留 ShieldDelay 500% 等
   // 动态替换）；替换后仍有任何 |...| 残留 → 不得直接上卡：优先同键完整审核静态说明，
   // 否则用诚实中文缺数值提示。
-  let desc = fillOraclePlaceholders(chosen?.desc, targetNumbers);
-  if (!desc) desc = fallback?.desc || '';
-  if (/\|/u.test(desc)) {
-    const reviewed = String(fallback?.desc || '').trim();
-    desc = reviewed && !/\|/u.test(reviewed) && reviewed !== ARCHIMEDEA_PLACEHOLDER_DESC
+  let desc = sanitizeArchimedeaDescription(fillOraclePlaceholders(chosen?.desc, targetNumbers));
+  if (!desc) desc = sanitizeArchimedeaDescription(fallback?.desc || '');
+  if (hasUnresolvedArchimedeaToken(desc)) {
+    const reviewed = sanitizeArchimedeaDescription(fallback?.desc || '');
+    desc = reviewed && !hasUnresolvedArchimedeaToken(reviewed) && reviewed !== ARCHIMEDEA_PLACEHOLDER_DESC
       ? reviewed
       : ARCHIMEDEA_UNRESOLVED_DESC_ZH;
   }
@@ -1037,7 +1068,7 @@ function buildMegaData(record, worldState, skipped = new Set(), autoResult = nul
     const modZh = (mod) => localizeArchimedeaModifier(mod, oracleConquestMap, staticData.archimedeaZh, { tailMap: oracleConquestTails, kind });
     return (entry?.missions || []).map((mission) => ({
       typeZh: MISSION_ZH[mission.missionType] || '未知任务',
-      factionZh: staticData.factionZh[mission.faction] || '未知阵营',
+      factionZh: localizeArchimedeaFaction(mission),
       deviation: modZh(mission.deviation),
       risks: (mission.risks || []).map((risk) => ({ ...modZh(risk), hard: Boolean(risk.isHard) })),
     }));

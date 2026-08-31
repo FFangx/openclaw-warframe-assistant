@@ -8,8 +8,15 @@
   "archonReward": "对应颜色执刑官源力石 ×1（有几率为强化型）",
   "factionZh": {
     "Man in the Wall": "墙中人",
+    "The Murmur": "低语者",
+    "Murmur": "低语者",
     "Scaldra": "斯卡德拉",
+    "SCALDRA": "斯卡德拉",
     "Techrot": "科技腐殖",
+    "TECHROT": "科技腐殖",
+    "FC_MITW": "低语者",
+    "FC_SCALDRA": "斯卡德拉",
+    "FC_TECHROT": "科技腐殖",
     "Narmer": "合一众"
   },
   "archimedeaZh": {

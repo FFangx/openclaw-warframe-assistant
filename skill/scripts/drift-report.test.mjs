@@ -166,6 +166,13 @@ test('科研词缀 Oracle |val| 未解析（上游只给键无数值）视为说
   const leakyLocalize = () => ({ name: '缩短技能', desc: '技能持续时间减少 |val|%。' });
   const leaky = analyzeArchimedeaTranslationDrift(entries, { localizeMod: leakyLocalize, oracleMap: null, oracleTailMap: null, staticZh: {} });
   assert.equal(leaky.descPlaceholder, 1);
+  // 防御性：另一类 Oracle/客户端富文本标记同样属于未解析占位，不能因不含竖线而漏报。
+  const engineTagLeak = analyzeArchimedeaTranslationDrift(entries, {
+    localizeMod: () => ({ name: '二次伤害', desc: '获得 1 层 <DT_PUNCTURE>穿刺异常状态。' }),
+    oracleMap: null, oracleTailMap: null, staticZh: {},
+  });
+  assert.equal(engineTagLeak.descPlaceholder, 1);
+  assert.ok(engineTagLeak.samples.some((s) => s.reason === 'unresolved-placeholder'));
   const json = JSON.stringify(report);
   assert.ok(!/ConquestCacheScore|ChallengeProgress|standing|tokens|score/iu.test(json), '漂移报告不得携带个人分数');
 });

@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { ARCHIMEDEA_UNRESOLVED_DESC_ZH, archimedeaResearchProgress, calendarChallengeLine, calendarRewardZh, calendarUpgradeEntry, calendarUpgradeZh, evaluateAutoCheck, hasCompleteArchimedeas, localizeArchimedeaModifier, nextReset, nightwaveChallengeZh, remindWeekly, weekStart } from './weekly.mjs';
+import { ARCHIMEDEA_UNRESOLVED_DESC_ZH, archimedeaResearchProgress, calendarChallengeLine, calendarRewardZh, calendarUpgradeEntry, calendarUpgradeZh, evaluateAutoCheck, hasCompleteArchimedeas, hasUnresolvedArchimedeaToken, localizeArchimedeaFaction, localizeArchimedeaModifier, nextReset, nightwaveChallengeZh, remindWeekly, sanitizeArchimedeaDescription, weekStart } from './weekly.mjs';
 import { calendarSection, labsSection } from './weekly-mega-card.mjs';
 
 const calendarDays = [
@@ -189,17 +189,57 @@ test('科研数据缺失时使用紧凑提示，不保留三关任务的空白�
   assert.equal(section.h, 508);
 });
 
-test('本周科研接口出现的全部词缀键都有中文映射', () => {
+test('科研静态兜底表中的名称和说明完整且不含游戏引擎占位符', () => {
   const staticData = JSON.parse(readFileSync(new URL('./weekly-static.json', import.meta.url), 'utf8'));
-  const currentKeys = [
-    'LostInTranslation', 'Voidburst', 'AntiMaterialWeapons', 'AlchemicalShields',
-    'ShieldedFoes', 'RegeneratingEnemies', 'GrowingIncursion', 'EMPBlackHole',
-    'Quicksand', 'EnergyStarved', 'OverSensitive', 'Armorless', 'Knifestep',
-    'TechrotConjunction', 'EfervonFog', 'DoubleTroubleLegacyte', 'FortifiedFoes',
-    'MurmurIncursion', 'MiasmiteHive', 'ShieldDelay', 'AbilityLockout',
-    'VoidEnergyOverload', 'TimeDilation',
+  for (const [key, entry] of Object.entries(staticData.archimedeaZh)) {
+    assert.ok(entry.name, `${key} 缺少中文名`);
+    assert.ok(entry.desc, `${key} 缺少中文说明`);
+    assert.equal(hasUnresolvedArchimedeaToken(entry.name), false, `${key} 名称泄漏引擎标记`);
+    assert.equal(hasUnresolvedArchimedeaToken(entry.desc), false, `${key} 说明泄漏引擎标记`);
+  }
+});
+
+test('科研阵营兼容官方 factionKey、规范名及不同大小写，不把 SCALDRA/TECHROT/MITW 显示为未知', () => {
+  assert.equal(localizeArchimedeaFaction({ factionKey: 'FC_MITW', faction: 'The Murmur' }), '低语者');
+  assert.equal(localizeArchimedeaFaction({ factionKey: 'FC_SCALDRA', faction: 'SCALDRA' }), '斯卡德拉');
+  assert.equal(localizeArchimedeaFaction({ factionKey: 'FC_TECHROT', faction: 'TECHROT' }), '科技腐殖');
+  assert.equal(localizeArchimedeaFaction({ faction: 'Scaldra' }), '斯卡德拉');
+  assert.equal(localizeArchimedeaFaction({ faction: '' }), '未知阵营');
+});
+
+test('科研说明统一剥离伤害类型等客户端富文本标记，不再逐键追补 DT_*', () => {
+  const cases = [
+    ['每次受到伤害时，获得 1 层 <DT_PUNCTURE>穿刺异常状态。', '每次受到伤害时，获得 1 层穿刺异常状态。'],
+    ['造成 <DT_POISON_COLOR>毒素伤害。', '造成毒素伤害。'],
+    ['受到 <DT_ELECTRICITY>电击伤害。', '受到电击伤害。'],
   ];
-  assert.deepEqual(currentKeys.filter((key) => !staticData.archimedeaZh[key]), []);
+  for (const [raw, expected] of cases) {
+    assert.equal(sanitizeArchimedeaDescription(raw), expected);
+    assert.equal(hasUnresolvedArchimedeaToken(sanitizeArchimedeaDescription(raw)), false);
+  }
+  const tailMap = new Map([['contactdamage', [{
+    key: '/Lotus/Language/Conquest/PersonalMod_ContactDamage',
+    name: '二次伤害',
+    descEn: 'Gain 1 <DT_PUNCTURE>Puncture Status Effect every time you take damage.',
+    desc: '每次受到伤害时，获得 1 层 <DT_PUNCTURE>穿刺异常状态。',
+  }]]]);
+  const result = localizeArchimedeaModifier(
+    { key: 'ContactDamage', name: 'ContactDamage', description: '' },
+    new Map(), {}, { tailMap, kind: 'HEX' },
+  );
+  assert.deepEqual(result, { name: '二次伤害', desc: '每次受到伤害时，获得 1 层穿刺异常状态。' });
+});
+
+test('未知尖括号模板不能进入科研卡片，改为诚实缺数值提示', () => {
+  const oracle = new Map([['Future Modifier', [{
+    name: '未来词缀', descEn: 'Future effect', desc: '获得 <UNKNOWN_FORMAT=value>未来效果。',
+  }]]]);
+  const result = localizeArchimedeaModifier(
+    { key: 'FutureModifier', name: 'Future Modifier', description: '' }, oracle, {},
+  );
+  assert.equal(result.name, '未来词缀');
+  assert.equal(result.desc, ARCHIMEDEA_UNRESOLVED_DESC_ZH);
+  assert.equal(hasUnresolvedArchimedeaToken(result.desc), false);
 });
 
 test('科研词缀会用接口数值替换 Oracle 说明里的参数占位符', () => {

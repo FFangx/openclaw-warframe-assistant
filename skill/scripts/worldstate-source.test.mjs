@@ -152,6 +152,27 @@ test('official conquest risks are split per difficulty without comma-joined keys
   assert.deepEqual(state.archimedeas[0].personalModifiers.map((mod) => mod.key), ['Starvation', 'DullBlades']);
 });
 
+test('official Conquests normalize current HEX faction codes to stable canonical names', async () => {
+  const now = Date.now();
+  const expiry = now + 60 * 60 * 1000;
+  const raw = {
+    Time: Math.floor(now / 1000),
+    ActiveMissions: [], VoidStorms: [], Alerts: [], Invasions: [], Goals: [],
+    Sorties: [], LiteSorties: [], VoidTraders: [], SyndicateMissions: [],
+    EndlessXpSchedule: [], KnownCalendarSeasons: [], SeasonInfo: null,
+    Conquests: [{
+      Activation: date(now - 1000), Expiry: date(expiry), Type: 'CT_HEX', Variables: [],
+      Missions: [
+        { faction: 'FC_SCALDRA', missionType: 'MT_DEFENSE', difficulties: [] },
+        { faction: 'FC_TECHROT', missionType: 'MT_EXTERMINATION', difficulties: [] },
+      ],
+    }],
+  };
+  const state = await normalizeOfficialWorldState(raw, { nodes: {}, now });
+  assert.deepEqual(state.archimedeas[0].missions.map((mission) => mission.faction), ['Scaldra', 'Techrot']);
+  assert.deepEqual(state.archimedeas[0].missions.map((mission) => mission.factionKey), ['FC_SCALDRA', 'FC_TECHROT']);
+});
+
 test('official world state completeness contract rejects missing seasonal sections', () => {
   assert.throws(() => assertOfficialWorldStateContract({
     timestamp: new Date().toISOString(), fissures: [], alerts: [], invasions: [], events: [],

@@ -26,7 +26,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
 import { FileEndpointHealthStore, readEndpointHealth } from './http-resilience.mjs';
-import { ARCHIMEDEA_PLACEHOLDER_DESC, ARCHIMEDEA_PLACEHOLDER_NAME, ARCHIMEDEA_UNRESOLVED_DESC_ZH, CALENDAR_UPGRADE_PLACEHOLDER_ZH, calendarUpgradeEntry, hasCompleteArchimedeas, localizeArchimedeaModifier, nightwaveChallengeZh } from './weekly.mjs';
+import { ARCHIMEDEA_PLACEHOLDER_DESC, ARCHIMEDEA_PLACEHOLDER_NAME, ARCHIMEDEA_UNRESOLVED_DESC_ZH, CALENDAR_UPGRADE_PLACEHOLDER_ZH, calendarUpgradeEntry, hasCompleteArchimedeas, hasUnresolvedArchimedeaToken, localizeArchimedeaModifier, nightwaveChallengeZh } from './weekly.mjs';
 
 // —— 占位文案常量（与 weekly.mjs 热路径兜底串直接同源；测试锁定同步）——
 export { ARCHIMEDEA_PLACEHOLDER_DESC, ARCHIMEDEA_PLACEHOLDER_NAME, ARCHIMEDEA_UNRESOLVED_DESC_ZH, CALENDAR_UPGRADE_PLACEHOLDER_ZH } from './weekly.mjs';
@@ -132,7 +132,7 @@ export function analyzeArchimedeaTranslationDrift(entries = [], {
       // 未解析占位符 = 用户可见说明仍是 |val| 一类参数占位（上游只给键无数值）或诚实缺数值提示：
       // 都算说明漂移，与「效果说明待补录」的通用占位分桶统计，样本带 reason 可审计。
       const unresolvedPlaceholder = result?.desc === ARCHIMEDEA_UNRESOLVED_DESC_ZH
-        || /\|/u.test(String(result?.desc || ''));
+        || hasUnresolvedArchimedeaToken(result?.desc);
       const descPlaceholder = !result?.desc
         || result.desc === ARCHIMEDEA_PLACEHOLDER_DESC
         || unresolvedPlaceholder;

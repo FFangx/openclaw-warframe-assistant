@@ -48,6 +48,7 @@ const MISSION = {
 const FACTION = {
   FC_GRINEER: 'Grineer', FC_CORPUS: 'Corpus', FC_INFESTATION: 'Infested', FC_OROKIN: 'Orokin',
   FC_CORRUPTED: 'Corrupted', FC_SENTIENT: 'Sentient', FC_MITW: 'The Murmur', FC_TENNO: 'Tenno',
+  FC_SCALDRA: 'Scaldra', FC_TECHROT: 'Techrot',
 };
 const BOSS = {
   SORTIE_BOSS_HYENA: 'Hyena Pack', SORTIE_BOSS_VOR: 'Captain Vor', SORTIE_BOSS_RUK: 'General Sargas Ruk',
