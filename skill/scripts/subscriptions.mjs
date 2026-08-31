@@ -324,8 +324,8 @@ const TYPE_LABEL = {
 const FAST_FISSURE_MISSIONS = new Set(['Capture', 'Extermination', 'Rescue']);
 const ARBITRATION_FACTION_ZH = {
   FC_GRINEER: 'Grineer', FC_CORPUS: 'Corpus', FC_INFESTATION: 'Infestation', FC_OROKIN: '奥罗金', FC_MITW: '低语者',
-  // ExportRegions 全集另有 5 个（2026-08-04 探明）：Sentient/Tenno 官方保留英文，Scaldra/Techrot 为社区名
-  FC_SENTIENT: 'Sentient', FC_TENNO: 'Tenno', FC_DUVIRI: '双衍王境', FC_SCALDRA: '斯卡德拉', FC_TECHROT: '科技腐殖',
+  // ExportRegions 全集另有 5 个（2026-08-04 探明）：Sentient/Tenno 官方保留英文；Scaldra/Techrot 使用游戏简中词典名。
+  FC_SENTIENT: 'Sentient', FC_TENNO: 'Tenno', FC_DUVIRI: '双衍王境', FC_SCALDRA: '炽蛇军', FC_TECHROT: '科腐者',
 };
 const EVENT_ZH = Object.freeze({
   'Ghoul Purge': '食尸鬼清剿',

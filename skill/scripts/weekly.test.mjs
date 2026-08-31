@@ -201,9 +201,9 @@ test('科研静态兜底表中的名称和说明完整且不含游戏引擎占�
 
 test('科研阵营兼容官方 factionKey、规范名及不同大小写，不把 SCALDRA/TECHROT/MITW 显示为未知', () => {
   assert.equal(localizeArchimedeaFaction({ factionKey: 'FC_MITW', faction: 'The Murmur' }), '低语者');
-  assert.equal(localizeArchimedeaFaction({ factionKey: 'FC_SCALDRA', faction: 'SCALDRA' }), '斯卡德拉');
-  assert.equal(localizeArchimedeaFaction({ factionKey: 'FC_TECHROT', faction: 'TECHROT' }), '科技腐殖');
-  assert.equal(localizeArchimedeaFaction({ faction: 'Scaldra' }), '斯卡德拉');
+  assert.equal(localizeArchimedeaFaction({ factionKey: 'FC_SCALDRA', faction: 'SCALDRA' }), '炽蛇军');
+  assert.equal(localizeArchimedeaFaction({ factionKey: 'FC_TECHROT', faction: 'TECHROT' }), '科腐者');
+  assert.equal(localizeArchimedeaFaction({ faction: 'Scaldra' }), '炽蛇军');
   assert.equal(localizeArchimedeaFaction({ faction: '' }), '未知阵营');
 });
 
