@@ -7,8 +7,9 @@
 // （KingPrimes/DataSource + 内置补充表）。但新赛季推出的新增益路径（如 PunchToPrimary、
 // CompanionsBuffNearbyPlayer）在社区表收录前会落「新增日历增益（上游尚未提供中文说明）」。
 // 本层把全链查无的未知路径排队进日历专属 inbox。每日 AI 任务先查可靠简中；查无但有完整
-// 官方英文名、效果和链接时，允许写入结构化 AI 暂译。暂译强制标记且可被后来取得的可靠
-// 简中提升替换；静态/社区结果始终优先。官方英文资料也不足时保持待查，不按内部路径猜译。
+// 有据英文名、效果和链接时，允许写入结构化 AI 暂译。英文依据仅限 DE 官方站点或精确的
+// WFCD warframe-worldstate-data 路径词典，不能把任意 GitHub 内容当作可信来源。暂译强制标记且可被后来取得的可靠
+// 简中提升替换；静态/社区结果始终优先。有据英文资料也不足时保持待查，不按内部路径猜译。
 //
 // 词典文件：.cache/warframe-data/calendar-upgrade-zh.json
 //   { "version": 2, "entries": { "<path-lower>": { "name": "...", "desc": "...", "source": "...", "at": ms,
@@ -219,15 +220,25 @@ function validateLearnInputs(key, name, desc) {
 }
 
 const TRUSTED_ENGLISH_HOSTS = new Set(['warframe.com', 'www.warframe.com', 'forums.warframe.com', 'wiki.warframe.com']);
+function isTrustedEnglishEvidenceUrl(value) {
+  try {
+    const url = new URL(value || '');
+    if (url.protocol !== 'https:') return false;
+    const host = url.hostname.toLowerCase();
+    if (TRUSTED_ENGLISH_HOSTS.has(host)) return true;
+    const pathname = url.pathname.toLowerCase();
+    return (host === 'github.com' || host === 'raw.githubusercontent.com')
+      && pathname.startsWith('/wfcd/warframe-worldstate-data/');
+  } catch {
+    return false;
+  }
+}
 function validateProvisionalInputs(options) {
   if (options.provisional !== true) return null;
-  if (!/[A-Za-z]/u.test(options.englishName || '')) return 'AI 暂译必须提供官方英文名称（--english-name）';
-  if (!/[A-Za-z]/u.test(options.englishDesc || '')) return 'AI 暂译必须提供完整官方英文效果（--english-desc）';
-  try {
-    const url = new URL(options.evidenceUrl || '');
-    if (url.protocol !== 'https:' || !TRUSTED_ENGLISH_HOSTS.has(url.hostname.toLowerCase())) throw new Error('untrusted');
-  } catch {
-    return 'AI 暂译必须提供 warframe.com、forums.warframe.com 或 wiki.warframe.com 的 HTTPS 依据链接（--evidence-url）';
+  if (!/[A-Za-z]/u.test(options.englishName || '')) return 'AI 暂译必须提供有据英文名称（--english-name）';
+  if (!/[A-Za-z]/u.test(options.englishDesc || '')) return 'AI 暂译必须提供完整有据英文效果（--english-desc）';
+  if (!isTrustedEnglishEvidenceUrl(options.evidenceUrl)) {
+    return 'AI 暂译必须提供 DE 官方站点或 WFCD warframe-worldstate-data 精确仓库路径的 HTTPS 依据链接（--evidence-url）';
   }
   if (!options.desc) return 'AI 暂译必须同时提供完整中文效果说明';
   return null;
@@ -260,7 +271,7 @@ export async function learnCalendarUpgradeVerified(upgradePath, name, desc, sour
   };
   const provisionalInvalid = validateProvisionalInputs({ ...provisionalOptions, desc: cleanDesc });
   if (provisionalInvalid) return { ok: false, error: provisionalInvalid };
-  const cleanSource = provisionalOptions.provisional ? 'AI 暂译（基于官方英文资料）' : normalizeEntryText(source);
+  const cleanSource = provisionalOptions.provisional ? 'AI 暂译（基于有据英文资料）' : normalizeEntryText(source);
   if (typeof options.resolveCovered === 'function') {
     let coverage = null;
     try { coverage = await options.resolveCovered(key); } catch { coverage = null; }
@@ -325,7 +336,7 @@ export function flushCalendarQueues() {
 // 未收录名称/效果日历增益 inbox（AI 查证闭环，2026-08-27）
 //
 // 全链查无落「新增日历增益（上游尚未提供中文说明）」时，把原始路径排队进 inbox 文件；
-// 每日 AI 定时任务先查可靠简中；全链查无但官方英文资料完整时写入有明确标记的 AI 暂译。
+// 每日 AI 定时任务先查可靠简中；全链查无但有据英文资料完整时写入有明确标记的 AI 暂译。
 // 两类资料都不完整时保留待查，继续显示诚实占位。
 //
 // 文件：.cache/warframe-data/calendar-upgrade-inbox.json

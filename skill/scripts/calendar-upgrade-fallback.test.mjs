@@ -100,7 +100,7 @@ test('learn 拒绝夹带英文的译名与英文为主的效果说明，dismiss 
   await flushCalendarQueues();
 });
 
-test('AI 暂译必须绑定官方英文原文与可信链接，并可被后来取得的可靠简中提升替换', async () => {
+test('AI 暂译必须绑定有据英文原文与受限可信链接，并可被后来取得的可靠简中提升替换', async () => {
   const provisionalPath = '/Lotus/Upgrades/Calendar/StaticBuildupFixture';
   await clearPendingCalendarUpgrades();
   await queuePendingCalendarUpgrade(provisionalPath, {
@@ -129,7 +129,7 @@ test('AI 暂译必须绑定官方英文原文与可信链接，并可被后来�
   assert.equal(learned.provisional, true);
   const provisionalStored = JSON.parse(await readFile(learnFile, 'utf8')).entries['/lotus/upgrades/calendar/staticbuildupfixture'];
   assert.equal(provisionalStored.provisional, true);
-  assert.equal(provisionalStored.source, 'AI 暂译（基于官方英文资料）');
+  assert.equal(provisionalStored.source, 'AI 暂译（基于有据英文资料）');
   assert.equal(provisionalStored.englishName, 'Static Buildup');
   assert.match(provisionalStored.evidenceFingerprint, /^[a-f0-9]{64}$/u);
 
@@ -149,6 +149,23 @@ test('AI 暂译必须绑定官方英文原文与可信链接，并可被后来�
   });
   assert.equal(cannotDowngrade.ok, false);
   assert.equal(cannotDowngrade.outcome, 'conflict', 'AI 暂译不得降级覆盖已核验译名');
+
+  const wfcdPath = '/Lotus/Upgrades/Calendar/RefundBulletOnStatusProcFixture';
+  const wfcdLearned = await learnCalendarUpgradeVerified(wfcdPath, '免费一发', '触发异常状态时，有10%几率将触发该异常的那发子弹返还至弹匣。', '任意来源', {
+    provisional: true,
+    englishName: 'Free Shot',
+    englishDesc: 'Triggering a status proc has a 10% chance to reload the triggering bullet into the clip.',
+    evidenceUrl: 'https://raw.githubusercontent.com/WFCD/warframe-worldstate-data/master/data/languages.json',
+  });
+  assert.equal(wfcdLearned.ok, true, '只允许 WFCD 精确仓库中的英文路径词典作为社区英文依据');
+  const genericGitHub = await learnCalendarUpgradeVerified('/Lotus/Upgrades/Calendar/GenericGitHubFixture', '错误暂译', '这是没有受限来源的错误效果。', '任意来源', {
+    provisional: true,
+    englishName: 'Unreviewed Name',
+    englishDesc: 'Unreviewed description.',
+    evidenceUrl: 'https://github.com/example/unreviewed/blob/main/data.json',
+  });
+  assert.equal(genericGitHub.ok, false);
+  assert.match(genericGitHub.error, /WFCD warframe-worldstate-data/u);
   await clearPendingCalendarUpgrades();
 });
 

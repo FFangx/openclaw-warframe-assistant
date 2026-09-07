@@ -77,7 +77,9 @@ if ($null -ne $job) {
   Assert-Contains 'message: calendar provisional render marker' $message '自动显示（暂译）'
   Assert-Contains 'message: reliable Simplified Chinese remains first priority' $message '第一层先查可靠简中'
   Assert-Contains 'message: calendar write failure keeps inbox' $message '写入失败'
-  Assert-Contains 'message: calendar AI source hosts are constrained' $message 'warframe.com、forums.warframe.com 或 wiki.warframe.com'
+  Assert-Contains 'message: calendar AI official source hosts are constrained' $message 'warframe.com、forums.warframe.com 或 wiki.warframe.com'
+  Assert-Contains 'message: calendar AI permits exact reviewed WFCD dictionary' $message 'WFCD warframe-worldstate-data'
+  Assert-Contains 'message: calendar AI requires exact internal path lookup first' $message '按 inbox 的完整内部路径精确查找'
   Assert-True 'delivery is disabled for the pure background task' (
     [string]$job.delivery.mode -eq 'none' -and
     [bool]$job.delivery.bestEffort -eq $false -and

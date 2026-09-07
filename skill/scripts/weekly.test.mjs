@@ -467,6 +467,15 @@ test('AI 日历暂译强制显示标记，可靠静态或社区译名出现后�
   const merged = calendarUpgradeEntry({ title: 'Static Buildup' }, path, nameOnlyState, { learnedEntries: provisionalEffect });
   assert.equal(merged.name, '远距电击（效果暂译）');
   assert.match(merged.desc, /发动攻击时消耗/u);
+
+  const freeShotPath = '/Lotus/Upgrades/Calendar/RefundBulletOnStatusProc';
+  const freeShotLearned = new Map([[freeShotPath.toLowerCase(), {
+    name: '免费一发', desc: '触发异常状态时，有10%几率将触发该异常的那发子弹返还至弹匣。',
+    source: 'AI 暂译（基于有据英文资料）', provisional: true,
+  }]]);
+  const freeShot = calendarUpgradeEntry({ title: 'RefundBulletOnStatusProc' }, freeShotPath, null, { learnedEntries: freeShotLearned });
+  assert.equal(freeShot.name, '免费一发（暂译）');
+  assert.match(freeShot.desc, /10%几率/u);
 });
 
 // —— 名称自动化：科研词缀尾段索引 / 日历状态中文表 / 官方语言键尾段 ——
