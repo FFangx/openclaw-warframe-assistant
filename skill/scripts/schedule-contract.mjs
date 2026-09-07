@@ -2,7 +2,7 @@
 export const SCHEDULE_CONTRACT = Object.freeze({
   worldstate: Object.freeze({ notDueOutput: 'NO_REPLY', networkBeforeDue: false, unpredictableMs: 15 * 60_000, wakeOffsetMs: 10_000 }),
   wishlist: Object.freeze({ calibrationMs: 10 * 60_000, marketStartSpacingMs: 400 }),
-  weekly: Object.freeze({ weekdayUtc: 1, hourUtc: 0, minuteUtc: 0 }),
+  weekly: Object.freeze({ weekdayUtc: 1, hourUtc: 0, minuteUtc: 0, requireCurrentRotation: true, retryMs: 60_000 }),
   rewardZh: Object.freeze({
     declarationKey: 'warframe-assistant:reward-zh-ai:default', scheduleKind: 'every',
     everyMs: 24 * 60 * 60_000, sessionTarget: 'isolated', payloadKind: 'agentTurn', deliveryMode: 'none',
@@ -12,7 +12,7 @@ export const SCHEDULE_CONTRACT = Object.freeze({
 const DOC_FACTS = Object.freeze([
   'scheduled 记录 `nextCheckAt`', '未到点只读本地状态输出 `NO_REPLY` 不联网',
   '裂缝按最早 expiry', '虚空商人按到达/离开边界', '10 分钟命令型 cron',
-  'REST 请求起点至少相隔 400ms', '每周一 00:00 UTC 刷新',
+  'REST 请求起点至少相隔 400ms', '每周一 00:00 UTC 刷新', '上游已跨周',
   '每日一条 agent 型 cron', 'schedule-contract.mjs',
 ]);
 
@@ -22,7 +22,8 @@ export function validateScheduleContract(value = SCHEDULE_CONTRACT) {
   if (value.worldstate?.unpredictableMs !== 15 * 60_000 || value.worldstate?.wakeOffsetMs !== 10_000) errors.push('worldstate boundaries');
   if (value.wishlist?.calibrationMs !== 10 * 60_000) errors.push('wishlist calibration');
   if (value.wishlist?.marketStartSpacingMs < 1000 / 3) errors.push('Market 3 req/s');
-  if (value.weekly?.weekdayUtc !== 1 || value.weekly?.hourUtc !== 0 || value.weekly?.minuteUtc !== 0) errors.push('weekly Monday 00:00 UTC');
+  if (value.weekly?.weekdayUtc !== 1 || value.weekly?.hourUtc !== 0 || value.weekly?.minuteUtc !== 0
+    || value.weekly?.requireCurrentRotation !== true || value.weekly?.retryMs !== 60_000) errors.push('weekly Monday 00:00 UTC readiness');
   const reward = value.rewardZh;
   if (reward?.scheduleKind !== 'every' || reward?.everyMs !== 24 * 60 * 60_000
     || reward?.sessionTarget !== 'isolated' || reward?.payloadKind !== 'agentTurn'

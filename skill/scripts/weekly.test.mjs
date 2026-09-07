@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { ARCHIMEDEA_UNRESOLVED_DESC_ZH, archimedeaResearchProgress, calendarChallengeLine, calendarRewardZh, calendarUpgradeEntry, calendarUpgradeZh, evaluateAutoCheck, hasCompleteArchimedeas, hasUnresolvedArchimedeaToken, localizeArchimedeaFaction, localizeArchimedeaModifier, nextReset, nightwaveChallengeZh, remindWeekly, sanitizeArchimedeaDescription, weekStart } from './weekly.mjs';
+import { ARCHIMEDEA_UNRESOLVED_DESC_ZH, archimedeaResearchProgress, calendarChallengeLine, calendarRewardZh, calendarUpgradeEntry, calendarUpgradeZh, evaluateAutoCheck, hasCompleteArchimedeas, hasCurrentWeeklyRotation, hasUnresolvedArchimedeaToken, localizeArchimedeaFaction, localizeArchimedeaModifier, nextReset, nightwaveChallengeZh, remindWeekly, sanitizeArchimedeaDescription, weekStart } from './weekly.mjs';
 import { calendarSection, labsSection } from './weekly-mega-card.mjs';
 
 const calendarDays = [
@@ -170,6 +170,26 @@ test('科研轮换只有两套本周完整记录时才可写入可靠缓存', ()
   const expired = archimedeaFixture(now);
   expired.forEach((entry) => { entry.expiry = new Date(now - 1).toISOString(); });
   assert.equal(hasCompleteArchimedeas(expired, now), false);
+});
+
+test('主动周报只接受已共同跨周的执刑官、回廊和两套科研', () => {
+  const now = Date.parse('2026-08-24T00:30:00.000Z');
+  const activation = '2026-08-24T00:00:00.000Z';
+  const expiry = '2026-08-31T00:00:00.000Z';
+  const state = {
+    archonHunt: { activation, expiry },
+    duviriCycle: { activation, expiry },
+    archimedeas: archimedeaFixture(now).map((entry) => ({ ...entry, activation, expiry })),
+  };
+  assert.equal(hasCurrentWeeklyRotation(state, now), true);
+
+  const oldActivation = '2026-08-17T00:00:00.000Z';
+  assert.equal(hasCurrentWeeklyRotation({ ...state, archonHunt: { activation: oldActivation, expiry } }, now), false);
+  assert.equal(hasCurrentWeeklyRotation({ ...state, duviriCycle: { activation: oldActivation, expiry } }, now), false);
+  assert.equal(hasCurrentWeeklyRotation({
+    ...state,
+    archimedeas: state.archimedeas.map((entry) => ({ ...entry, activation: oldActivation })),
+  }, now), false);
 });
 
 test('科研数据缺失时使用紧凑提示，不保留三关任务的空白高度', () => {

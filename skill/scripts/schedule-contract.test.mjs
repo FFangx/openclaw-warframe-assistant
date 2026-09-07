@@ -22,7 +22,8 @@ test.after(async () => rm(cacheDir, { recursive: true, force: true }));
 
 test('调度合同与 operations.md 一致，关键漂移会失败', async () => {
   assert.equal(validateScheduleContract(), true);
-  assert.throws(() => validateScheduleContract({ ...SCHEDULE_CONTRACT, weekly: { weekdayUtc: 2, hourUtc: 0, minuteUtc: 0 } }), /weekly/u);
+  assert.throws(() => validateScheduleContract({ ...SCHEDULE_CONTRACT, weekly: { ...SCHEDULE_CONTRACT.weekly, weekdayUtc: 2 } }), /weekly/u);
+  assert.throws(() => validateScheduleContract({ ...SCHEDULE_CONTRACT, weekly: { ...SCHEDULE_CONTRACT.weekly, requireCurrentRotation: false } }), /weekly/u);
   assert.throws(() => validateScheduleContract({ ...SCHEDULE_CONTRACT, wishlist: { ...SCHEDULE_CONTRACT.wishlist, marketStartSpacingMs: 200 } }), /3 req\/s/u);
   const operations = await readFile(path.join(skillRoot, 'references', 'operations.md'), 'utf8');
   assert.deepEqual(scheduleDocViolations(operations), []);

@@ -400,6 +400,25 @@ export function hasCompleteArchimedeas(value, now = Date.now()) {
   });
 }
 
+// 周界后的世界状态可能短暂仍是上一周。订阅任务不能只凭本机时钟创建新 weeklyId，
+// 还必须确认决定周报内容的几个上游周轮换都已经跨周，否则会把旧内容包装成新周卡并
+// 提前写入 seen。这里要求执刑官、回廊和两套科研的窗口共同覆盖当前 UTC 周。
+export function hasCurrentWeeklyRotation(value, now = Date.now()) {
+  const currentWeek = Date.parse(weekStart(new Date(now)));
+  const coversCurrentWeek = (entry) => {
+    const activation = Date.parse(entry?.activation || '');
+    const expiry = Date.parse(entry?.expiry || '');
+    return Number.isFinite(activation) && Number.isFinite(expiry)
+      && activation >= currentWeek && activation <= now && expiry > now;
+  };
+  return coversCurrentWeek(value?.archonHunt)
+    && coversCurrentWeek(value?.duviriCycle)
+    && hasCompleteArchimedeas(value?.archimedeas, now)
+    && value.archimedeas
+      .filter((entry) => ['LAB', 'HEX'].some((kind) => compactArchimedeaType(entry).includes(kind)))
+      .every(coversCurrentWeek);
+}
+
 async function fetchJsonWithRetry(url, attempts = 2) {
   let lastError = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -427,6 +446,7 @@ async function fetchCompleteWeeklyWorldState(seed = null) {
     if (!hasCompleteArchimedeas(archimedeas)) throw new Error('科研轮换字段不完整');
     value.archimedeas = archimedeas;
   }
+  if (!hasCurrentWeeklyRotation(value)) throw new Error('本周轮换尚未完成上游切换');
   return value;
 }
 
@@ -435,7 +455,7 @@ async function fetchWorldState(seed = null) {
     // 缓存按周分文件：周一重置后绝不误用上周科研；本周接口临时 403 时可退回本周最后一次可靠快照。
     const cacheName = `weekly-world-state-${weekStart().slice(0, 10)}`;
     const result = await staleCachedJson(cacheName, { ttlMs: WORLD_STATE_CACHE_TTL_MS, version: 1 }, () => fetchCompleteWeeklyWorldState(seed));
-    if (!hasCompleteArchimedeas(result.data?.archimedeas)) throw new Error('本周科研缓存不可用');
+    if (!hasCurrentWeeklyRotation(result.data)) throw new Error('本周轮换缓存不可用');
     return { value: result.data, error: null, stale: result.stale, cachedAt: result.cachedAt };
   } catch (error) {
     return { value: null, error: String(error?.message || error), stale: false, cachedAt: null };
@@ -1420,7 +1440,12 @@ async function manageWeekly(message, context, statePath, cardDir) {
 // 供订阅监测在周刷新时推送：读指定用户的完成记录，用已拉好的世界状态渲染详细卡
 async function renderWeeklyDetailCardFor(weeklyStatePath, context, worldState, cardDir) {
   const repaired = await fetchWorldState(worldState);
-  const effectiveWorldState = repaired.value || worldState;
+  // 主动订阅不能像手动查询那样用旧世界状态降级：未确认上游已跨周时保持 pending，
+  // 由每分钟 cron 重试。否则会发送旧周卡并把新 weeklyId 永久标为 seen。
+  if (!repaired.value || !hasCurrentWeeklyRotation(repaired.value)) {
+    return { ready: false, mediaUrl: null, rows: [], reason: 'weekly_source_not_ready' };
+  }
+  const effectiveWorldState = repaired.value;
   const state = await readState(weeklyStatePath);
   const record = currentRecord(state, context);
   const skipped = currentSkipped(state, context);
@@ -1432,9 +1457,9 @@ async function renderWeeklyDetailCardFor(weeklyStatePath, context, worldState, c
   const nwPredict = await sampleAndPredict(weeklyStatePath, effectiveWorldState, autoResult);
   await recordConquestObservations(weeklyStatePath, autoResult?.observations);
   const card = buildWeeklyMegaCard(buildMegaData(effective, effectiveWorldState, skipped, autoResult, autoIds, names, calMap, officialDays, seasonRequired, nwPredict, oracleConquestMap, officialTextMap, { stale: repaired.stale }, oracleConquestTails, calendarStateZh, learnedCalendarUpgrades));
-  if (!cardDir) return { mediaUrl: null, rows };
+  if (!cardDir) return { ready: true, mediaUrl: null, rows };
   const mediaUrl = await renderWarframeCard(card, cardDir).catch(() => null);
-  return { mediaUrl, rows };
+  return { ready: true, mediaUrl, rows };
 }
 
 // —— 周日提醒：只读本地打卡记录 + 订阅账本；提醒前拉一次本周世界状态 ——

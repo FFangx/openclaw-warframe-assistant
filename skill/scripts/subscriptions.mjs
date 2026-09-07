@@ -158,7 +158,9 @@ export function weeklyPartsFor(result) {
 // 周报双卡默认渲染链：主卡保持与手动「周常」相同的单张完整原始 PNG；好货卡可选，
 // 任一环节挂了都静默降级只发周报。测试通过 options.weeklyRender 整体注入，生产默认不变。
 async function defaultWeeklyRender(weeklyStatePath, context, state, cardDir) {
-  const { mediaUrl } = await renderWeeklyDetailCardFor(weeklyStatePath, context, state, cardDir);
+  const weekly = await renderWeeklyDetailCardFor(weeklyStatePath, context, state, cardDir);
+  if (weekly.ready === false) return weekly;
+  const { mediaUrl } = weekly;
   // 第二张：本周好货卡（2026-08-06 用户拍板周一双卡）
   let dealsMediaUrl = null;
   if (cardDir) {
@@ -175,7 +177,7 @@ async function defaultWeeklyRender(weeklyStatePath, context, state, cardDir) {
       }
     } catch { dealsMediaUrl = null; }
   }
-  return { mediaUrl, dealsMediaUrl };
+  return { ready: true, mediaUrl, dealsMediaUrl };
 }
 
 // 通知输出 → Outbox parts（与 monitorDeliveryParts 同一 MEDIA: 解析语义：MEDIA: 行转媒体 part，其余为文字 part）
@@ -1838,7 +1840,21 @@ async function monitorTarget(target, statePath, cardDir, dryRun = false, directD
       const weeklyStatePath = path.join(path.dirname(statePath), 'warframe-weekly.json');
       const first = pendingWeekly[0];
       // 多人同会话只渲染一张（当前只服务私聊；群聊多人完成度拆分待后续需求）
-      const { mediaUrl, dealsMediaUrl } = await renderWeekly(weeklyStatePath, { target, ownerId: first.ownerId, ownerName: first.ownerName }, state, cardDir);
+      const weeklyRendered = await renderWeekly(weeklyStatePath, { target, ownerId: first.ownerId, ownerName: first.ownerName }, state, cardDir);
+      if (weeklyRendered?.ready === false) {
+        // 上游尚未完成跨周：保留 pending weeklyId，不入 Outbox、不写 seen；调度已由
+        // updateSchedule 设为一分钟后重试。其他类型的账本/审计仍正常提交。
+        if (useOutbox) await writeLedger(statePath, ledger);
+        return {
+          output: 'NO_REPLY\n',
+          data: withFlush({
+            ok: true,
+            reason: 'weekly_source_not_ready',
+            retryAt: ledger.schedules[target]?.weekly || null,
+          }),
+        };
+      }
+      const { mediaUrl, dealsMediaUrl } = weeklyRendered;
       // 多行 MEDIA：运行时 MEDIA_TOKEN_RE 带 g 标志逐条捕获，两张图独立投递（源码实证）
       const weeklyMediaUrls = mediaUrl ? [mediaUrl] : [];
       const weeklyResult = mediaUrl

@@ -156,6 +156,29 @@ test('weekly 主动周报：主图无损/好货卡普通按序入 Outbox，先�
   }
 });
 
+test('周界后上游仍是旧轮换：不渲染、不入 Outbox、不写 seen，保留一分钟重试', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'wf-weekly-outbox-not-ready-'));
+  try {
+    const statePath = await writeLedger(dir, ledgerWith([weeklySubscription()]));
+    const calls = [];
+    const result = await monitorTarget(TARGET, statePath, null, false, async () => {}, runOptions(dir, {
+      mailer: async (part) => { calls.push(part); return { ok: true }; },
+      clockNow: () => MONDAY,
+      weeklyRender: async () => ({ ready: false, mediaUrl: null, reason: 'weekly_source_not_ready' }),
+    }));
+
+    assert.equal(result.output, 'NO_REPLY\n');
+    assert.equal(result.data.reason, 'weekly_source_not_ready');
+    assert.equal(calls.length, 0);
+    await assert.rejects(access(path.join(dir, 'warframe-delivery-outbox.json')), /ENOENT/u);
+    const ledger = await readLedger(statePath);
+    assert.equal(ledger.subscriptions[0].seen.includes(WEEK_ID), false);
+    assert.ok(Number.isFinite(Date.parse(ledger.schedules[TARGET].weekly)));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('主图成功好货卡失败：只补投好货卡，下一轮 not_due 前补投且不重发主图', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'wf-weekly-outbox-partial-'));
   try {

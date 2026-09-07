@@ -144,7 +144,7 @@ DE 官方备用世界状态返回的入侵奖励内部名会先按 CamelCase 拆
 PC 的 warframestat 交叉验证/备用源与 browse.wf Oracle 裂缝层（端点健康键 `worldstate:oracle:pc`，6 秒短超时）各自按端点持久记录健康状态：403 首次即退避 15 分钟，连续网络/超时故障进入指数短退避；它们的健康探测不阻塞 DE 官方主路径。官方原始响应走官方全量合同、Oracle 原始响应走 Oracle 专属合同（ActiveMissions/VoidStorms——Oracle 是部分镜像，不能套用官方全量合同，**也没有顶层 Time**），只有官方规范化结果通过完整字段合同后写入可靠缓存；官方失败时先等 warframestat 全量备用，合格 Oracle 裂缝再叠加到 warframestat 结果上，三源都失败则退最近可靠规范化缓存并标明陈旧（Oracle 裂缝绝不单独充当完整状态）。每个在线快照还携带来源质量信封（`_envelope`：provider/fetchedAt/上游时间/延迟/完整性/内容哈希，上游时间=官方顶层 `Time`、Oracle=已验证的 HTTP Last-Modified；Oracle 信封额外 `partial:true` 与 scope=ActiveMissions/VoidStorms）与按字段 `_fieldProviders`（叠加快照：fissures=oracle.browse.wf、其余=api.warframestat.us，另附 `_oracleEnvelope`/`_composite`）；Oracle 裂缝层叠加前另须通过上游年龄门禁（HTTP Last-Modified 缺失/无效/超过 15 分钟一律拒绝——不能用响应 `Date` 或本机 fetchedAt 冒充上游内容时间）和裂缝事件 ID 连续性核对（与最近 10 分钟可靠快照零交集拒绝），镜像滞后或错源不得覆盖可靠缓存。社区宿主（browse.wf Oracle/tenno.gg/Tenno Tools）都可能派生自 DE 同一上游，是托管可用性多宿主，不是独立事实源。
 
 裂缝、仲裁（`仲裁推荐`=只推 S/A 场地，评级缺失宁漏不推）、警报、稀有入侵、特殊活动、突击、钢铁侵袭、
-赏金（必须带筛选词）、虚空商人、掉落（个人）、周常刷新（周一：单张原始 PNG 周报+本周好货；周报使用 QQ `/files` 一步直发，规避常规主动富媒体链路压缩长图）、商店周货（个人）、商品上架（一次性）。
+赏金（必须带筛选词）、虚空商人、掉落（个人）、周常刷新（周一：先确认执刑官/回廊/两套科研都已跨周，否则每分钟重试且不消费本周提醒；确认后推单张原始 PNG 周报+本周好货；周报使用 QQ `/files` 一步直发，规避常规主动富媒体链路压缩长图）、商店周货（个人）、商品上架（一次性）。
 `订阅 重要情报` = 警报+稀有入侵+活动+虚空商人。管理：`我的订阅`、`暂停/恢复/取消订阅 <编号|全部>`。
 按 QQ 会话与发起人隔离；群成员只管自己的订阅。运维细节（cron/去重/蹲守边界/二段播报阈值）见 operations.md。
 
