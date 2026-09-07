@@ -83,7 +83,8 @@ SKILL.md 瘦身移入（2026-08-07）。这些规则的执行主体是脚本与 
 ### 1999 日历增益查证闭环（与奖励查证共用同一条每日任务）
 
 - 周报 1999 日历增益解析链（`weekly.mjs calendarUpgradeEntry`，成对返回 {name, desc, source}）：静态灰机wiki表 → 社区状态中文表 → AI 学习词典 → 静态题名表 → 诚实占位；全链查无的路径自动排队进 `.cache/warframe-data/calendar-upgrade-inbox.json`（独立于奖励 inbox，路径小写做键，上限 100）
-- 同一条每日 agent 型 cron 在处理完奖励 inbox 后处理日历增益 inbox：`node …/calendar-upgrade-fallback.mjs inbox` → 逐路径用灰机wiki「1999日历」页六人组覆写表查证 → 名称和效果都有据时才执行 `learn --path <inbox键原文> --name <纯中文名> --desc <中文效果> --source <依据>`（要求中文名 + 效果 + 来源三件套；只有名称时保持待查证，不得 dismiss）→ 名称和效果都查无实据才 `dismiss --path`
+- 同一条每日 agent 型 cron 在处理完奖励 inbox 后处理日历增益 inbox：先查游戏官方简中、灰机wiki「1999日历」和社区状态中文表；名称和效果都有可靠简中依据时执行普通 `learn`。可靠简中全链查无、但已取得官方英文名称、完整效果和 `warframe.com` / `forums.warframe.com` / `wiki.warframe.com` HTTPS 依据时，才允许 `learn --provisional true --english-name … --english-desc … --evidence-url …` 写入 AI 暂译。资料不足保持待查，不得根据路径或残句猜译、不得 dismiss
+- AI 暂译在学习文件中保存官方英文原文、证据 URL 和 SHA-256 指纹；卡片名称强制显示“（暂译）”。静态表或社区可靠译名优先级始终更高；之后取得可靠简中时也可把同键学习条目提升为已核验译名并清除暂译元数据
 - **冲突安全与原子**：词典只补缺、绝不覆盖静态/社区表；learn 返回 `ok:false`（outcome `conflict`/`seed`/`covered`，即词典、静态表或社区表已覆盖）时 inbox 条目原样保留，安全处置是 `dismiss`；error 含「写入失败」时保留待下轮重试。落盘全部走临时文件 rename 原子写 + 进程内串行队列（与 reward-zh-fallback 同款 pattern），CLI 覆盖检查只读本地缓存与内置补充表（零联网、离线确定）
 - 词典文件：`.cache/warframe-data/calendar-upgrade-zh.json`；`calendar-upgrade-fallback.mjs` 与 `calendar-upgrade-fallback.test.mjs` 是它的唯一写手与回归；种子键来自 `weekly-static.json` 的日历路径表（灰机wiki 用户核验值），不可被 learn 覆盖
 - 若社区表已有同名但效果为空，`learn` 允许同名效果补缺；仍未提供效果时返回 `effect-missing` 并保留 inbox，避免把“仅有名字”误当成完整覆盖

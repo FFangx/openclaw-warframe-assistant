@@ -67,13 +67,17 @@ if ($null -ne $job) {
   Assert-Contains 'message: calendar learn uses full path key verbatim' $message '--path'
   Assert-Contains 'message: calendar learn name must be pure Chinese' $message 'name 必须纯中文'
   Assert-Contains 'message: calendar evidence source is Huiji 1999 page' $message '灰机wiki「1999日历」'
-  Assert-Contains 'message: calendar no-evidence dismiss keeps placeholder' $message 'dismiss --path'
+  Assert-Contains 'message: calendar insufficient evidence stays pending' $message '资料不足时保留待查，不得 dismiss'
   Assert-Contains 'message: calendar covered result conflicts dismissed' $message 'covered'
   Assert-Contains 'message: calendar name-only result stays pending' $message 'effect-missing'
-  Assert-Contains 'message: calendar name-only result must not dismiss' $message '效果暂缺时不得 learn 或 dismiss'
+  Assert-Contains 'message: calendar AI fallback is explicitly provisional' $message '--provisional true'
+  Assert-Contains 'message: calendar AI fallback preserves English name' $message '--english-name'
+  Assert-Contains 'message: calendar AI fallback preserves English effect' $message '--english-desc'
+  Assert-Contains 'message: calendar AI fallback requires official evidence URL' $message '--evidence-url'
+  Assert-Contains 'message: calendar provisional render marker' $message '自动显示（暂译）'
+  Assert-Contains 'message: reliable Simplified Chinese remains first priority' $message '第一层先查可靠简中'
   Assert-Contains 'message: calendar write failure keeps inbox' $message '写入失败'
-  Assert-Contains 'message: calendar unknown paths are searched against Huiji wiki' $message 'PunchToPrimary=打孔纸带'
-  Assert-Contains 'message: calendar example uses both name and effect' $message 'CompanionsBuffNearbyPlayer=人多势众'
+  Assert-Contains 'message: calendar AI source hosts are constrained' $message 'warframe.com、forums.warframe.com 或 wiki.warframe.com'
   Assert-True 'delivery is disabled for the pure background task' (
     [string]$job.delivery.mode -eq 'none' -and
     [bool]$job.delivery.bestEffort -eq $false -and

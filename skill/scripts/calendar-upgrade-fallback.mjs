@@ -6,12 +6,13 @@
 // dict.en/dict.zh、lang.json、ExportUpgrades 全部查无），周报已接入社区维护状态中文表
 // （KingPrimes/DataSource + 内置补充表）。但新赛季推出的新增益路径（如 PunchToPrimary、
 // CompanionsBuffNearbyPlayer）在社区表收录前会落「新增日历增益（上游尚未提供中文说明）」。
-// 本层把全链查无的未知路径排队进日历专属 inbox，由每日 AI 定时任务用灰机wiki「1999日历」页
-// 六人组覆写表查证（用户核验的中文源），有据的 learn 回填学习词典（双语名 + 效果 + 来源），
-// 查无实据的 dismiss。词典只补缺、绝不覆盖静态/社区结果，卡片上永远是有据的译名。
+// 本层把全链查无的未知路径排队进日历专属 inbox。每日 AI 任务先查可靠简中；查无但有完整
+// 官方英文名、效果和链接时，允许写入结构化 AI 暂译。暂译强制标记且可被后来取得的可靠
+// 简中提升替换；静态/社区结果始终优先。官方英文资料也不足时保持待查，不按内部路径猜译。
 //
 // 词典文件：.cache/warframe-data/calendar-upgrade-zh.json
-//   { "version": 1, "entries": { "<path-lower>": { "name": "...", "desc": "...", "source": "...", "at": ms } } }
+//   { "version": 2, "entries": { "<path-lower>": { "name": "...", "desc": "...", "source": "...", "at": ms,
+//     "provisional": true, "englishName": "...", "englishDesc": "...", "evidenceUrl": "...", "evidenceFingerprint": "..." } } }
 // 键一律为完整路径小写（与 weekly.mjs calendarUpgradeEntry 的学习词典查询同键）。
 //
 // 写入/出队契约（与 reward-zh-fallback.mjs 同款 2026-08-22 修复口径）：
@@ -28,6 +29,7 @@
 
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { CALENDAR_STATE_SUPPLEMENT } from './wfdata.mjs';
@@ -101,6 +103,7 @@ export async function getLearnedCalendarUpgradeEntries() {
     name: normalizeEntryText(entry.name || ''),
     desc: normalizeEntryText(entry.desc || ''),
     source: normalizeEntryText(entry.source || ''),
+    ...(entry.provisional === true ? { provisional: true } : {}),
   }]));
 }
 
@@ -122,16 +125,44 @@ function sameEntry(entry, name, desc) {
 //   { status: 'exists-same' }        → 词典已存在同键同译名，无需写入
 //   { status: 'conflict', existing } → 词典已有同键不同译名/效果，绝不覆盖
 //   { status: 'seed', existing }     → 种子权威键且不一致，绝不覆盖
-async function persistLearnedEntryInner(key, name, desc, source) {
+function learnedPayload(name, desc, source, options = {}) {
+  const payload = { name, desc, source, at: Date.now() };
+  if (options.provisional === true) {
+    payload.provisional = true;
+    payload.englishName = options.englishName;
+    payload.englishDesc = options.englishDesc;
+    payload.evidenceUrl = options.evidenceUrl;
+    payload.evidenceFingerprint = createHash('sha256')
+      .update(`${options.englishName}\n${options.englishDesc}\n${options.evidenceUrl}`, 'utf8')
+      .digest('hex');
+  }
+  return payload;
+}
+
+async function persistLearnedEntryInner(key, name, desc, source, options = {}) {
   const entries = await readLearned();
   const existing = entries[key];
   if (existing) {
     const existingEntry = { name: normalizeEntryText(existing.name || ''), desc: normalizeEntryText(existing.desc || '') };
-    if (sameEntry(existingEntry, name, desc)) return { status: 'exists-same', existing: existingEntry };
+    if (sameEntry(existingEntry, name, desc)) {
+      // 同文案的可靠译名可以把既有 AI 暂译提升为已核验条目。
+      if (existing.provisional === true && options.provisional !== true) {
+        entries[key] = learnedPayload(name, desc, source, options);
+        await atomicWriteJson(learnFile(), { version: 2, entries });
+        return { status: 'promoted', existing: existingEntry };
+      }
+      return { status: 'exists-same', existing: existingEntry };
+    }
+    // AI 暂译不是权威条目；后来取得可靠简中时允许替换并去掉暂译标记。
+    if (existing.provisional === true && options.provisional !== true) {
+      entries[key] = learnedPayload(name, desc, source, options);
+      await atomicWriteJson(learnFile(), { version: 2, entries });
+      return { status: 'promoted', existing: existingEntry };
+    }
     if (existingEntry.name === name && !existingEntry.desc && desc) {
       // 只补效果说明：效果缺失时允许完成条目（名称不变，不算覆盖）
-      entries[key] = { name, desc, source, at: Date.now() };
-      await atomicWriteJson(learnFile(), { version: 1, entries });
+      entries[key] = learnedPayload(name, desc, source, options);
+      await atomicWriteJson(learnFile(), { version: 2, entries });
       return { status: 'updated', existing: existingEntry };
     }
     return { status: 'conflict', existing: existingEntry };
@@ -140,19 +171,19 @@ async function persistLearnedEntryInner(key, name, desc, source) {
   if (seed) {
     if (sameEntry(seed, name, desc)) return { status: 'exists-same', existing: seed };
     if (seed.name === name && !seed.desc && desc) {
-      entries[key] = { name, desc, source, at: Date.now() };
-      await atomicWriteJson(learnFile(), { version: 1, entries });
+      entries[key] = learnedPayload(name, desc, source, options);
+      await atomicWriteJson(learnFile(), { version: 2, entries });
       return { status: 'updated', existing: seed };
     }
     return { status: 'seed', existing: seed };
   }
-  entries[key] = { name, desc, source, at: Date.now() };
-  await atomicWriteJson(learnFile(), { version: 1, entries });
+  entries[key] = learnedPayload(name, desc, source, options);
+  await atomicWriteJson(learnFile(), { version: 2, entries });
   return { status: 'written', existing: null };
 }
 
 // 热路径：把全链查无的未知日历增益路径写进 inbox（异步静默，永不 reject）。
-export function queuePendingCalendarUpgrade(upgradePath) {
+export function queuePendingCalendarUpgrade(upgradePath, context = {}) {
   const key = normalizeKey(upgradePath);
   if (!key || !key.includes('/')) return inboxQueue;
   return enqueueInbox(async () => {
@@ -163,7 +194,11 @@ export function queuePendingCalendarUpgrade(upgradePath) {
         if (oldest) delete items[oldest[0]];
       }
       const previous = items[key] || {};
-      items[key] = { firstAt: previous.firstAt ?? Date.now(), lastAt: Date.now(), count: (previous.count || 0) + 1 };
+      items[key] = {
+        firstAt: previous.firstAt ?? Date.now(), lastAt: Date.now(), count: (previous.count || 0) + 1,
+        englishName: normalizeEntryText(context.englishName || previous.englishName || ''),
+        englishDesc: normalizeEntryText(context.englishDesc || previous.englishDesc || ''),
+      };
       await writeInboxItems(items);
     } catch { /* inbox 不可用不影响主流程 */ }
   });
@@ -180,6 +215,21 @@ function validateLearnInputs(key, name, desc) {
   const latinLetters = (desc.match(/[A-Za-z]/gu) || []).length;
   const cjkChars = (desc.match(/[\u3400-\u4dbf\u4e00-\u9fff]/gu) || []).length;
   if (latinLetters > cjkChars) return '效果说明不允许以英文为主（官方简中保留的拉丁专名如 Tenno/Prime 除外）';
+  return null;
+}
+
+const TRUSTED_ENGLISH_HOSTS = new Set(['warframe.com', 'www.warframe.com', 'forums.warframe.com', 'wiki.warframe.com']);
+function validateProvisionalInputs(options) {
+  if (options.provisional !== true) return null;
+  if (!/[A-Za-z]/u.test(options.englishName || '')) return 'AI 暂译必须提供官方英文名称（--english-name）';
+  if (!/[A-Za-z]/u.test(options.englishDesc || '')) return 'AI 暂译必须提供完整官方英文效果（--english-desc）';
+  try {
+    const url = new URL(options.evidenceUrl || '');
+    if (url.protocol !== 'https:' || !TRUSTED_ENGLISH_HOSTS.has(url.hostname.toLowerCase())) throw new Error('untrusted');
+  } catch {
+    return 'AI 暂译必须提供 warframe.com、forums.warframe.com 或 wiki.warframe.com 的 HTTPS 依据链接（--evidence-url）';
+  }
+  if (!options.desc) return 'AI 暂译必须同时提供完整中文效果说明';
   return null;
 }
 
@@ -202,6 +252,15 @@ export async function learnCalendarUpgradeVerified(upgradePath, name, desc, sour
   const cleanDesc = normalizeEntryText(desc);
   const invalid = validateLearnInputs(key, cleanName, cleanDesc);
   if (invalid) return { ok: false, error: invalid };
+  const provisionalOptions = {
+    provisional: options.provisional === true,
+    englishName: normalizeEntryText(options.englishName || ''),
+    englishDesc: normalizeEntryText(options.englishDesc || ''),
+    evidenceUrl: normalizeEntryText(options.evidenceUrl || ''),
+  };
+  const provisionalInvalid = validateProvisionalInputs({ ...provisionalOptions, desc: cleanDesc });
+  if (provisionalInvalid) return { ok: false, error: provisionalInvalid };
+  const cleanSource = provisionalOptions.provisional ? 'AI 暂译（基于官方英文资料）' : normalizeEntryText(source);
   if (typeof options.resolveCovered === 'function') {
     let coverage = null;
     try { coverage = await options.resolveCovered(key); } catch { coverage = null; }
@@ -230,7 +289,7 @@ export async function learnCalendarUpgradeVerified(upgradePath, name, desc, sour
   }
   let result;
   try {
-    result = await enqueuePersist(() => persistLearnedEntryInner(key, cleanName, cleanDesc, source));
+    result = await enqueuePersist(() => persistLearnedEntryInner(key, cleanName, cleanDesc, cleanSource, provisionalOptions));
   } catch (error) {
     return {
       ok: false, path: key, name: cleanName, desc: cleanDesc,
@@ -254,7 +313,7 @@ export async function learnCalendarUpgradeVerified(upgradePath, name, desc, sour
   }
   // written / updated / exists-same：已确认词典存在同键同译名或本次原子落盘成功，才允许出队
   const removed = await removePendingCalendarUpgrade(key);
-  return { ok: true, outcome: status, path: key, name: cleanName, desc: cleanDesc, source, removedFromInbox: removed };
+  return { ok: true, outcome: status, path: key, name: cleanName, desc: cleanDesc, source: cleanSource, provisional: provisionalOptions.provisional, removedFromInbox: removed };
 }
 
 // 测试/调用方等待持久化队列落盘
@@ -266,11 +325,12 @@ export function flushCalendarQueues() {
 // 未收录名称/效果日历增益 inbox（AI 查证闭环，2026-08-27）
 //
 // 全链查无落「新增日历增益（上游尚未提供中文说明）」时，把原始路径排队进 inbox 文件；
-// 每日 AI 定时任务读取后用灰机wiki「1999日历」页查证：有依据的 learn 回填学习词典
-// （中文名 + 效果 + 来源），查无实据的 dismiss 保持诚实占位。
+// 每日 AI 定时任务先查可靠简中；全链查无但官方英文资料完整时写入有明确标记的 AI 暂译。
+// 两类资料都不完整时保留待查，继续显示诚实占位。
 //
 // 文件：.cache/warframe-data/calendar-upgrade-inbox.json
-//   { "version": 1, "items": { "<路径小写>": { "firstAt": ms, "lastAt": ms, "count": n } } }
+//   { "version": 2, "items": { "<路径小写>": { "firstAt": ms, "lastAt": ms, "count": n,
+//     "englishName": "...", "englishDesc": "..." } } }
 // ————————————————————————————————————————————————————————————————
 
 const INBOX_MAX_ITEMS = 100;
@@ -285,7 +345,7 @@ async function readInboxItems() {
 }
 
 async function writeInboxItems(items) {
-  await atomicWriteJson(inboxFile(), { version: 1, items });
+  await atomicWriteJson(inboxFile(), { version: 2, items });
 }
 
 // inbox 全部读改写操作串行化：入队/出队/清空共用同一条队列，防复活条目。
@@ -304,7 +364,7 @@ export async function readPendingCalendarUpgrades() {
     .sort((left, right) => (right.lastAt || 0) - (left.lastAt || 0));
 }
 
-// 从 inbox 移除一条（learn 成功后或查无实据 dismiss）；与入队共用串行队列
+// 从 inbox 移除一条（learn 成功后，或已有高优先级覆盖时 dismiss）；与入队共用串行队列
 export async function removePendingCalendarUpgrade(upgradePath) {
   const key = normalizeKey(upgradePath);
   return enqueueInbox(async () => {
@@ -383,16 +443,22 @@ async function runCli([command, ...rest]) {
       count: item.count,
       firstAt: new Date(item.firstAt).toISOString(),
       lastAt: new Date(item.lastAt).toISOString(),
+      englishName: item.englishName || '',
+      englishDesc: item.englishDesc || '',
     })) };
   }
   if (command === 'learn') {
-    return await learnCalendarUpgradeVerified(args.path, args.name, args.desc, String(args.source || '灰机wiki 1999日历'), { resolveCovered: resolveCalendarCoverage });
+    return await learnCalendarUpgradeVerified(args.path, args.name, args.desc, String(args.source || '灰机wiki 1999日历'), {
+      resolveCovered: resolveCalendarCoverage,
+      provisional: String(args.provisional || '').toLowerCase() === 'true',
+      englishName: args['english-name'], englishDesc: args['english-desc'], evidenceUrl: args['evidence-url'],
+    });
   }
   if (command === 'dismiss') {
     const removed = await removePendingCalendarUpgrade(args.path);
     return { ok: true, removed, path: normalizeKey(args.path), reason: String(args.reason || '') || null };
   }
-  return { ok: false, error: '用法：node calendar-upgrade-fallback.mjs <inbox|learn|dismiss> [--path X --name N --desc D --source S --reason R]' };
+  return { ok: false, error: '用法：node calendar-upgrade-fallback.mjs <inbox|learn|dismiss> [--path X --name N --desc D --source S --provisional true --english-name EN --english-desc ED --evidence-url URL --reason R]' };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

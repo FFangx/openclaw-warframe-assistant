@@ -100,6 +100,58 @@ test('learn 拒绝夹带英文的译名与英文为主的效果说明，dismiss 
   await flushCalendarQueues();
 });
 
+test('AI 暂译必须绑定官方英文原文与可信链接，并可被后来取得的可靠简中提升替换', async () => {
+  const provisionalPath = '/Lotus/Upgrades/Calendar/StaticBuildupFixture';
+  await clearPendingCalendarUpgrades();
+  await queuePendingCalendarUpgrade(provisionalPath, {
+    englishName: 'Static Buildup',
+    englishDesc: 'Each meter traveled grants Electricity Damage. Attacking consumes 10% of the accumulated charge.',
+  });
+  const pending = await readPendingCalendarUpgrades();
+  assert.equal(pending[0].englishName, 'Static Buildup');
+  assert.match(pending[0].englishDesc, /Electricity Damage/u);
+
+  const missingEvidence = await learnCalendarUpgradeVerified(provisionalPath, '静电蓄积', '每移动1米积累电击伤害加成；攻击时消耗已积累电荷的10%。', '任意来源', {
+    provisional: true,
+    englishName: 'Static Buildup',
+    englishDesc: 'Each meter traveled grants Electricity Damage.',
+  });
+  assert.equal(missingEvidence.ok, false);
+  assert.match(missingEvidence.error, /依据链接/u);
+
+  const learned = await learnCalendarUpgradeVerified(provisionalPath, '静电蓄积', '每移动1米积累电击伤害加成；攻击时消耗已积累电荷的10%。', '任意来源', {
+    provisional: true,
+    englishName: 'Static Buildup',
+    englishDesc: 'Each meter traveled grants Electricity Damage. Attacking consumes 10% of the accumulated charge.',
+    evidenceUrl: 'https://www.warframe.com/zh-hans/patch-notes/pc/38-0-8',
+  });
+  assert.equal(learned.ok, true);
+  assert.equal(learned.provisional, true);
+  const provisionalStored = JSON.parse(await readFile(learnFile, 'utf8')).entries['/lotus/upgrades/calendar/staticbuildupfixture'];
+  assert.equal(provisionalStored.provisional, true);
+  assert.equal(provisionalStored.source, 'AI 暂译（基于官方英文资料）');
+  assert.equal(provisionalStored.englishName, 'Static Buildup');
+  assert.match(provisionalStored.evidenceFingerprint, /^[a-f0-9]{64}$/u);
+
+  await queuePendingCalendarUpgrade(provisionalPath);
+  const promoted = await learnCalendarUpgradeVerified(provisionalPath, '静电累积', '每移动1米获得电击伤害；攻击消耗累积电荷的10%。', '可靠简中来源');
+  assert.equal(promoted.ok, true);
+  assert.equal(promoted.outcome, 'promoted');
+  const verifiedStored = JSON.parse(await readFile(learnFile, 'utf8')).entries['/lotus/upgrades/calendar/staticbuildupfixture'];
+  assert.equal(verifiedStored.name, '静电累积');
+  assert.equal(verifiedStored.provisional, undefined);
+  assert.equal(verifiedStored.englishName, undefined);
+  const cannotDowngrade = await learnCalendarUpgradeVerified(provisionalPath, '另一个暂译', '另一个中文暂译效果。', '任意来源', {
+    provisional: true,
+    englishName: 'Static Buildup',
+    englishDesc: 'Each meter traveled grants Electricity Damage. Attacking consumes 10% of the accumulated charge.',
+    evidenceUrl: 'https://www.warframe.com/zh-hans/patch-notes/pc/38-0-8',
+  });
+  assert.equal(cannotDowngrade.ok, false);
+  assert.equal(cannotDowngrade.outcome, 'conflict', 'AI 暂译不得降级覆盖已核验译名');
+  await clearPendingCalendarUpgrades();
+});
+
 test('100 项上限：满员且是新路径时挤掉最久未见的一条', async () => {
   await clearPendingCalendarUpgrades();
   const items = {};

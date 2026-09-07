@@ -179,6 +179,7 @@ function normalizeUpgradeEntry(value, source) {
     name: cleanGameText(value.name),
     desc: cleanGameText(value.desc || ''),
     source: cleanGameText(value.source || source || null),
+    ...(value.provisional === true ? { provisional: true } : {}),
   };
 }
 
@@ -200,7 +201,12 @@ export function calendarUpgradeEntry(upgrade, upgradePath = null, calendarStateZ
   }
   // ③ AI 查证学习词典：按完整路径小写键，双语名+效果+来源；只补缺口，绝不覆盖上面两层
   if (learned?.name) {
-    return { name: cleanGameText(learned.name), desc: cleanGameText(learned.desc || ''), source: cleanGameText(learned.source || '学习词典') };
+    const learnedName = cleanGameText(learned.name);
+    return {
+      name: learned.provisional === true && !learnedName.endsWith('（暂译）') ? `${learnedName}（暂译）` : learnedName,
+      desc: cleanGameText(learned.desc || ''),
+      source: cleanGameText(learned.source || '学习词典'),
+    };
   }
   // ④ 静态题名表：DE 官方备份源只有英文题名时的兜底
   const titleHit = staticData.calendarUpgradeZh?.[upgrade?.title];
@@ -1197,7 +1203,12 @@ function buildMegaData(record, worldState, skipped = new Set(), autoResult = nul
           const entry = calendarUpgradeEntry(event.upgrade, official?.upgrade, calendarStateZh, { learnedEntries: learnedCalendarUpgrades });
           // 名称或效果任一缺失都进入 AI 查证 inbox；学习词典只能补缺，不得覆盖已有名称。
           // 无官方完整路径时不猜路径，只保持诚实占位。
-          if ((entry.name === CALENDAR_UPGRADE_PLACEHOLDER_ZH || !entry.desc) && official?.upgrade) queuePendingCalendarUpgrade(official.upgrade);
+          if ((entry.name === CALENDAR_UPGRADE_PLACEHOLDER_ZH || !entry.desc) && official?.upgrade) {
+            queuePendingCalendarUpgrade(official.upgrade, {
+              englishName: event.upgrade?.title || '',
+              englishDesc: event.upgrade?.description || '',
+            });
+          }
           return { ...entry, chosen: Boolean(flags[j]) };
         }),
       };
