@@ -458,6 +458,15 @@ test('AI 日历暂译强制显示标记，可靠静态或社区译名出现后�
   const stateZh = { byPath: new Map([[path, { name: '正式社区译名', description: '正式中文效果。' }]]), byTail: new Map() };
   const verified = calendarUpgradeEntry({ title: 'Static Buildup' }, path, stateZh, { learnedEntries: learned });
   assert.deepEqual(verified, { name: '正式社区译名', desc: '正式中文效果。', source: '社区维护状态中文表' });
+
+  const nameOnlyState = { byPath: new Map([[path, { name: '远距电击', description: '' }]]), byTail: new Map() };
+  const provisionalEffect = new Map([[path.toLowerCase(), {
+    name: '远距电击', desc: '每移动1米积累电击伤害加成；发动攻击时消耗已积累电荷的10%。',
+    source: 'AI 暂译（基于官方英文资料）', provisional: true,
+  }]]);
+  const merged = calendarUpgradeEntry({ title: 'Static Buildup' }, path, nameOnlyState, { learnedEntries: provisionalEffect });
+  assert.equal(merged.name, '远距电击（效果暂译）');
+  assert.match(merged.desc, /发动攻击时消耗/u);
 });
 
 // —— 名称自动化：科研词缀尾段索引 / 日历状态中文表 / 官方语言键尾段 ——

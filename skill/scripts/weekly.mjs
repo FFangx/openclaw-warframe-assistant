@@ -188,7 +188,8 @@ export function calendarUpgradeEntry(upgrade, upgradePath = null, calendarStateZ
   const learned = options.learnedEntries?.get?.(learnedKey);
   const mergeLearnedEffect = (entry) => {
     if (!entry || entry.desc || !learned?.desc || learned.name !== entry.name) return entry;
-    return { ...entry, desc: cleanGameText(learned.desc), source: cleanGameText(`${entry.source || ''} + ${learned.source || '学习词典'}`) };
+    const name = learned.provisional === true && !entry.name.endsWith('（效果暂译）') ? `${entry.name}（效果暂译）` : entry.name;
+    return { ...entry, name, desc: cleanGameText(learned.desc), source: cleanGameText(`${entry.source || ''} + ${learned.source || '学习词典'}`) };
   };
   // ① 静态路径表：灰机wiki 1999日历 用户核验条目（name+desc+source 成对收录）
   const pathHit = staticData.calendarUpgradeZhByPath?.[upgradePath];
