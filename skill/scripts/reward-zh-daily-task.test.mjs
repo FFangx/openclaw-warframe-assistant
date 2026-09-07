@@ -57,9 +57,9 @@ async function runCalendarCli(...args) {
 // 静态证据表：模拟「模型联网查证后的判断」。learn 条目必须有据（灰机wiki/Market 口径），
 // 查无实据的键对应 null → dismiss。禁止凭猜测翻译与真实任务同口径。
 const EVIDENCE = new Map([
-  ['grineer combat knife sortie blueprint', { zh: '希芙 蓝图', source: '灰机wiki' }],
+  ['grineer combat knife sortie blueprint', { zh: '希芙 蓝图', source: '灰机wiki', evidenceUrl: 'https://warframe.huijiwiki.com/wiki/希芙' }],
   ['mystery widget alpha', null], // 查无实据 → dismiss，保持诚实占位
-  ['twin vipers barrel', { zh: '双子蝰蛇 枪管', source: '灰机wiki' }],
+  ['twin vipers barrel', { zh: '双子蝰蛇 枪管', source: '灰机wiki', evidenceUrl: 'https://warframe.huijiwiki.com/wiki/双子蝰蛇' }],
 ]);
 
 // 日历增益证据表：只认灰机wiki「1999日历」页六人组覆写表。armor 是静态种子权威条目：
@@ -82,7 +82,7 @@ async function runDailyAgentTurn() {
   for (const item of listed.result.items) {
     const evidence = EVIDENCE.get(item.english);
     if (evidence) {
-      const outcome = await runCli('learn', '--english', item.english, '--zh', evidence.zh, '--source', evidence.source);
+      const outcome = await runCli('learn', '--english', item.english, '--zh', evidence.zh, '--source', evidence.source, '--evidence-url', evidence.evidenceUrl);
       summary.push(`${item.english} → ${outcome.result.ok ? '已学习' : '未处理'}（${evidence.source}）`);
     } else {
       const outcome = await runCli('dismiss', '--english', item.english, '--reason', '查无实据');
@@ -210,7 +210,7 @@ test('每日任务模拟：learn 遇种子权威键（ok:false）时该键保持
   await queuePendingReward('Sheev');
   await flushRewardQueues();
   // agent 查到与种子不一致的译名 → learn 必须 ok:false（outcome=seed），该键保留
-  const clash = await runCli('learn', '--english', 'sheev', '--zh', '希芙（篡改）');
+  const clash = await runCli('learn', '--english', 'sheev', '--zh', '希芙（篡改）', '--source', '灰机wiki', '--evidence-url', 'https://warframe.huijiwiki.com/wiki/希芙');
   assert.equal(clash.exitCode, 1);
   assert.equal(clash.result.ok, false);
   assert.equal(clash.result.outcome, 'seed');

@@ -19,7 +19,7 @@ import {
 } from './warframe-cards.mjs';
 import { sendQQLosslessLocalImage } from './qq-lossless-image.mjs';
 import { nextReset as weeklyNextReset, renderWeeklyDetailCardFor, weekStart as weeklyWeekStart } from './weekly.mjs';
-import { getArbyTiers, getBountyZhMaps, getOracleEventMap, stripDataUriReplacer } from './wfdata.mjs';
+import { getArbyTiers, getBountyZhMaps, getLangTable, getOracleEventMap, stripDataUriReplacer } from './wfdata.mjs';
 import { applyRewardAliases, learnReward, mergeLearnedRewards, queuePendingReward } from './reward-zh-fallback.mjs';
 import { loadWorldState } from './worldstate-source.mjs';
 import { createOutbox, parseLegacyMessage, targetKeyOf } from './notification-outbox.mjs';
@@ -955,10 +955,11 @@ async function primeRewardTranslations() {
       // 官方词典兜底：wm 目录只覆盖可交易物，活动货币（Nakak Pearls=纳卡克珍珠）查无会兑成「未收录奖励」；
       // items 键已小写归一，wm 译名优先（交易场景更贴）词典只补缺
       try {
-        const maps = await getBountyZhMaps();
+        const [maps, lang] = await Promise.all([getBountyZhMaps(), getLangTable()]);
         for (const [english, chinese] of Object.entries(maps?.items || {})) {
           if (!rewardNameTranslations.has(english)) rewardNameTranslations.set(english, chinese);
         }
+        rewardOfficialIdentityTranslations = buildOfficialRewardIdentityTranslations(lang);
       } catch { /* 词典拉不到保持原链路 */ }
       // 学习词典（灰机wiki 口径）最后补缺：只在 Market/官方都查无时兜底
       try {
@@ -969,9 +970,53 @@ async function primeRewardTranslations() {
   return rewardTranslationsPromise;
 }
 
-function translateRewardName(value, translations = rewardNameTranslations) {
+let rewardOfficialIdentityTranslations = new Map();
+
+function rewardIdentitySignature(value) {
+  const words = normalize(value)
+    .replace(/([a-z\d])([A-Z])/gu, '$1 $2')
+    .replace(/([A-Z])([A-Z][a-z])/gu, '$1 $2')
+    .toLowerCase().match(/[a-z\d]+/gu) || [];
+  return words.sort().join('|');
+}
+
+export function buildOfficialRewardIdentityTranslations(lang = {}) {
+  const candidates = new Map();
+  const ambiguous = new Set();
+  for (const [itemPath, row] of Object.entries(lang || {})) {
+    const zh = normalize(row?.zh?.name);
+    const tail = String(itemPath || '').split('/').pop() || '';
+    const signature = rewardIdentitySignature(tail);
+    if (!zh || !signature || ambiguous.has(signature)) continue;
+    if (candidates.has(signature) && candidates.get(signature) !== zh) {
+      candidates.delete(signature);
+      ambiguous.add(signature);
+    } else {
+      candidates.set(signature, zh);
+    }
+  }
+  return candidates;
+}
+
+function officialRewardByIdentity(value, itemType, identities) {
+  const directPathTail = String(itemType || '').split('/').pop() || '';
+  const raw = normalize(value);
+  for (const candidate of [directPathTail, raw]) {
+    if (!candidate) continue;
+    const blueprint = /Blueprint$/iu.test(candidate) || /\sBlueprint$/iu.test(candidate);
+    const base = candidate.replace(/Blueprint$/iu, '').replace(/\s+$/u, '');
+    const hit = identities.get(rewardIdentitySignature(base));
+    if (hit) return blueprint ? `${hit} 蓝图` : hit;
+  }
+  return null;
+}
+
+function translateRewardName(value, translations = rewardNameTranslations, options = {}) {
   const raw = normalize(value);
   if (!raw) return '';
+  const identities = options.officialIdentityTranslations || rewardOfficialIdentityTranslations;
+  const officialIdentity = officialRewardByIdentity(raw, options.itemType, identities);
+  if (officialIdentity) return officialIdentity;
   // DE official worldState.php exposes some invasion parts as compact path
   // tails (for example GrineerCombatKnifeHeatsink), while both Market and the
   // official text dictionary index their display names with word boundaries
@@ -985,6 +1030,11 @@ function translateRewardName(value, translations = rewardNameTranslations) {
     || translations.get(split.toLowerCase())
     || translations.get(lookupName);
   if (exact) return exact;
+  if (/\sblueprint$/iu.test(lookupName)) {
+    const base = lookupName.replace(/\sblueprint$/iu, '');
+    const baseHit = translations.get(base);
+    if (baseHit) return `${baseHit} 蓝图`;
+  }
   const translated = lookupName.replace(rewardTokenPattern, (match) => REWARD_TOKEN_ZH[Object.keys(REWARD_TOKEN_ZH).find((key) => key.toLowerCase() === match.toLowerCase())] || match);
   if (/[A-Za-z]{2,}/u.test(translated)) {
     // 官方源可能已把奖励预翻译成中文，只保留官方简中刻意不译的拉丁专名
@@ -1044,17 +1094,19 @@ function translateRewardPhrase(value) {
   }).filter(Boolean).join(' + ');
 }
 
-function rewardText(reward) {
+function rewardText(reward, options = {}) {
   if (!reward) return '';
+  const translations = options.translations || rewardNameTranslations;
+  const officialIdentityTranslations = options.officialIdentityTranslations || rewardOfficialIdentityTranslations;
   const parts = [];
   if (reward.credits) parts.push(`${Number(reward.credits).toLocaleString('zh-CN')} 现金`);
   if (Array.isArray(reward.countedItems)) {
-    for (const item of reward.countedItems) parts.push(`${item.count || 1}× ${translateRewardName(item.type || item.key || '物品')}`);
+    for (const item of reward.countedItems) parts.push(`${item.count || 1}× ${translateRewardName(item.type || item.key || '物品', translations, { itemType: item.itemType, officialIdentityTranslations })}`);
   }
   if (Array.isArray(reward.items)) {
-    for (const item of reward.items) {
-      if (typeof item === 'string') parts.push(translateRewardName(item));
-      else if (item?.type || item?.key) parts.push(`${item.count || 1}× ${translateRewardName(item.type || item.key)}`);
+    for (const [index, item] of reward.items.entries()) {
+      if (typeof item === 'string') parts.push(translateRewardName(item, translations, { itemType: reward.itemTypes?.[index], officialIdentityTranslations }));
+      else if (item?.type || item?.key) parts.push(`${item.count || 1}× ${translateRewardName(item.type || item.key, translations, { itemType: item.itemType, officialIdentityTranslations })}`);
     }
   }
   if (!parts.length && reward.itemString) parts.push(translateRewardPhrase(reward.itemString));
@@ -2060,7 +2112,7 @@ async function main() {
   process.exitCode = 1;
 }
 
-export { manageCommand, monitorTarget, diagnoseSubscriptions, parseSubscriptionSpec, queryArbitration, queryIntel, seedDefaults, closingLabel, translateEventName, translateRewardName, primeRewardTranslations, primeOracleEventMap, refreshArbitrationCache, refreshIncursionsCache, scheduledIncursions, arbitrationMatches, allCandidates, currentNotificationMatches, appendFreshMatches, matchedBountyTarget, notificationSource, monitorIsDue, traderEffectivelyActive, traderWindow, updateSchedule, worldStateIsStale, defaultOutboxPath };
+export { manageCommand, monitorTarget, diagnoseSubscriptions, parseSubscriptionSpec, queryArbitration, queryIntel, seedDefaults, closingLabel, translateEventName, translateRewardName, rewardText, primeRewardTranslations, primeOracleEventMap, refreshArbitrationCache, refreshIncursionsCache, scheduledIncursions, arbitrationMatches, allCandidates, currentNotificationMatches, appendFreshMatches, matchedBountyTarget, notificationSource, monitorIsDue, traderEffectivelyActive, traderWindow, updateSchedule, worldStateIsStale, defaultOutboxPath };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {

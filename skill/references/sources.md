@@ -71,7 +71,7 @@ Language: zh-hans
 
 ## 入侵/警报奖励译名兜底链
 
-世界状态里的入侵奖励是内部路径尾段（如 `GrineerCombatKnifeHeatsink`）。翻译顺序：拆词 → 别名归一（`grineer combat knife`→`sheev`、`sheev sortie blueprint`→`sheev blueprint` 等，灰机wiki 口径，见 `scripts/reward-zh-fallback.mjs`；配方尾段夹带的 `Sortie` 是 DE 路径词，不归一就无法与 Market 的 `Sheev Blueprint` 整词对上）→ Market v2 zh-hans 整词 → 官方词典（bounty maps）→ 学习词典（`.cache/warframe-data/reward-zh-fallback.json`，种子：希芙及部件含蓝图）→ 组件词元（亡魂/破坏者/枪机/散热片…）。全链查无才落「未收录奖励」；别名+词元组合出的译名会自动写回学习词典。别名新增必须有灰机wiki/官方词典依据，禁止凭猜测加泛词。官方源有时已把奖励预翻译成中文（如「异融 Alad V 导航坐标」），输入本身含中文且仅残留官方简中刻意保留的拉丁专名（Alad V/Forma）时直接放行，不落占位也不进 inbox。仍查无的内部名自动进入 `.cache/warframe-data/reward-zh-inbox.json`，由每日 AI 定时任务查证 Market/灰机wiki 后按同键回填学习词典（`learn`）或 `dismiss`；AI 只回填有据译名，不参与热路径。每日任务有可部署定义 `config/cron/reward-zh-ai.job.json`（安装/修复合同与并发原子细节见 `references/operations.md`）。
+世界状态里的入侵/警报奖励可能是内部路径尾段（如 `GrineerCombatKnifeHeatsink`），也可能是非交易物的显示名。翻译顺序：保留原始 `ItemType` 并按路径身份反查本机官方简中语言包 → 拆词 → 别名归一（`grineer combat knife`→`sheev`、`sheev sortie blueprint`→`sheev blueprint` 等，灰机wiki 口径，见 `scripts/reward-zh-fallback.mjs`）→ Market v2 zh-hans 整词 → 官方词典（bounty maps）→ 学习词典（`.cache/warframe-data/reward-zh-fallback.json`，种子：希芙及部件含蓝图）→ 组件词元（亡魂/破坏者/枪机/散热片…）。身份匹配按路径尾段 CamelCase 词元签名处理顺序差异，因此 `UmbraFormaBlueprint` 能命中官方 `/FormaUmbra` 的 `Umbra Forma` 并显示为 `Umbra Forma 蓝图`，不是硬编码单品翻译。全链查无才落「未收录奖励」；别名新增必须有灰机wiki/官方词典依据，禁止凭猜测加泛词。官方源有时已把奖励预翻译成中文，输入本身含中文且仅残留官方简中刻意保留的拉丁专名时直接放行。仍查无的内部名进入 inbox；每日 AI 任务的 `learn` 必须逐字复制当前 inbox 键并附 Market/灰机wiki HTTPS 依据链接，允许官方保留 `Umbra Forma`、`Prime`、`Mod` 等拉丁专名，错键或无依据请求由 CLI 拒绝。
 
 ## 名称解析
 

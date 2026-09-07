@@ -58,6 +58,10 @@ if ($null -ne $job) {
   Assert-Contains 'message: final report is Chinese only' $message '最终响应仅用中文'
   Assert-Contains 'message: pure-Chinese requirement' $message '纯中文'
   Assert-Contains 'message: evidence sources only Market/huijiwiki' $message '灰机wiki'
+  Assert-Contains 'message: reward learn requires evidence URL' $message '--evidence-url 「实际依据链接」'
+  Assert-Contains 'message: reward learn key must exactly copy inbox' $message '--english 必须逐字复制当前 inbox'
+  Assert-Contains 'message: reward learn happens only after verification' $message '绝对不得先执行 learn 再补查证'
+  Assert-Contains 'message: official Latin item names remain valid' $message 'Umbra Forma、Prime、Mod'
   Assert-Contains 'message: learn ok:false contract (conflict/seed)' $message 'ok:false'
   Assert-Contains 'message: write failure keeps inbox for retry' $message '写入失败'
   # --- 1999 日历增益查证闭环（2026-08-27 扩展）---

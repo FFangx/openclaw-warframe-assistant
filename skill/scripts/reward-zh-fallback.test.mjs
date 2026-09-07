@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 const cacheDir = await mkdtemp(path.join(os.tmpdir(), 'reward-zh-fallback-'));
 process.env.WARFRAME_DATA_CACHE_DIR = cacheDir;
 const { applyRewardAliases, getLearnedRewardTranslations, learnReward, learnRewardVerified, mergeLearnedRewards, queuePendingReward, readPendingRewards, removePendingReward, clearPendingRewards, flushRewardQueues } = await import('./reward-zh-fallback.mjs');
-const { translateRewardName } = await import('./subscriptions.mjs');
+const { buildOfficialRewardIdentityTranslations, translateRewardName } = await import('./subscriptions.mjs');
 
 const execFileAsync = promisify(execFile);
 const cliPath = fileURLToPath(new URL('./reward-zh-fallback.mjs', import.meta.url));
@@ -26,6 +26,7 @@ async function runCli(...args) {
 }
 const inboxFile = path.join(cacheDir, 'reward-zh-inbox.json');
 const learnFile = path.join(cacheDir, 'reward-zh-fallback.json');
+const HUIJI_EVIDENCE = 'https://warframe.huijiwiki.com/wiki/Umbra_Forma';
 
 test.after(async () => {
   await rm(cacheDir, { recursive: true, force: true });
@@ -82,6 +83,19 @@ test('既有拆词回归：StrunWraithStock 仍整词命中', () => {
   assert.equal(translateRewardName('StrunWraithStock', dict), '斯特朗亡魂枪托');
 });
 
+test('官方物品路径身份链：UmbraFormaBlueprint 命中语言包保留名，不依赖硬编码译名', () => {
+  const identities = buildOfficialRewardIdentityTranslations({
+    '/Lotus/Types/Items/MiscItems/FormaUmbra': { zh: { name: 'Umbra Forma' } },
+  });
+  assert.equal(translateRewardName('UmbraFormaBlueprint', new Map(), {
+    itemType: '/Lotus/Types/Items/MiscItems/UmbraFormaBlueprint',
+    officialIdentityTranslations: identities,
+  }), 'Umbra Forma 蓝图');
+  assert.equal(translateRewardName('FormaUmbraBlueprint', new Map(), {
+    officialIdentityTranslations: identities,
+  }), 'Umbra Forma 蓝图');
+});
+
 test('未知奖励进 inbox：去重累计、中文不入队、learn 同键回填并出队', async () => {
   await clearPendingRewards();
   await queuePendingReward('Grineer Combat Knife Sortie Blueprint');
@@ -117,7 +131,7 @@ test('learn 回填拒绝夹带英文的译名，dismiss 干净出队', async () 
   await queuePendingReward('Totally Unknown Xyz Thing');
   const rejected = await learnRewardVerified('totally unknown xyz thing', 'Totally 未知', '灰机wiki');
   assert.equal(rejected.ok, false);
-  assert.match(rejected.error, /纯中文/);
+  assert.match(rejected.error, /官方拉丁专名/);
   assert.equal((await readPendingRewards()).length, 1);
   assert.equal(await removePendingReward('totally unknown xyz thing'), true);
   assert.equal((await readPendingRewards()).length, 0);
@@ -215,7 +229,7 @@ test('CLI 闭环：inbox→learn→词典命中→出队，inbox→dismiss→出
   assert.equal(listed.result.count, 2);
   assert.deepEqual(listed.result.items.map((item) => item.english).sort(), ['fixture dismiss key', 'fixture learn key']);
   // learn 回填 + 出队
-  const learned = await runCli('learn', '--english', 'fixture learn key', '--zh', '合成测试译名', '--source', '灰机wiki');
+  const learned = await runCli('learn', '--english', 'fixture learn key', '--zh', '合成测试译名', '--source', '灰机wiki', '--evidence-url', HUIJI_EVIDENCE);
   assert.equal(learned.exitCode, 0);
   assert.equal(learned.result.ok, true);
   assert.equal(learned.result.removedFromInbox, true);
@@ -238,14 +252,33 @@ test('CLI 闭环：inbox→learn→词典命中→出队，inbox→dismiss→出
   const rejected = await runCli('learn', '--english', 'fixture learn key', '--zh', 'Bad English 译名');
   assert.equal(rejected.exitCode, 1);
   assert.equal(rejected.result.ok, false);
-  assert.match(rejected.result.error, /纯中文/);
+  assert.match(rejected.result.error, /官方拉丁专名/);
   const afterReject = JSON.parse(await readFile(learnFile, 'utf8'));
   assert.equal(afterReject.entries['fixture learn key'].zh, '合成测试译名');
-  // learn 对不在 inbox 的键仍幂等成功（回填词典、removedFromInbox=false）
-  const idle = await runCli('learn', '--english', 'fixture dismiss key', '--zh', '无据占位名');
-  assert.equal(idle.exitCode, 0);
-  assert.equal(idle.result.ok, true);
-  assert.equal(idle.result.removedFromInbox, false);
+  // CLI learn 必须绑定当前 inbox 精确键：防止模型把 umbra 手误成 umba 后写入无效词条
+  const idle = await runCli('learn', '--english', 'fixture dismiss key', '--zh', '无据占位名', '--source', '灰机wiki', '--evidence-url', HUIJI_EVIDENCE);
+  assert.equal(idle.exitCode, 1);
+  assert.equal(idle.result.ok, false);
+  assert.match(idle.result.error, /逐字使用当前 inbox/);
+  await clearPendingRewards();
+});
+
+test('CLI 回填允许官方保留 Umbra Forma，并保存依据；拼错 inbox 键时拒绝写入', async () => {
+  await clearPendingRewards();
+  await queuePendingReward('Umbra Forma Blueprint');
+  await flushRewardQueues();
+  const typo = await runCli('learn', '--english', 'umba forma blueprint', '--zh', 'Umbra Forma 蓝图', '--source', '灰机wiki', '--evidence-url', HUIJI_EVIDENCE);
+  assert.equal(typo.exitCode, 1);
+  assert.match(typo.result.error, /逐字使用当前 inbox/);
+  assert.equal((await readPendingRewards())[0].english, 'umbra forma blueprint');
+  const learned = await runCli('learn', '--english', 'umbra forma blueprint', '--zh', 'Umbra Forma 蓝图', '--source', '灰机wiki', '--evidence-url', HUIJI_EVIDENCE);
+  assert.equal(learned.exitCode, 0);
+  assert.equal(learned.result.removedFromInbox, true);
+  const stored = JSON.parse(await (await import('node:fs/promises')).readFile(learnFile, 'utf8'));
+  assert.equal(stored.version, 2);
+  assert.equal(stored.entries['umbra forma blueprint'].zh, 'Umbra Forma 蓝图');
+  assert.equal(stored.entries['umbra forma blueprint'].evidenceUrl, HUIJI_EVIDENCE);
+  assert.match(stored.entries['umbra forma blueprint'].evidenceFingerprint, /^[a-f0-9]{64}$/u);
   await clearPendingRewards();
 });
 
@@ -385,7 +418,7 @@ test('CLI learn 对种子权威键返回 ok:false 退出码 1 且 inbox 保留�
   await clearPendingRewards();
   await queuePendingReward('Sheev');
   await flushRewardQueues();
-  const clash = await runCli('learn', '--english', 'sheev', '--zh', '希芙（篡改）');
+  const clash = await runCli('learn', '--english', 'sheev', '--zh', '希芙（篡改）', '--source', '灰机wiki', '--evidence-url', HUIJI_EVIDENCE);
   assert.equal(clash.exitCode, 1);
   assert.equal(clash.result.ok, false);
   assert.equal(clash.result.outcome, 'seed');

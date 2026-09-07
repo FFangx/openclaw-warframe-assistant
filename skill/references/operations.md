@@ -73,7 +73,7 @@ SKILL.md 瘦身移入（2026-08-07）。这些规则的执行主体是脚本与 
 - 官方源预翻译的混写名（输入含中文、仅残留 Alad V/Forma 等官方保留专名）直接放行，不落占位也不进 inbox
 - 每日一条 agent 型 cron（查证需要网页搜索与判断，命令型 cron 不调模型）：读 inbox，逐键查证 Warframe.Market zh-hans / 灰机wiki
 - **任务定义可部署**：`config/cron/reward-zh-ai.job.json`（declarationKey `warframe-assistant:reward-zh-ai:default`，每日 24h、isolated 会话、agentTurn 提示词含 `{{SKILL_SCRIPTS_DIR}}` 占位符）是该任务的唯一源码合同。它是纯后台本地词典维护任务，强制 `delivery.mode=none`，不向 QQ 投递计划、进度或最终摘要；`install.ps1` 幂等创建/修复并清理旧 channel/to（非真实工作区或 `-SkipCron` 时跳过，避免测试触碰真实 cron 存储）；`verify.ps1` 在源码层校验合同文件（`tests/reward-zh-cron-contract.test.ps1`），运行时层只读校验任务存在/启用/每日/isolated/无投递
-- 有依据：`node skills/warframe-assistant/scripts/reward-zh-fallback.mjs learn --english <inbox键> --zh <纯中文名> --source <依据>`
+- 有依据：`node skills/warframe-assistant/scripts/reward-zh-fallback.mjs learn --english <当前 inbox 精确键> --zh <有据简中名> --source <灰机wiki或Warframe.Market> --evidence-url <实际HTTPS页面>`；CLI 拒绝不在当前 inbox 的键、缺失/非受信来源链接和未经核验的英文，但允许官方简中保留的 `Umbra Forma`、`Prime`、`Mod` 等拉丁专名。学习条目保存依据链接及 SHA-256 指纹。
   按同键回填学习词典并出队，下次推送直接命中；learn CLI 拒绝夹带英文的译名，词典只补缺不覆盖 Market/官方结果，种子键（希芙及部件）不可被 learn 覆盖
 - 查无实据：`dismiss --english <键>` 出队，保持诚实占位；禁止凭猜测翻译
 - inbox 为空时最终结果严格为 `NO_REPLY`；任务始终不投递 QQ，非空处理摘要只保留在 cron 运行记录中

@@ -121,7 +121,12 @@ function itemName(path, lang) {
 function rewardOf(raw, lang) {
   return {
     items: (raw?.items || []).map((path) => itemName(path, lang)),
-    countedItems: (raw?.countedItems || []).map((entry) => ({ count: Number(entry?.ItemCount) || 1, type: itemName(entry?.ItemType, lang) })),
+    itemTypes: (raw?.items || []).map((path) => String(path || '')),
+    countedItems: (raw?.countedItems || []).map((entry) => ({
+      count: Number(entry?.ItemCount) || 1,
+      type: itemName(entry?.ItemType, lang),
+      itemType: String(entry?.ItemType || ''),
+    })),
     credits: Number(raw?.credits) || 0,
   };
 }

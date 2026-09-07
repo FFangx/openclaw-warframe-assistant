@@ -8,7 +8,8 @@
 // 保证下次刷新直接命中；全静态数据，不联网（联网词典仍由 Market/官方链路负责）。
 //
 // 词典文件：.cache/warframe-data/reward-zh-fallback.json
-//   { "version": 1, "entries": { "sheev heatsink": { "zh": "希芙散热片", "source": "灰机wiki", "at": 1755... } } }
+//   { "version": 2, "entries": { "sheev heatsink": { "zh": "希芙散热片", "source": "灰机wiki", "at": 1755...,
+//     "evidenceUrl": "可靠依据链接", "evidenceFingerprint": "sha256..." } } }
 // 键一律为小写英文显示名；条目只补缺、绝不覆盖 Market/官方词典结果。
 //
 // 写入/出队契约（2026-08-22，修复 Codex 复核发现的「静默吞持久化失败仍出队」）：
@@ -20,6 +21,7 @@
 //     错误信息写明安全处置方式（dismiss 或下轮重试）。
 
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -111,7 +113,18 @@ function enqueuePersist(task) {
 //   { status: 'exists-same' }        → 词典（含种子）已存在同键同译名，无需写入
 //   { status: 'conflict', existingZh } → 词典已有同键不同译名，绝不覆盖
 //   { status: 'seed', existingZh }     → 种子权威键且译名不一致，绝不覆盖
-async function persistLearnedEntryInner(key, name, source) {
+function learnedPayload(key, name, source, options = {}) {
+  const payload = { zh: name, source, at: Date.now() };
+  if (options.evidenceUrl) {
+    payload.evidenceUrl = options.evidenceUrl;
+    payload.evidenceFingerprint = createHash('sha256')
+      .update(`${key}\n${name}\n${source}\n${options.evidenceUrl}`, 'utf8')
+      .digest('hex');
+  }
+  return payload;
+}
+
+async function persistLearnedEntryInner(key, name, source, options = {}) {
   const entries = await readLearned();
   const existing = entries[key];
   if (existing) {
@@ -123,8 +136,8 @@ async function persistLearnedEntryInner(key, name, source) {
     if (seed.zh === name) return { status: 'exists-same', existingZh: seed.zh };
     return { status: 'seed', existingZh: seed.zh };
   }
-  entries[key] = { zh: name, source, at: Date.now() };
-  await atomicWriteJson(learnFile(), { version: 1, entries });
+  entries[key] = learnedPayload(key, name, source, options);
+  await atomicWriteJson(learnFile(), { version: 2, entries });
   return { status: 'written', existingZh: null };
 }
 
@@ -133,12 +146,36 @@ async function persistLearnedEntryInner(key, name, source) {
 export function learnReward(english, zh, source = '灰机wiki') {
   const key = normalizeKey(english);
   const name = String(zh || '').trim();
-  if (!key || !name || /[A-Za-z]{2,}/u.test(name)) return persistQueue;
+  if (!key || !name || validateRewardZh(name)) return persistQueue;
   return enqueuePersist(async () => {
     try {
       await persistLearnedEntryInner(key, name, source);
     } catch { /* 学习失败不影响主流程 */ }
   });
+}
+
+const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff]/u;
+const OFFICIAL_LATIN_TERMS_RE = /\b(?:Alad V|Umbra|Forma|Prime|Mod|Tenno)\b/giu;
+const TRUSTED_REWARD_EVIDENCE_HOSTS = new Set([
+  'warframe.huijiwiki.com', 'warframe.market', 'www.warframe.market', 'api.warframe.market',
+]);
+
+function validateRewardZh(name) {
+  if (!CJK_RE.test(name)) return '译名必须包含中文';
+  const withoutOfficialTerms = name.replace(OFFICIAL_LATIN_TERMS_RE, ' ');
+  if (/[A-Za-z]{2,}/u.test(withoutOfficialTerms)) {
+    return '译名只能保留游戏官方拉丁专名（如 Umbra Forma、Prime、Mod），禁止夹带未经核验的英文';
+  }
+  return null;
+}
+
+function isTrustedRewardEvidenceUrl(value) {
+  try {
+    const url = new URL(value || '');
+    return url.protocol === 'https:' && TRUSTED_REWARD_EVIDENCE_HOSTS.has(url.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
 }
 
 // 对已拆词的显示名做别名归一（小写输出）
@@ -257,14 +294,25 @@ export async function clearPendingRewards() {
 //                                  现有译名有据则 dismiss 该键，认为有误则人工修正词典文件后重试
 //   ok:false outcome='seed'        种子权威键（existingZh），绝不覆盖；同一物品请 dismiss 该键
 //   ok:false error 含「写入失败」  原子落盘异常，条目保留，下轮重试，勿 dismiss
-export async function learnRewardVerified(english, zh, source = '灰机wiki') {
+export async function learnRewardVerified(english, zh, source = '灰机wiki', options = {}) {
   const key = normalizeKey(english);
   const name = String(zh || '').trim();
   if (!key || !name) return { ok: false, error: 'english 与 zh 均不能为空' };
-  if (/[A-Za-z]{2,}/u.test(name)) return { ok: false, error: '译名必须为纯中文，禁止夹带英文' };
+  const invalidZh = validateRewardZh(name);
+  if (invalidZh) return { ok: false, error: invalidZh };
+  const evidenceUrl = String(options.evidenceUrl || '').trim();
+  if (options.requireEvidence === true && !isTrustedRewardEvidenceUrl(evidenceUrl)) {
+    return { ok: false, error: '奖励回填必须提供 Warframe.Market 或灰机wiki 的 HTTPS 依据链接（--evidence-url）' };
+  }
+  if (options.requirePending === true) {
+    const pending = await enqueueInbox(async () => Object.hasOwn(await readInboxItems(), key));
+    if (!pending) {
+      return { ok: false, error: `english 必须逐字使用当前 inbox 中的键；未找到「${key}」，拒绝写入学习词典` };
+    }
+  }
   let result;
   try {
-    result = await enqueuePersist(() => persistLearnedEntryInner(key, name, source));
+    result = await enqueuePersist(() => persistLearnedEntryInner(key, name, source, { evidenceUrl }));
   } catch (error) {
     return {
       ok: false, english: key, zh: name,
@@ -286,7 +334,7 @@ export async function learnRewardVerified(english, zh, source = '灰机wiki') {
   }
   // written / exists-same：已确认词典存在同键同译名或本次原子落盘成功，才允许出队
   const removed = await removePendingReward(key);
-  return { ok: true, outcome: status, english: key, zh: name, source, removedFromInbox: removed };
+  return { ok: true, outcome: status, english: key, zh: name, source, evidenceUrl: evidenceUrl || null, removedFromInbox: removed };
 }
 
 // 测试/调用方等待持久化队列落盘
@@ -296,7 +344,8 @@ export function flushRewardQueues() {
 
 // CLI：AI 查证闭环的读写入口（node reward-zh-fallback.mjs <inbox|learn|dismiss>）
 //   inbox  → 输出待查证清单 JSON
-//   learn  → --english <小写英文名> --zh <纯中文名> [--source <灰机wiki|Warframe.Market>]
+//   learn  → --english <inbox 原键> --zh <有据简中名> --source <灰机wiki|Warframe.Market>
+//            --evidence-url <对应页面 HTTPS 链接>（允许官方保留 Umbra Forma/Prime 等拉丁专名）
 //            返回契约与 learnRewardVerified 相同（ok:false 退出码 1，inbox 条目保留未出队）
 //   dismiss→ --english <小写英文名> [--reason <说明>]
 function parseCliArgs(argv) {
@@ -324,13 +373,15 @@ async function runCli([command, ...rest]) {
     })) };
   }
   if (command === 'learn') {
-    return await learnRewardVerified(args.english, args.zh, String(args.source || '灰机wiki'));
+    return await learnRewardVerified(args.english, args.zh, String(args.source || '灰机wiki'), {
+      evidenceUrl: args['evidence-url'], requireEvidence: true, requirePending: true,
+    });
   }
   if (command === 'dismiss') {
     const removed = await removePendingReward(args.english);
     return { ok: true, removed, english: normalizeKey(args.english), reason: String(args.reason || '') || null };
   }
-  return { ok: false, error: '用法：node reward-zh-fallback.mjs <inbox|learn|dismiss> [--english X --zh Y --source S --reason R]' };
+  return { ok: false, error: '用法：node reward-zh-fallback.mjs <inbox|learn|dismiss> [--english X --zh Y --source S --evidence-url URL --reason R]' };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

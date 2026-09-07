@@ -420,7 +420,7 @@ let bountyZhPromise = null;
 export function getBountyZhMaps() {
   bountyZhPromise ??= (async () => {
     try {
-      return await cachedBuild(BOUNTY_CACHE, BOUNTY_TTL_MS, 5, async () => {
+      return await cachedBuild(BOUNTY_CACHE, BOUNTY_TTL_MS, 6, async () => {
         const [challengesRaw, en, zh, regions] = await Promise.all([
           fetchJson(CHALLENGE_URL), fetchJson(DICT_EN_URL), fetchJson(DICT_ZH_URL),
           fetchJson('https://browse.wf/warframe-public-export-plus/ExportRegions.json').catch(() => ({})),
@@ -439,7 +439,9 @@ export function getBountyZhMaps() {
           }
           // 物品名反查：英文短名→中文；排除描述条目，同名冲突保留首个
           const english = en[key];
-          if (english && english !== chinese && english.length <= 48 && !/Desc$/u.test(key) && !english.includes('|')) {
+          // 官方简中会有意保留 Umbra Forma 等拉丁名称；即使中英文本相同也必须保留
+          // 这条身份映射，否则非交易奖励无法经 Market 补齐、最终会被误判为未收录。
+          if (english && english.length <= 48 && !/Desc$/u.test(key) && !english.includes('|')) {
             const enKey = String(english).normalize('NFKC').trim().toLowerCase();
             if (!items[enKey]) items[enKey] = chinese;
           }

@@ -11,6 +11,7 @@ import {
   normalizeOracleWorldState,
 } from './worldstate-source.mjs';
 import { attachStaticBountyRewards } from './bounties.mjs';
+import { buildOfficialRewardIdentityTranslations, rewardText } from './subscriptions.mjs';
 
 const date = (ms) => ({ $date: { $numberLong: String(ms) } });
 
@@ -87,7 +88,7 @@ test('official world state normalizes the public query sections', async () => {
     Time: Math.floor(now / 1000),
     ActiveMissions: [{ _id: { $oid: 'f1' }, Expiry: date(expiry), Node: 'SolNode1', MissionType: 'MT_CAPTURE', Modifier: 'VoidT1', Hard: true }],
     VoidStorms: [{ _id: { $oid: 's1' }, Expiry: date(expiry), Node: 'CrewNode1', ActiveMissionTier: 'VoidT6' }],
-    Alerts: [{ _id: { $oid: 'a1' }, Expiry: date(expiry), MissionInfo: { location: 'SolNode1', missionType: 'MT_DEFENSE', faction: 'FC_GRINEER', missionReward: { credits: 1000 } } }],
+    Alerts: [{ _id: { $oid: 'a1' }, Expiry: date(expiry), MissionInfo: { location: 'SolNode1', missionType: 'MT_DEFENSE', faction: 'FC_GRINEER', missionReward: { credits: 1000, countedItems: [{ ItemCount: 1, ItemType: '/Lotus/Types/Items/MiscItems/UmbraFormaBlueprint' }] } } }],
     Invasions: [{ _id: { $oid: 'i1' }, Node: 'SolNode1', Count: 50, Goal: 100, Faction: 'FC_CORPUS', DefenderFaction: 'FC_GRINEER', AttackerReward: {}, DefenderReward: {} }],
     Goals: [{ _id: { $oid: 'e1' }, Expiry: date(expiry), Node: 'SolNode1', Tag: 'HeatFissure' }],
     Sorties: [{ _id: { $oid: 'so1' }, Expiry: date(expiry), Boss: 'SORTIE_BOSS_HYENA', Variants: [{ missionType: 'MT_EXTERMINATION', modifierType: 'SORTIE_MODIFIER_EXIMUS', node: 'SolNode1' }] }],
@@ -99,12 +100,25 @@ test('official world state normalizes the public query sections', async () => {
     SeasonInfo: { AffiliationTag: 'RadioTestSyndicate', ActiveChallenges: [{ Challenge: '/Lotus/Types/Challenges/Seasons/WeeklyHard/EliteTest' }] },
     SyndicateMissions: [],
   };
-  const state = await normalizeOfficialWorldState(raw, { nodes: { SolNode1: { name: 'Test', planet: 'Earth' }, CrewNode1: { name: 'Railjack', planet: 'Veil' } }, now });
+  const state = await normalizeOfficialWorldState(raw, {
+    nodes: { SolNode1: { name: 'Test', planet: 'Earth' }, CrewNode1: { name: 'Railjack', planet: 'Veil' } },
+    lang: { '/Lotus/Types/Items/MiscItems/FormaUmbra': { zh: { name: 'Umbra Forma' } } },
+    now,
+  });
   assert.equal(state.timestamp, new Date(Math.floor(now / 1000) * 1000).toISOString());
   assert.deepEqual(state.fissures.map((item) => [item.tier, item.missionType, item.isHard, item.isStorm]), [
     ['Lith', 'Capture', true, false], ['Omnia', 'Skirmish', false, true],
   ]);
   assert.equal(state.alerts[0].mission.type, 'Defense');
+  assert.deepEqual(state.alerts[0].mission.reward.countedItems, [{
+    count: 1, type: 'UmbraFormaBlueprint', itemType: '/Lotus/Types/Items/MiscItems/UmbraFormaBlueprint',
+  }]);
+  const identities = buildOfficialRewardIdentityTranslations({
+    '/Lotus/Types/Items/MiscItems/FormaUmbra': { zh: { name: 'Umbra Forma' } },
+  });
+  assert.equal(rewardText(state.alerts[0].mission.reward, {
+    translations: new Map(), officialIdentityTranslations: identities,
+  }), '1,000 现金 + 1× Umbra Forma 蓝图');
   assert.equal(state.invasions[0].completion, 50);
   assert.equal(state.events[0].description, 'Thermia Fractures');
   assert.equal(state.sortie.variants[0].modifier, 'Eximus Stronghold');
