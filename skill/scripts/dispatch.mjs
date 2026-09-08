@@ -83,7 +83,7 @@ export async function dispatchCommand(message, options = {}) {
     }, {
       execute: async (command) => {
         const { runAlecaMessage } = await import('./alecaframe.mjs');
-        return runAlecaMessage(command.text, { cardDir: command.cardDir });
+        return runAlecaMessage(command.text, { cardDir: command.cardDir, request: command.request });
       },
     });
     const result = outcome.result;
@@ -140,7 +140,9 @@ export async function dispatchCommand(message, options = {}) {
     queryArbitration: async () => import('./subscriptions.mjs').then((m) => m.queryArbitration(options.subscriptionState || DEFAULT_SUBSCRIPTION_STATE, cardDir)),
     queryIntel: async (command) => import('./subscriptions.mjs').then((m) => m.queryIntel(command.intelType, cardDir, options.subscriptionState || DEFAULT_SUBSCRIPTION_STATE)),
     runPersonalTrader: async () => import('./alecaframe.mjs').then((m) => m.runAlecaMessage('奸商推荐', { cardDir })),
-    runShortcut: async (command) => import('./shortcuts.mjs').then((m) => m.runShortcut(command.text, { cardDir, personalAllowed: command.personalAllowed })),
+    runShortcut: async (command) => import('./shortcuts.mjs').then((m) => m.runShortcut(command.text, {
+      cardDir, personalAllowed: command.personalAllowed, request: command.request,
+    })),
   });
   const result = outcome.result;
   if (result.handled) return {

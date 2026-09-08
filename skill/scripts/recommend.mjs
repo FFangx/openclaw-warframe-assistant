@@ -510,6 +510,18 @@ async function mapLimit(values, limit, mapper) {
   return results;
 }
 
+// R12 切片：Decision 证据引用——裂缝来源/新鲜度（与 trace 的 worldstate
+// evidence 同一组字段语义），供 buildRecommendDecision 消费。
+function fissureStateEvidence(state) {
+  if (!state) return null;
+  const source = state._fieldProviders?.fissures || state._dataSource || state._envelope?.provider || 'unknown';
+  let freshness = 'fresh';
+  if (state._dataStale === true) freshness = state._cachedAt ? 'stale-cache' : 'stale';
+  else if (state._cachedAt) freshness = 'cache-hit';
+  else if (state._composite) freshness = 'degraded';
+  return { source, scope: 'pc-worldstate', freshness, fetchedAt: state.timestamp || null };
+}
+
 // —— 本地遗物奖励表（AlecaFrame cachedData，只读；本地缺失走 CDN 兑底） ——
 export async function loadLocalRelicDb(alecaDir) {
   const { readAlecaJson } = await import('./wfdata.mjs');
@@ -862,6 +874,7 @@ export async function recommendFissures(relics, options = {}) {
     return {
       ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, fissureScope, tierFilter,
       error: 'no_relics_for_vault_filter', fetchedAt: new Date().toISOString(), understanding,
+      decisionEvidence: { worldState: null, priceTable: null, localDb: null },
       userError: userError({
         code: 'no_match', category: 'relic-vault-filter', retryable: false,
         nextSteps: ['开遗物（去掉入库筛选）', '我的库存 遗物', '帮助 遗物'],
@@ -872,6 +885,7 @@ export async function recommendFissures(relics, options = {}) {
     return {
       ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, fissureScope, tierFilter,
       error: 'no_relics_for_tier', fetchedAt: new Date().toISOString(), understanding,
+      decisionEvidence: { worldState: null, priceTable: null, localDb: null },
       userError: userError({
         code: 'no_match', category: 'relic-tier-filter', retryable: false, nextSteps: ['我的库存 遗物', '开遗物', '帮助 遗物'],
       }),
@@ -891,6 +905,7 @@ export async function recommendFissures(relics, options = {}) {
     return {
       ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, fissureScope, tierFilter,
       error: scopeNoMatch.error, fetchedAt: new Date().toISOString(), understanding,
+      decisionEvidence: { worldState: fissureStateEvidence(worldState), priceTable: null, localDb: null },
       userError: userError({
         code: 'no_match', category: 'fissure-scope', retryable: false, nextSteps: [...scopeNoMatch.nextSteps],
       }),
@@ -904,6 +919,7 @@ export async function recommendFissures(relics, options = {}) {
     return {
       ok: false, kind: 'fissure-recommend', mode, preference, squad, vaultFilter, error: 'no_local_relic_db',
       fetchedAt: new Date().toISOString(), understanding,
+      decisionEvidence: { worldState: fissureStateEvidence(worldState), priceTable: null, localDb: null },
       userError: userError({
         code: 'source_unavailable', category: 'local-relic-db', retryable: false,
         nextSteps: ['我的库存 遗物', '帮助 账号'],
@@ -1072,6 +1088,19 @@ export async function recommendFissures(relics, options = {}) {
       understanding,
       degraded: priceStaleAt ? degradedNotice({ cachedUsed: true }) : null,
       requiem: requiemFissures > 0 && requiemCount > 0 ? { fissures: requiemFissures, relics: requiemCount } : null,
+      decisionEvidence: {
+        worldState: fissureStateEvidence(worldState),
+        priceTable: prices.__meta
+          ? {
+            source: 'warframe.market',
+            scope: 'market-price-table',
+            stale: Boolean(prices.__meta.stale),
+            cachedAt: prices.__meta.cachedAt || null,
+            coverage: prices.__meta.coverage || null,
+          }
+          : null,
+        localDb: { source: 'alecaframe-local', scope: 'local-relic-db', ok: true },
+      },
     };
   }
 
@@ -1140,13 +1169,26 @@ export async function recommendFissures(relics, options = {}) {
     error: hasResults ? null : (ducatGoal ? 'market_route_better' : 'no_matching_fissures'),
     understanding,
     degraded: priceStaleAt ? degradedNotice({ cachedUsed: true }) : null,
+    requiem: requiemFissures > 0 && requiemCount > 0 ? { fissures: requiemFissures, relics: requiemCount } : null,
+    decisionEvidence: {
+      worldState: fissureStateEvidence(worldState),
+      priceTable: prices.__meta
+        ? {
+          source: 'warframe.market',
+          scope: 'market-price-table',
+          stale: Boolean(prices.__meta.stale),
+          cachedAt: prices.__meta.cachedAt || null,
+          coverage: prices.__meta.coverage || null,
+        }
+        : null,
+      localDb: { source: 'alecaframe-local', scope: 'local-relic-db', ok: true },
+    },
     userError: hasResults ? null : userError({
       code: 'no_match',
       category: ducatGoal ? 'trader-target' : 'relic-routes',
       retryable: false,
       nextSteps: ducatGoal ? ['奸商推荐', '开遗物 杜卡德', '帮助 遗物'] : ['开遗物（放宽筛选）', '裂缝', '帮助 遗物'],
     }),
-    requiem: requiemFissures > 0 && requiemCount > 0 ? { fissures: requiemFissures, relics: requiemCount } : null,
   };
 }
 

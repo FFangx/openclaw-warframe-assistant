@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { executePublicUseCase } from './public-usecase.mjs';
 
-const base = { channel: 'qqbot', target: 'qqbot:c2c:user-a', actorId: 'user-a', personalAllowed: true, isGroup: false };
+const base = { source: 'fast-command', channel: 'qqbot', target: 'qqbot:c2c:user-a', actorId: 'user-a', personalAllowed: true, isGroup: false };
 function ports(calls, result = { handled: true, ok: true, text: 'ok' }) {
   return {
     queryArbitration: async (c) => (calls.push(['arbitration', c.commandId, c.personalAllowed]), result),

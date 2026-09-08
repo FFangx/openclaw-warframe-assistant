@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import { userError } from './user-error-contract.mjs';
+import { buildCommandRequest } from './command-request.mjs';
 
 const { matchCommandText, matchArbitrationCommand, matchIntelCommand } = createRequire(import.meta.url)('./command-registry.cjs');
 
@@ -35,6 +36,9 @@ export async function executePublicUseCase(request, ports) {
     trace: request.trace || null,
   };
   try {
+    // R12 第一纵向切片：注册表匹配后立即建立一次性结构化请求。
+    // 未切片命令返回 null，继续沿用既有文本协议。
+    command.request = await buildCommandRequest({ matched, source: command.source });
     let result;
     if (arbitration) result = await ports.queryArbitration(command);
     else if (intel) result = command.intelType === 'trader' && command.personalAllowed

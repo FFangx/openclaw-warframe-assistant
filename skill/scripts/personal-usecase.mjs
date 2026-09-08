@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import { userError } from './user-error-contract.mjs';
+import { buildCommandRequest } from './command-request.mjs';
 
 const { matchCommandText } = createRequire(import.meta.url)('./command-registry.cjs');
 
@@ -72,9 +73,10 @@ export async function executePersonalUseCase(request, ports) {
     source: normalizeText(request.source),
     cardDir: request.cardDir,
   };
-
   let result;
   try {
+    // 身份门通过后才允许建立 userPrivate 请求；执行端只消费 args，不能再解析原文。
+    normalized.request = await buildCommandRequest({ matched, source: normalized.source });
     result = await ports.execute(normalized);
   } catch (error) {
     ports.log?.('error', 'personal account execution failed', error);

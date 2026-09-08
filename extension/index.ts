@@ -1047,7 +1047,14 @@ async function runWeeklyCommandUseCase(api: any, request: any): Promise<any> {
 async function runPersonalCommandUseCase(api: any, request: any): Promise<any> {
   const { executePersonalUseCase } = await import(pathToFileURL(personalUsecaseScript).href);
   return executePersonalUseCase(request, {
-    execute: (command: any) => runJsonScript(alecaScript, ['parse', command.text], 60_000),
+    execute: async (command: any) => {
+      const env: Record<string, string> = {};
+      if (command.request) {
+        const { encodeCommandRequest } = await import(pathToFileURL(path.resolve(skillDir, 'scripts', 'command-request.mjs')).href);
+        env.WARFRAME_COMMAND_REQUEST = encodeCommandRequest(command.request);
+      }
+      return runJsonScript(alecaScript, ['parse', command.text], 60_000, env);
+    },
     log: (_level: string, message: string, error: unknown) => {
       api.logger.error(`Warframe ${message}: ${String(error)}`);
     },
@@ -1060,8 +1067,11 @@ async function runPublicCommandUseCase(api: any, request: any): Promise<any> {
     queryArbitration: () => runJsonScript(subscriptionScript, ['query-arbitration', '--state', subscriptionState, '--card-dir', cardDir]),
     queryIntel: (command: any) => runJsonScript(subscriptionScript, ['query-intel', '--type', command.intelType, '--state', subscriptionState, '--card-dir', cardDir]),
     runPersonalTrader: () => runJsonScript(alecaScript, ['parse', '奸商推荐']),
-    runShortcut: (command: any) => runJsonScript(shortcutScript, ['parse', command.text], 60_000, {
+    runShortcut: async (command: any) => runJsonScript(shortcutScript, ['parse', command.text], 60_000, {
       WARFRAME_PERSONAL_OK: command.personalAllowed ? '1' : '',
+      ...(command.request ? {
+        WARFRAME_COMMAND_REQUEST: (await import(pathToFileURL(path.resolve(skillDir, 'scripts', 'command-request.mjs')).href)).encodeCommandRequest(command.request),
+      } : {}),
       ...(command.trace ? {
         WARFRAME_TRACE_STORE: command.trace.storePath,
         WARFRAME_TRACE_ID: command.trace.traceId,

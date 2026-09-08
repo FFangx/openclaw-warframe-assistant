@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { runAlecaMessage } from './alecaframe.mjs';
+import { buildCommandRequest } from './command-request.mjs';
 
 const RELIC_UNIQUE_NAME = '/Lotus/Types/Game/Projections/LithT1Bronze';
 const rewards = [
@@ -91,6 +92,26 @@ test('runs synthetic snapshot through recommendation, card and follow-up branche
       assert.match(result.followupText, new RegExp(detailText, 'u'), message);
       assert.doesNotMatch(result.followupText, /undefined/u, message);
     }
+
+    const request = await buildCommandRequest({
+      matched: { commandId: 'recommend', query: '单人 九重天' }, source: 'tool-command',
+    });
+    const structured = await runAlecaMessage('我的账号（污染原文，不得重新路由）', {
+      request,
+      alecaDir,
+      skipCard: true,
+      recommendOptions: {
+        worldState: { fissures: [fissure('storm-structured', { isStorm: true })] },
+        localDb,
+        prices,
+        minRemainMs: 0,
+      },
+    });
+    assert.equal(structured.command, 'recommend');
+    assert.equal(structured.ok, true);
+    assert.equal(structured.data.squad, 1);
+    assert.equal(structured.data.fissureScope, 'storm');
+    assert.equal(structured.data.decision.scope, 'userPrivate');
 
     const incompletePrices = Object.fromEntries(Object.entries(prices).map(([slug, entry], index) => [slug, {
       ...entry,

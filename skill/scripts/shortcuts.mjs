@@ -20,6 +20,8 @@ import { buildHelpSections, getHelpSection, listHelpSections, matchCommandText, 
 import { formatUserError, userError, userErrorFromDiagnostic } from './user-error-contract.mjs';
 // R17 第一片：代表链「裂缝 九重天」脱敏 trace（只接这一条链，见 trace.mjs 边界说明）。
 import { createTraceStore, decisionResultCategory, fissureContentHash, isRepresentativeChain, newTraceId, privacyScopeHash, worldstateEvidence } from './trace.mjs';
+// R12 第一片：CommandRequest 协议（fissure 本命令与开遗物库存增强共用同一结构化请求）。
+import { assertCommandRequest, buildFissureDecision, decodeCommandRequestString, deriveRecommendRequestFromFissure } from './command-request.mjs';
 // 规范路由常量（R5 数据源合同）：Market 只读端点基址。
 import { MARKET_BASE_URL } from './data-source-contract.mjs';
 
@@ -866,7 +868,8 @@ async function queryRelicFarm(rawQuery, platform = DEFAULT_PLATFORM, crossplay =
   });
 }
 
-function parseFissureFilters(rawQuery) {
+// 现有裂缝筛选解析器（R12 切片作为 fissure CommandRequest args 的唯一输出）。
+export function parseFissureFilters(rawQuery) {
   const query = normalizeUnicode(rawQuery).toLowerCase();
   const hardOnly = /钢铁|steel/iu.test(query);
   const normalOnly = /普通|normal/iu.test(query);
@@ -886,15 +889,22 @@ function splitFissureNode(value) {
 }
 
 async function queryFissures(rawQuery = '', platform = DEFAULT_PLATFORM, options = {}) {
+  // R12 切片：CommandRequest 链路上 filters 由共享用例的结构化 args 提供，
+  // 本函数不再对原始 query 做第二次筛选解析（options.filters 缺省时才回退现有解析器）。
+  const filters = options.filters || parseFissureFilters(rawQuery);
+  const decisionScope = (options.personalAllowed === true || process.env.WARFRAME_PERSONAL_OK === '1') ? 'personal' : 'public';
   if (platform === 'mobile') return { ok: false, kind: 'fissure', error: 'unsupported_platform', query: rawQuery };
   let state;
+  let factsEvidence = null;
   const factsStartedAt = Date.now();
   try {
     state = options.worldState || await (options.loadWorldState || loadWorldState)(platform);
+    factsEvidence = worldstateEvidence({ state });
     if (typeof options.onFacts === 'function') {
       await options.onFacts({ state, elapsedMs: Date.now() - factsStartedAt, startedAt: new Date(factsStartedAt).toISOString() });
     }
   } catch (error) {
+    factsEvidence = worldstateEvidence({ error });
     if (typeof options.onFacts === 'function') {
       await options.onFacts({ error, elapsedMs: Date.now() - factsStartedAt, startedAt: new Date(factsStartedAt).toISOString() });
     }
@@ -904,12 +914,12 @@ async function queryFissures(rawQuery = '', platform = DEFAULT_PLATFORM, options
       error: 'source_unavailable',
       query: rawQuery,
       fetchedAt: new Date().toISOString(),
+      decision: buildFissureDecision({ filters, rows: [], evidence: factsEvidence, scope: decisionScope, ok: false }),
       userError: userErrorFromDiagnostic(error?.diagnostic, {
         nextSteps: [`裂缝${rawQuery ? ` ${rawQuery}` : ''}（稍后重试）`, '帮助 遗物'],
       }),
     };
   }
-  const filters = parseFissureFilters(rawQuery);
   const now = Date.now();
   let fissures = (Array.isArray(state.fissures) ? state.fissures : [])
     .filter((item) => !item.expired && Date.parse(item.expiry) > now)
@@ -949,9 +959,13 @@ async function queryFissures(rawQuery = '', platform = DEFAULT_PLATFORM, options
     try {
       const runPersonalRecommendation = options.runAlecaMessage
         || (await import('./alecaframe.mjs')).runAlecaMessage;
-      const recommendation = await runPersonalRecommendation(`开遗物 ${rawQuery}`.trim(), {
+      const enhancementRequest = options.request ? deriveRecommendRequestFromFissure(options.request) : null;
+      // 结构化链不能回退重解析原文；无法无损派生的筛选只显示公开裂缝结果。
+      if (options.request && !enhancementRequest) throw new Error('structured enhancement is not representable');
+      const recommendation = await runPersonalRecommendation(options.request ? '' : `开遗物 ${rawQuery}`.trim(), {
         skipCard: true,
         recommendOptions: { worldState: state, perspective: 'fissure', minRemainMs: 0 },
+        ...(enhancementRequest ? { request: enhancementRequest } : {}),
       });
       if (recommendation.ok && recommendation.data?.perspective === 'fissure') {
         const byId = new Map(recommendation.data.rows.map((row) => [row.id, row]));
@@ -1003,6 +1017,13 @@ async function queryFissures(rawQuery = '', platform = DEFAULT_PLATFORM, options
     fetchedAt: new Date().toISOString(),
     sourceTimestamp: state.timestamp || null,
     error: fissures.length ? null : 'no_matches',
+    decision: buildFissureDecision({
+      filters,
+      rows: fissures,
+      evidence: { ...factsEvidence, fetchedAt: state.timestamp || null },
+      scope: decisionScope,
+      ok: fissures.length > 0,
+    }),
     userError: fissures.length ? null : userError({
       code: 'no_match',
       category: 'fissure-filter',
@@ -1609,7 +1630,9 @@ async function renderCard(data, cardDir) {
 
 function compactFollowup(data) {
   if (data.kind === 'fissure') {
-    const filter = data.query ? ` · 筛选：${data.query}` : '';
+    // R12 切片：followup 只读同一份 Decision（结构化筛选理解），不从原始命令重新推断。
+    const queryText = data.decision?.understanding?.query || '';
+    const filter = queryText ? ` · 筛选：${queryText}` : '';
     return `当前裂缝 ${data.total} 条${filter}`;
   }
   if (data.kind === 'market') {
@@ -1944,7 +1967,12 @@ async function emitTraceStage(trace, record) {
 
 export async function runShortcut(message, options = {}) {
   const trace = await createRequestTrace(message, options);
-  const parsed = parseShortcutMessage(message);
+  // R12 切片：fissure 的 CommandRequest 消费链——args 已由共享用例用现有解析器
+  // 建立并严格校验；这里只按请求路由，不再对原始消息做筛选参数解析。
+  // 其余命令不建立请求，保持原行为。
+  const request = options.request ? assertCommandRequest(options.request) : null;
+  if (request && request.commandId !== 'fissure') throw new Error('invalid command request: commandId is not supported by this executor');
+  const parsed = request ? { command: request.commandId, query: request.args.query } : parseShortcutMessage(message);
   if (!parsed) return { handled: false };
   if (parsed.command === 'help') {
     const helpTopic = resolveHelpTopic(parsed.query);
@@ -2095,7 +2123,11 @@ export async function runShortcut(message, options = {}) {
     });
   } : null;
   const data = parsed.command === 'market' ? await queryMarket(parsed.query, platform, crossplay)
-    : parsed.command === 'fissure' ? await queryFissures(parsed.query, platform, { ...options, onFacts })
+    : parsed.command === 'fissure' ? await queryFissures(parsed.query, platform, {
+      ...options,
+      ...(request ? { filters: request.args, request } : {}),
+      onFacts,
+    })
       : parsed.command === 'relic-farm' ? await queryRelicFarm(parsed.query, platform, crossplay, options)
       : await queryRelic(parsed.query, platform, crossplay);
   if (trace) {
@@ -2152,7 +2184,7 @@ async function main() {
   const [command, ...rest] = process.argv.slice(2);
   try {
     if (command === 'parse') {
-      out(await runShortcut(rest.join(' ')));
+      out(await runShortcut(rest.join(' '), { request: decodeCommandRequestString(process.env.WARFRAME_COMMAND_REQUEST) }));
       return;
     }
     if (command === 'ask') {

@@ -17,6 +17,7 @@ function harness(overrides = {}) {
 }
 
 const baseRequest = {
+  source: 'fast-command',
   text: '我的库存 悟空p',
   channel: 'qqbot',
   target: 'qqbot:c2c:user-a',

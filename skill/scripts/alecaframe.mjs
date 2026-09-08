@@ -11,6 +11,8 @@ import { pathToFileURL } from 'node:url';
 import { matchCommandText } from './command-registry.mjs';
 import { buildAccountSnapshotCard, buildInventorySnapshotCard, renderWarframeCard } from './warframe-cards.mjs';
 import { stripDataUriReplacer } from './wfdata.mjs';
+// R12 第一片：recommend 的 CommandRequest 消费链（args 由共享个人用例一次性建立）。
+import { assertCommandRequest, buildRecommendDecision, decodeCommandRequestString } from './command-request.mjs';
 
 const SNAPSHOT_KEY = Buffer.from([76, 69, 79, 45, 65, 76, 69, 67, 9, 69, 79, 45, 65, 76, 69, 67]);
 const SNAPSHOT_IV = Buffer.from([49, 50, 70, 71, 66, 51, 54, 45, 76, 69, 51, 45, 113, 61, 57, 0]);
@@ -843,7 +845,11 @@ export function parseAlecaMessage(message) {
 }
 
 export async function runAlecaMessage(message, options = {}) {
-  const parsed = parseAlecaMessage(message);
+  // R12 切片：recommend 的 CommandRequest 消费链——args 已由共享个人用例建立并
+  // 严格校验；这里只按请求路由，不再对原始命令做参数解析。其余命令保持原行为。
+  const request = options.request ? assertCommandRequest(options.request) : null;
+  if (request && request.commandId !== 'recommend') throw new Error('invalid command request: commandId is not supported by this executor');
+  const parsed = request ? { command: request.commandId, query: '' } : parseAlecaMessage(message);
   if (!parsed) return { handled: false };
   if (parsed.command === 'refresh-help') {
     return { handled: true, ok: true, command: parsed.command, text: '请确保 AlecaFrame 先于游戏启动，然后进入一次任务、中继站或道场并返回；加载完成后再发送“我的账号”。' };
@@ -1134,7 +1140,9 @@ export async function runAlecaMessage(message, options = {}) {
     const { userErrorFromDiagnostic, formatUserError } = await import('./user-error-contract.mjs');
     // R19/R17 切片：严格解析开遗物参数——筛选词、队伍、币种、偏好与商品目标必须可区分；
     // 未知或不支持的筛选不得静默落入不相关业务（「九重天」曾是奸商商品名误判）。
-    const parsedRecommend = parseRecommendCommand(parsed.query);
+    // R12 切片：共享用例已用 parseRecommendCommand 建立一次结构化 args（含失败/冲突
+    // 结果），这里只消费 args，不再二次解析。
+    const parsedRecommend = request ? request.args : parseRecommendCommand(parsed.query);
     if (!parsedRecommend.ok) {
       const understanding = formatRecommendUnderstanding(parsedRecommend.understanding);
       const data = {
@@ -1148,6 +1156,7 @@ export async function runAlecaMessage(message, options = {}) {
         userError: parsedRecommend.userError,
         fetchedAt: new Date().toISOString(),
       };
+      data.decision = buildRecommendDecision({ parsed: parsedRecommend, data, scope: request?.privacyScope || 'userPrivate' });
       return { handled: true, ok: false, command: 'recommend', query: parsed.query, data, mediaUrl: null, followupText: null, text: formatRecommend(data) };
     }
     const { mode, squad, preference, vaultFilter, fissureScope, tierFilter, traderTarget } = parsedRecommend;
@@ -1190,6 +1199,7 @@ export async function runAlecaMessage(message, options = {}) {
             ok: false, kind: 'fissure-recommend', query: parsed.query, error: 'no_match',
             understanding, userError, traderTarget, fetchedAt: new Date().toISOString(),
           };
+          data.decision = buildRecommendDecision({ parsed: parsedRecommend, data, scope: request?.privacyScope || 'userPrivate' });
           const steps = [...(userError.nextSteps || [])];
           return {
             handled: true, ok: false, command: 'recommend', query: parsed.query,
@@ -1207,6 +1217,7 @@ export async function runAlecaMessage(message, options = {}) {
           ok: false, kind: 'fissure-recommend', query: parsed.query, error: 'source_unavailable',
           understanding, userError, traderTarget, fetchedAt: new Date().toISOString(),
         };
+        data.decision = buildRecommendDecision({ parsed: parsedRecommend, data, scope: request?.privacyScope || 'userPrivate' });
         const text = `${formatRecommendUnderstanding(parsedRecommend.understanding)}\n${formatUserError(userError, { message: '奸商商品或市场成交数据读取失败，暂时无法计算动态盈亏线。' })}`;
         return { handled: true, ok: false, command: 'recommend', query: parsed.query, data, mediaUrl: null, followupText: null, text };
       }
@@ -1222,6 +1233,7 @@ export async function runAlecaMessage(message, options = {}) {
       ducatGoal,
       strategyOutputPath,
     });
+    data.decision = buildRecommendDecision({ parsed: parsedRecommend, data, scope: request?.privacyScope || 'userPrivate' });
     let mediaUrl = null;
     try {
       const { buildFissureRecommendCard } = await import('./warframe-cards.mjs');
@@ -1311,7 +1323,9 @@ async function main() {
   const [command, ...rest] = process.argv.slice(2);
   try {
     if (command === 'parse') {
-      out(await runAlecaMessage(rest.join(' ')));
+      out(await runAlecaMessage(rest.join(' '), {
+        request: decodeCommandRequestString(process.env.WARFRAME_COMMAND_REQUEST),
+      }));
       return;
     }
     out({ handled: false, ok: false, error: '用法：parse "<个人账号命令>"；可发送“帮助 账号”“帮助 遗物”或“帮助 商店”查看完整入口。' });
