@@ -90,6 +90,13 @@ SKILL.md 瘦身移入（2026-08-07）。这些规则的执行主体是脚本与 
 - 若社区表已有同名但效果为空，`learn` 允许同名效果补缺；仍未提供效果时返回 `effect-missing` 并保留 inbox，避免把“仅有名字”误当成完整覆盖
 - 周报卡增益行显示 {name, desc} 两行、自动换行不截断；漂移监控（`drift-report.mjs`）区分「缺中文名」（nameMissing，继续走 AI 查证）与「有中文名但缺效果」（effectMissing，社区表/词典的软漂移）
 
+## 请求级脱敏 trace（R17 第一切片）
+
+- 当前只覆盖 QQ 主硬拦截入口中的精确命令 `裂缝 九重天`；备用 ingress、模型工具和其他命令不写 trace，避免把尚未贯通投递确认的入口伪装成完整链路。事件顺序固定为 `received → route → authorization → facts → decision → render → delivery`，同一请求共用一个随机 `traceId`。
+- 本地 JSONL 信封只允许 `traceId/triggerType/commandId/privacyScopeHash/stage/startedAt/durationMs/source/freshness/resultCategory/retryCount/contentHash`；禁止 QQ target、发送者、用户原话、个人快照、订单/卖家、URL、响应体、堆栈和完整工具结果。公开/个人增强范围只保存固定文本的 SHA-256 截断值，媒体和事实只保存内容哈希。
+- `facts` 复用 worldstate 的 provider/cache/evidence 字段；`render` 只区分卡片形成、失败或跳过；`delivery` 只区分 QQ adapter 接受、服务端拒绝、发送失败或 adapter 不可用。不得从“形成卡片”推断“QQ 已接受”。
+- 默认保存在工作区 `.cache/warframe-trace.jsonl`，按总字节、trace 数和每 trace 阶段数三重压缩；损坏行跳过，写入/压缩/读取失败全部 fail-open，不得阻断查询。只读排障入口为 `node scripts/trace.mjs read`，不联网、不改变业务账本。
+
 ## 数据源漂移监控（只读诊断）
 
 - `scripts/drift-report.mjs` 是纯函数漂移检测模块：统计 + 可审计键样本，零凭据、零联网、零写入，禁止用于生产告警、cron、缓存写入或运行时改动

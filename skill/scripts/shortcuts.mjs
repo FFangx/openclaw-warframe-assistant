@@ -18,6 +18,8 @@ import { readAlecaJson, stripDataUriReplacer } from './wfdata.mjs';
 import { loadWorldState } from './worldstate-source.mjs';
 import { buildHelpSections, getHelpSection, listHelpSections, matchCommandText, resolveHelpTopic } from './command-registry.mjs';
 import { formatUserError, userError, userErrorFromDiagnostic } from './user-error-contract.mjs';
+// R17 第一片：代表链「裂缝 九重天」脱敏 trace（只接这一条链，见 trace.mjs 边界说明）。
+import { createTraceStore, decisionResultCategory, fissureContentHash, isRepresentativeChain, newTraceId, privacyScopeHash, worldstateEvidence } from './trace.mjs';
 // 规范路由常量（R5 数据源合同）：Market 只读端点基址。
 import { MARKET_BASE_URL } from './data-source-contract.mjs';
 
@@ -886,9 +888,16 @@ function splitFissureNode(value) {
 async function queryFissures(rawQuery = '', platform = DEFAULT_PLATFORM, options = {}) {
   if (platform === 'mobile') return { ok: false, kind: 'fissure', error: 'unsupported_platform', query: rawQuery };
   let state;
+  const factsStartedAt = Date.now();
   try {
     state = options.worldState || await (options.loadWorldState || loadWorldState)(platform);
+    if (typeof options.onFacts === 'function') {
+      await options.onFacts({ state, elapsedMs: Date.now() - factsStartedAt, startedAt: new Date(factsStartedAt).toISOString() });
+    }
   } catch (error) {
+    if (typeof options.onFacts === 'function') {
+      await options.onFacts({ error, elapsedMs: Date.now() - factsStartedAt, startedAt: new Date(factsStartedAt).toISOString() });
+    }
     return {
       ok: false,
       kind: 'fissure',
@@ -1904,7 +1913,37 @@ export function buildShortcutContextEnvelope(data, parsed = {}) {
   return { ok: true, kind: data.kind, query, scope: data.personalized ? 'personal' : 'public', summary, entities: [entity], nextActions: data.nextActions || [], fetchedAt: data.fetchedAt };
 }
 
+// —— R17 第一片：代表链「裂缝 九重天」脱敏 trace 辅助 ——
+// 只有精确的「裂缝 九重天」且显式提供 trace 存储（options.traceStore 或环境变量）才开启；
+// 插件通过 WARFRAME_TRACE_STORE/WARFRAME_TRACE_ID/WARFRAME_TRACE_TRIGGER 与子进程共享同一 traceId。
+// 本侧负责 facts / decision / render 三段；received / route / authorization / delivery 由插件侧记录。
+async function createRequestTrace(message, options) {
+  const storePath = options.traceStore || process.env.WARFRAME_TRACE_STORE;
+  if (!storePath || !isRepresentativeChain(message)) return null;
+  return {
+    store: createTraceStore({ filePath: storePath }),
+    traceId: options.traceId || process.env.WARFRAME_TRACE_ID || newTraceId(),
+    triggerType: options.traceTriggerType || process.env.WARFRAME_TRACE_TRIGGER || 'cli-shortcut',
+    privacyScopeHash: privacyScopeHash(
+      options.personalAllowed === true || process.env.WARFRAME_PERSONAL_OK === '1' ? 'personal' : 'public',
+    ),
+  };
+}
+
+async function emitTraceStage(trace, record) {
+  if (!trace) return;
+  try {
+    await trace.store.append({
+      traceId: trace.traceId,
+      triggerType: trace.triggerType,
+      privacyScopeHash: trace.privacyScopeHash,
+      ...record,
+    });
+  } catch { /* trace 记录失败绝不阻断主业务 */ }
+}
+
 export async function runShortcut(message, options = {}) {
+  const trace = await createRequestTrace(message, options);
   const parsed = parseShortcutMessage(message);
   if (!parsed) return { handled: false };
   if (parsed.command === 'help') {
@@ -2035,17 +2074,64 @@ export async function runShortcut(message, options = {}) {
   }
   const platform = options.platform || DEFAULT_PLATFORM;
   const crossplay = options.crossplay ?? DEFAULT_CROSSPLAY;
+  const queryStartedAt = Date.now();
+  let factsEvidence = null;
+  let factsElapsedMs = 0;
+  let factsEndedAt = null;
+  const onFacts = trace ? async (facts) => {
+    factsEvidence = worldstateEvidence(facts);
+    factsElapsedMs = Math.max(0, Number(facts.elapsedMs) || 0);
+    factsEndedAt = new Date().toISOString();
+    await emitTraceStage(trace, {
+      stage: 'facts',
+      startedAt: facts.startedAt || new Date(queryStartedAt).toISOString(),
+      durationMs: factsElapsedMs,
+      commandId: 'fissure',
+      source: factsEvidence.source,
+      freshness: factsEvidence.freshness,
+      resultCategory: factsEvidence.resultCategory,
+      retryCount: factsEvidence.retryCount,
+      contentHash: factsEvidence.contentHash,
+    });
+  } : null;
   const data = parsed.command === 'market' ? await queryMarket(parsed.query, platform, crossplay)
-    : parsed.command === 'fissure' ? await queryFissures(parsed.query, platform, options)
+    : parsed.command === 'fissure' ? await queryFissures(parsed.query, platform, { ...options, onFacts })
       : parsed.command === 'relic-farm' ? await queryRelicFarm(parsed.query, platform, crossplay, options)
       : await queryRelic(parsed.query, platform, crossplay);
+  if (trace) {
+    await emitTraceStage(trace, {
+      stage: 'decision',
+      startedAt: factsEndedAt || new Date(queryStartedAt).toISOString(),
+      durationMs: Math.max(0, Date.now() - queryStartedAt - factsElapsedMs),
+      commandId: 'fissure',
+      source: factsEvidence?.source || 'worldstate',
+      freshness: factsEvidence?.freshness || 'unavailable',
+      resultCategory: decisionResultCategory(data),
+      retryCount: factsEvidence?.retryCount || 0,
+      contentHash: fissureContentHash(data),
+    });
+  }
   data.nextActions = buildShortcutNextActions(data, parsed);
+  const renderStartedAt = Date.now();
   let mediaUrl = null;
   try {
     const renderShortcutCard = options.renderCard || renderCard;
     mediaUrl = await renderShortcutCard(data, options.cardDir || process.env.WARFRAME_CARD_DIR);
   } catch {
     mediaUrl = null;
+  }
+  if (trace) {
+    await emitTraceStage(trace, {
+      stage: 'render',
+      startedAt: new Date(renderStartedAt).toISOString(),
+      durationMs: Date.now() - renderStartedAt,
+      commandId: 'fissure',
+      source: 'local-renderer',
+      freshness: 'local',
+      resultCategory: !data.ok ? 'render-skipped' : mediaUrl ? 'card-created' : 'render-failed',
+      retryCount: 0,
+      contentHash: mediaUrl ? fissureContentHash(data) : '',
+    });
   }
   return {
     handled: true,

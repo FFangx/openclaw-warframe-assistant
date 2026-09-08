@@ -31,6 +31,8 @@ export async function executePublicUseCase(request, ports) {
     cardDir: request.cardDir,
     statePath: request.statePath,
     source: normalizeText(request.source),
+    // R17 第一片：代表链「裂缝 九重天」trace 上下文透传给执行端口（脚本运行环境变量）。
+    trace: request.trace || null,
   };
   try {
     let result;

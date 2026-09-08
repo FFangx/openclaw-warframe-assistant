@@ -8,6 +8,8 @@ import { commandToolSummary, isPersonalAccountCommand, isShortcut, isSubscriptio
 import { buildEvidenceEnvelope, STATE_ASSERTION_POLICY } from './evidence.mjs';
 import { classifyNaturalWarframeQuery, DYNAMIC_QUERY_POLICY } from './intent-policy.mjs';
 import { createContextBridge } from './context-bridge.mjs';
+// R17 第一片：代表链「裂缝 九重天」脱敏 trace（QQ 入口 received/authorization/delivery 三段）。
+import { authorizationResultCategory, contentHashOfFile, createQqTraceContext, deliveryResultCategory, isTraceTarget, recordQqTraceStage } from './trace-bridge.mjs';
 import { executeSubscriptionUseCase } from './subscription-usecase.mjs';
 import { executeWishlistUseCase, wishlistNeedsImmediateInspection } from './wishlist-usecase.mjs';
 import { createGatewayWishlistMailer } from './wishlist-gateway-mailer.mjs';
@@ -37,6 +39,9 @@ const weeklyState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe
 const notificationOutboxScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'notification-outbox.mjs');
 const cardDir = path.resolve(pluginDir, '..', '..', '..', '.cache', 'warframe-cards');
 const subscriptionCardDir = path.resolve(pluginDir, '..', '..', '..', 'media', 'qqbot', 'warframe-cards');
+// R17 第一片：代表链 trace 仓库（与 skill 侧默认路径一致，容量有界见 skill/scripts/trace.mjs）。
+const traceStorePath = path.resolve(pluginDir, '..', '..', '..', '.cache', 'warframe-trace.jsonl');
+const QQ_REPLY_TRACE = Symbol('warframe-qq-reply-trace');
 const shortCommandContext = createContextBridge();
 
 function contextBridgeKey(event: any = {}, ctx: any = {}): string | null {
@@ -732,11 +737,16 @@ function hasWarframeContext(prompt: string, messages: any[]): boolean {
   return /(?:Warframe|星际战甲|赏金|悬赏|遗物|裂缝|仲裁|尖刃弹头|Bladed Rounds|Prime|杜卡德|虚空商人|AlecaFrame|WFInfo)/iu.test(recent);
 }
 
-async function handleFastCommand(api: any, event: any): Promise<any | undefined> {
+async function handleFastCommand(api: any, event: any, traceTrigger: string | null = null): Promise<any | undefined> {
   if (!isQQChannel(event.channel) || (!isShortcut(event.content) && !isSubscriptionCommand(event.content))) return;
   // Wishlist owns delivery ordering (primary feedback before immediate market
   // follow-up), so every ingress hook routes it through the shared use case.
   if (isWishlistCommand(event.content)) return;
+  // R17 第一片：只为代表链「裂缝 九重天」开 trace；其余命令完全不埋点。
+  const traceReceivedAt = Date.now();
+  const trace = traceTrigger && (await isTraceTarget(String(event.content || '')))
+    ? await createQqTraceContext({ storePath: traceStorePath, triggerType: traceTrigger })
+    : null;
   try {
     if (isPersonalAccountCommand(event.content)) {
       const target = qqTarget(event);
@@ -809,10 +819,32 @@ async function handleFastCommand(api: any, event: any): Promise<any | undefined>
     }
     const target = qqTarget(event);
     const ownerId = String(event.senderId || '').trim().toLowerCase();
+    const personalAllowed = !event.isGroup && isExactOwner(api, event.senderId);
+    if (trace) {
+      // 外层 registry gate 已完成真实路由，因此按实际处理顺序记录
+      // received → route → authorization；子进程只补 facts 之后的阶段。
+      await recordQqTraceStage(trace, {
+        stage: 'received', startedAt: new Date(traceReceivedAt).toISOString(),
+        durationMs: Date.now() - traceReceivedAt, source: 'qq-channel', freshness: 'local',
+        resultCategory: 'received', retryCount: 0, contentHash: '', scope: 'public',
+      });
+      await recordQqTraceStage(trace, {
+        stage: 'route', startedAt: new Date().toISOString(), durationMs: 0,
+        source: 'command-registry', freshness: 'local', resultCategory: 'matched',
+        retryCount: 0, contentHash: '', scope: 'public',
+      });
+      const authCategory = authorizationResultCategory(personalAllowed, event.isGroup);
+      await recordQqTraceStage(trace, {
+        stage: 'authorization', startedAt: new Date().toISOString(), durationMs: 0,
+        source: 'local-policy', freshness: 'local', resultCategory: authCategory,
+        retryCount: 0, contentHash: '',
+        scope: personalAllowed && !event.isGroup ? 'personal' : 'public',
+      });
+    }
     const outcome = await runPublicCommandUseCase(api, {
       source: 'fast-command', text: event.content, channel: event.channel, target,
-      actorId: ownerId, personalAllowed: !event.isGroup && isExactOwner(api, event.senderId),
-      isGroup: Boolean(event.isGroup), cardDir,
+      actorId: ownerId, personalAllowed, isGroup: Boolean(event.isGroup), cardDir,
+      ...(trace ? { trace: { storePath: trace.storePath, traceId: trace.traceId, triggerType: trace.triggerType } } : {}),
     });
     const result = outcome.result;
     return {
@@ -821,6 +853,7 @@ async function handleFastCommand(api: any, event: any): Promise<any | undefined>
       replyToId: event.messageId,
       isError: result.ok === false,
       raw: result,
+      ...(trace ? { [QQ_REPLY_TRACE]: trace } : {}),
     };
   } catch (error) {
     api.logger.error(`Warframe shortcut failed: ${String(error)}`);
@@ -828,46 +861,75 @@ async function handleFastCommand(api: any, event: any): Promise<any | undefined>
       text: 'Warframe 查询暂时失败，请稍后重试。',
       replyToId: event.messageId,
       isError: true,
+      ...(trace ? { [QQ_REPLY_TRACE]: trace } : {}),
     };
   }
 }
 
 async function sendDirectQQReply(api: any, event: any, ctx: any, reply: any): Promise<void> {
-  const target = qqTarget({
-    isGroup: event.isGroup,
-    conversationId: ctx.conversationId,
-    senderId: event.senderId || ctx.senderId,
-  });
-  if (!target) throw new Error('missing QQ outbound target');
-
-  const adapter = await api.runtime.channel.outbound.loadAdapter('qqbot');
-  if (!adapter) throw new Error('QQ outbound adapter is unavailable');
-
-  const common = {
-    cfg: api.config,
-    to: target,
-    accountId: ctx.accountId,
-    replyToId: event.replyToId || ctx.replyToId,
-    mediaLocalRoots: [cardDir, subscriptionCardDir],
+  const trace = (reply as any)?.[QQ_REPLY_TRACE] || null;
+  const deliveryStartedAt = Date.now();
+  const recordDelivery = async (category: string): Promise<void> => {
+    if (!trace) return;
+    await recordQqTraceStage(trace, {
+      stage: 'delivery', startedAt: new Date(deliveryStartedAt).toISOString(),
+      durationMs: Date.now() - deliveryStartedAt, source: 'qqbot-adapter', freshness: 'local',
+      resultCategory: category, retryCount: 0,
+      contentHash: reply.mediaUrl ? await contentHashOfFile(reply.mediaUrl) : '',
+    });
   };
+  let adapterReady = false;
+  let deliveryRecorded = false;
+  try {
+    const target = qqTarget({
+      isGroup: event.isGroup,
+      conversationId: ctx.conversationId,
+      senderId: event.senderId || ctx.senderId,
+    });
+    if (!target) throw new Error('missing QQ outbound target');
 
-  let result: any;
-  if (reply.mediaUrl) {
-    if (!adapter.sendMedia) throw new Error('QQ outbound adapter cannot send media');
-    const followup = /^\/w\s+/iu.test(String(reply.text || '').trim()) ? String(reply.text).trim() : '';
-    result = await adapter.sendMedia({
-      ...common,
-      text: followup,
-      mediaUrl: reply.mediaUrl,
-    });
-  } else {
-    if (!adapter.sendText) throw new Error('QQ outbound adapter cannot send text');
-    result = await adapter.sendText({
-      ...common,
-      text: String(reply.text || 'Warframe 快捷命令未能生成结果。'),
-    });
+    const adapter = await api.runtime.channel.outbound.loadAdapter('qqbot');
+    if (!adapter) throw new Error('QQ outbound adapter is unavailable');
+
+    const common = {
+      cfg: api.config,
+      to: target,
+      accountId: ctx.accountId,
+      replyToId: event.replyToId || ctx.replyToId,
+      mediaLocalRoots: [cardDir, subscriptionCardDir],
+    };
+
+    let result: any;
+    if (reply.mediaUrl) {
+      if (!adapter.sendMedia) throw new Error('QQ outbound adapter cannot send media');
+      adapterReady = true;
+      const followup = /^\/w\s+/iu.test(String(reply.text || '').trim()) ? String(reply.text).trim() : '';
+      result = await adapter.sendMedia({
+        ...common,
+        text: followup,
+        mediaUrl: reply.mediaUrl,
+      });
+    } else {
+      if (!adapter.sendText) throw new Error('QQ outbound adapter cannot send text');
+      adapterReady = true;
+      result = await adapter.sendText({
+        ...common,
+        text: String(reply.text || 'Warframe 快捷命令未能生成结果。'),
+      });
+    }
+    if (result?.error) {
+      await recordDelivery(deliveryResultCategory(result));
+      deliveryRecorded = true;
+      throw new Error(`QQ delivery failed: ${String(result.error)}`);
+    }
+    await recordDelivery(deliveryResultCategory(result));
+    deliveryRecorded = true;
+  } catch (error) {
+    if (!deliveryRecorded) {
+      await recordDelivery(adapterReady ? 'delivery-failed' : deliveryResultCategory(null, false));
+    }
+    throw error;
   }
-  if (result?.error) throw new Error(`QQ delivery failed: ${String(result.error)}`);
 }
 
 async function runWishlistIngressUseCase(api: any, event: any, ctx: any, source: string): Promise<any> {
@@ -998,7 +1060,14 @@ async function runPublicCommandUseCase(api: any, request: any): Promise<any> {
     queryArbitration: () => runJsonScript(subscriptionScript, ['query-arbitration', '--state', subscriptionState, '--card-dir', cardDir]),
     queryIntel: (command: any) => runJsonScript(subscriptionScript, ['query-intel', '--type', command.intelType, '--state', subscriptionState, '--card-dir', cardDir]),
     runPersonalTrader: () => runJsonScript(alecaScript, ['parse', '奸商推荐']),
-    runShortcut: (command: any) => runJsonScript(shortcutScript, ['parse', command.text], 60_000, { WARFRAME_PERSONAL_OK: command.personalAllowed ? '1' : '' }),
+    runShortcut: (command: any) => runJsonScript(shortcutScript, ['parse', command.text], 60_000, {
+      WARFRAME_PERSONAL_OK: command.personalAllowed ? '1' : '',
+      ...(command.trace ? {
+        WARFRAME_TRACE_STORE: command.trace.storePath,
+        WARFRAME_TRACE_ID: command.trace.traceId,
+        WARFRAME_TRACE_TRIGGER: command.trace.triggerType,
+      } : {}),
+    }),
     log: (_level: string, message: string, error: unknown) => api.logger.error(`Warframe ${message}: ${String(error)}`),
   });
 }
@@ -1289,7 +1358,7 @@ export default definePluginEntry({
         }
         const reply = await handleFastCommand(api, {
           ...ingressEvent,
-        });
+        }, 'qq-before-dispatch');
         if (!reply) throw new Error('matched command produced no reply');
         await sendDirectQQReply(api, event, ctx, reply);
         const personalAllowed = !Boolean(event.isGroup || agentContextIsGroup(ctx)) && isExactOwner(api, event.senderId || ctx.senderId);
