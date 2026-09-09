@@ -1033,23 +1033,58 @@ async function queryFissures(rawQuery = '', platform = DEFAULT_PLATFORM, options
   };
 }
 
-function formatFissures(result) {
-  if (!result.ok) {
-    if (result.error === 'source_unavailable') {
-      return formatUserError(result.userError, {
-        message: `当前无法取得“${result.query || '全部'}”裂缝的最新世界状态。`,
+/**
+ * 裂缝展示视图：把执行结果收敛为 { decision, facts }。
+ * decision 是唯一语义来源（筛选理解/候选与顺序/结论等级/缺价与陈旧证据）；
+ * facts 只携带纯展示、非业务判断的事实（时间、推荐口径、错误回显）。
+ * 绝不携带完整原始工具结果或任何个人标识。
+ */
+export function fissureView(result) {
+  return {
+    decision: result?.decision || null,
+    facts: {
+      fetchedAt: result?.fetchedAt || null,
+      recommendationModeZh: result?.recommendationModeZh || null,
+      error: result?.error || null,
+      userError: result?.userError || null,
+      nextActions: result?.nextActions || [],
+    },
+  };
+}
+
+/**
+ * 裂缝文字兜底：只消费 { decision, facts }。
+ * - 无结果/来源故障 ← decision.conclusion === 'insufficient'（配合 facts.error 分类）；
+ * - 筛选与候选顺序/分区 ← decision.understanding + candidates；
+ * - 缺价/推荐语义 ← 候选投影 recommendation.* + facts（个人增强纯展示事实）；
+ * - 陈旧证据语义 ← decision.evidence.facts.freshness（stale/stale-cache 给出诚实来源说明）。
+ */
+export function formatFissures(view) {
+  const decision = view?.decision || {};
+  const facts = view?.facts || {};
+  const understanding = decision.understanding || {};
+  if (decision.conclusion === 'insufficient') {
+    if (facts.error === 'source_unavailable') {
+      return formatUserError(facts.userError, {
+        message: `当前无法取得“${understanding.query || '全部'}”裂缝的最新世界状态。`,
       });
     }
-    const steps = result.userError?.nextSteps?.length ? `\n下一步：${result.userError.nextSteps.join('｜')}` : '';
-    return `当前没有符合“${result.query || '裂缝'}”的活动裂缝。${steps}`;
+    const steps = facts.userError?.nextSteps?.length ? `\n下一步：${facts.userError.nextSteps.join('｜')}` : '';
+    return `当前没有符合“${understanding.query || '裂缝'}”的活动裂缝。${steps}`;
   }
-  const lines = [`当前裂缝：${result.total} 条`];
-  for (const item of [...result.normal, ...result.hard]) {
+  const candidates = decision.candidates || [];
+  const normal = candidates.filter((item) => !item.hard);
+  const hard = candidates.filter((item) => item.hard);
+  const personalized = candidates.some((item) => item.recommendation?.relic);
+  const freshness = decision.evidence?.facts?.freshness || 'unknown';
+  const sourceLabel = ['stale', 'stale-cache'].includes(freshness) ? '世界状态（缓存快照）' : '世界状态';
+  const lines = [`当前裂缝：${candidates.length} 条`];
+  for (const item of [...normal, ...hard]) {
     const tags = (item.tags || []).map((tag) => tag.zh).join('/');
-    const rec = item.recommendation?.relic ? ` · 推荐 ${item.recommendation.relic.zh} ×${item.recommendation.relic.count}（${item.recommendation.relic.vaulted ? '已入库' : '未入库'}）` : '';
+    const rec = personalized && item.recommendation?.relic ? ` · 推荐 ${item.recommendation.relic.zh} ×${item.recommendation.relic.count}（${item.recommendation.relic.vaulted ? '已入库' : '未入库'}）` : '';
     lines.push(`• ${item.hard ? '钢铁' : '普通'} · ${ERA_ZH[item.tier] || item.tier} ${item.mission} · ${item.planet} ${item.node}${tags ? ` · ${tags}` : ''}${rec} · ${formatTime(item.expiry)}`);
   }
-  lines.push(`来源：世界状态 · ${formatTime(result.fetchedAt)}`);
+  lines.push(`来源：${sourceLabel} · ${formatTime(facts.fetchedAt)}`);
   return lines.join('\n');
 }
 
@@ -1504,7 +1539,7 @@ async function renderCard(data, cardDir) {
   if (!cardDir || !data?.ok) return null;
   const browser = await findBrowser();
   if (!browser) return null;
-  if (data.kind === 'fissure') return renderWarframeCard(buildFissureQueryCard(data), cardDir);
+  if (data.kind === 'fissure') return renderWarframeCard(buildFissureQueryCard(fissureView(data)), cardDir);
   // 物品图在渲染前解析（下载+缓存+base64），失败保持 null 无图降级；放这里不进模型注入素材
   if (data.kind === 'market' && data.item && data.item.iconDataUri === undefined) {
     const [{ marketDisplayImageUrl }, { imageDataUri, primeWarframePartIconDataUri }] = await Promise.all([import('./drops.mjs'), import('./wfdata.mjs')]);
@@ -2175,7 +2210,7 @@ export async function runShortcut(message, options = {}) {
     mediaUrl,
     followupText: mediaUrl ? compactFollowup(data) : null,
     text: parsed.command === 'market' ? formatMarket(data)
-      : parsed.command === 'fissure' ? formatFissures(data)
+      : parsed.command === 'fissure' ? formatFissures(fissureView(data))
         : parsed.command === 'relic-farm' ? formatRelicFarm(data) : formatRelic(data),
   };
 }
@@ -2208,7 +2243,7 @@ async function main() {
     }
     if (command === 'fissure') {
       const data = await queryFissures(rest.join(' '));
-      out({ data, text: formatFissures(data) });
+      out({ data, text: formatFissures(fissureView(data)) });
       return;
     }
     out({ handled: false, error: '用法：parse <消息>｜market <物品>｜relic <遗物或物品>｜fissure [筛选条件]' });

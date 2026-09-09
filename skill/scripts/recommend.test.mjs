@@ -1,10 +1,22 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildWfInfoDucatStrategy, classifyFissure, formatRecommend, formatRecommendFollowup, formatRecommendUnderstanding, normalizeOfficialFissureWorldState, parseDucatRecommendTarget, parseFissurePreference, parseFissureScope, parseFissureTier, parseRecommendCommand, parseRelicVaultFilter, recommendFissures, recommendRefinement } from './recommend.mjs';
+import { buildWfInfoDucatStrategy, classifyFissure, formatRecommend, formatRecommendFollowup, formatRecommendUnderstanding, normalizeOfficialFissureWorldState, parseDucatRecommendTarget, parseFissurePreference, parseFissureScope, parseFissureTier, parseRecommendCommand, parseRelicVaultFilter, recommendFissures, recommendRefinement, recommendView } from './recommend.mjs';
 import { parseAlecaMessage } from './alecaframe.mjs';
-import { parseNaturalWorldQuestion, parseShortcutMessage, runShortcut } from './shortcuts.mjs';
+import { parseNaturalWorldQuestion, parseShortcutMessage, runShortcut, fissureView } from './shortcuts.mjs';
 import { buildFissureQueryCard, buildFissureRecommendCard, buildRefineRecommendCard } from './warframe-cards.mjs';
+import { buildFissureDecision, buildRecommendDecision } from './command-request.mjs';
+
+// R12：Presentation 只消费 { decision, facts }；测试通过正式 Decision 构建器建立决策，
+// 再交给 recommendView / fissureView 收敛为视图。
+function viewOf(data, query = '') {
+  const parsed = parseRecommendCommand(query);
+  return recommendView({ ...data, decision: buildRecommendDecision({ parsed, data }) });
+}
+
+function fissureViewOf(result) {
+  return fissureView(result);
+}
 
 const relics = [{ baseName: 'Lith T1', count: 7, refinement: 'Intact', vaulted: true }];
 const rewards = [
@@ -22,13 +34,13 @@ const prices = Object.fromEntries(rewards.map((reward, index) => [reward.slug, {
 }]));
 const localDb = { rewardsByBase: new Map([['Lith T1', rewards]]) };
 
-test('formats recommendation follow-up from result data with safe defaults', () => {
+test('formats recommendation follow-up from the Decision with safe defaults', () => {
   assert.equal(
-    formatRecommendFollowup({ mode: 'plat', squad: 1 }),
+    formatRecommendFollowup({ decision: { understanding: { mode: 'plat', squad: 1, preference: 'balanced', vaultFilter: 'all', fissureScope: 'all' } }, facts: { squad: 1 } }),
     '当前为赚白金·全部裂缝·综合·全部遗物·单人口径。',
   );
   assert.equal(
-    formatRecommendFollowup({ mode: 'ducat', fissureScope: 'storm', preference: 'yield', vaultFilter: 'unvaulted', squad: 4 }),
+    formatRecommendFollowup({ decision: { understanding: { mode: 'ducat', squad: 4, preference: 'yield', vaultFilter: 'unvaulted', fissureScope: 'storm' } }, facts: { squad: 4 } }),
     '当前为普通杜卡德·仅九重天·收益·未入库·4人组队口径。',
   );
 });
@@ -136,10 +148,10 @@ test('开遗物严格区分商品目标、明确对标、不支持筛选与冲�
   const conflict = parseRecommendCommand('钢铁 九重天');
   assert.equal(conflict.ok, false);
   assert.equal(conflict.issues[0].reason, 'conflicting_scope');
-  assert.match(formatRecommend({
-    ok: false, error: 'unsupported_input', understanding: formatRecommendUnderstanding(conflict.understanding),
-    unsupported: conflict.unsupported, issues: conflict.issues, userError: conflict.userError,
-  }), /参数冲突.*帮助 遗物/us);
+  assert.match(formatRecommend(recommendView({
+    ok: false, error: 'unsupported_input', unsupported: conflict.unsupported, issues: conflict.issues, userError: conflict.userError,
+    decision: buildRecommendDecision({ parsed: conflict, data: { ok: false, error: 'unsupported_input' } }),
+  })), /参数冲突.*帮助 遗物/us);
 });
 
 test('parses fissure eras as filters instead of trader item names', () => {
@@ -191,7 +203,7 @@ test('trader target filters by break-even then ranks own-relic Ducat expectation
   assert.equal(targeted.rows[0].targetEconomy.expectedDucats, 45);
   assert.equal(targeted.rows[0].targetEconomy.expectedPlat, 2);
   assert.equal(targeted.rows[0].targetEconomy.efficiency, 22.5);
-  const card = buildFissureRecommendCard(targeted).html;
+  const card = buildFissureRecommendCard(viewOf(targeted, '杜卡德 测试奸商商品')).html;
   assert.match(card, /测试奸商商品/u);
   assert.match(card, /立即可开/u);
   assert.match(card, /WFInfo 按实际四选一守保本线/u);
@@ -222,7 +234,7 @@ test('trader target adds three obtainable unowned relics with sources', async ()
   assert.equal(data.acquireRows.length, 1);
   assert.equal(data.acquireRows[0].relic.base, 'Lith A1');
   assert.equal(data.acquireRows[0].sources[0].place, '地球 Hepit（捕获）');
-  const card = buildFissureRecommendCard(data).html;
+  const card = buildFissureRecommendCard(viewOf(data, '杜卡德 测试商品')).html;
   assert.match(card, /建议获取/u);
   assert.match(card, /地球 Hepit（捕获）/u);
 });
@@ -237,7 +249,7 @@ test('vault filter only recommends matching relics already present in inventory'
   assert.equal(unvaulted.vaultFilter, 'unvaulted');
   assert.equal(unvaulted.appraisedCount, 1);
   assert.equal(unvaulted.rows.every((row) => row.relic.base === 'Lith U1' && row.relic.vaulted === false), true);
-  const unvaultedCard = buildFissureRecommendCard(unvaulted).html;
+  const unvaultedCard = buildFissureRecommendCard(viewOf(unvaulted, '未入库')).html;
   assert.match(unvaultedCard, /未入库/u);
   assert.doesNotMatch(unvaultedCard, /当前可获取/u);
 
@@ -250,7 +262,7 @@ test('vault filter reports when inventory has no matching relics', async () => {
   const data = await recommendFissures(relics, { vaultFilter: 'unvaulted', worldState, localDb, prices });
   assert.equal(data.ok, false);
   assert.equal(data.error, 'no_relics_for_vault_filter');
-  assert.match(formatRecommend(data), /没有“未入库”遗物/u);
+  assert.match(formatRecommend(viewOf(data, '未入库')), /没有“未入库”遗物/u);
 });
 
 test('labels mission experience without inventing a numeric time factor', () => {
@@ -318,13 +330,13 @@ test('Steel Path scope only returns Steel Path fissures', async () => {
   assert.equal(data.fissureScope, 'steel');
   assert.equal(data.rows.length, 1);
   assert.equal(data.rows.every((row) => row.hard), true);
-  assert.match(buildFissureRecommendCard(data).html, /仅钢铁/u);
+  assert.match(buildFissureRecommendCard(viewOf(data, '钢铁')).html, /仅钢铁/u);
 
   const empty = await recommendFissures(relics, {
     fissureScope: 'steel', worldState: { fissures: [fissure('normal', 'Capture')] }, localDb, prices,
   });
   assert.equal(empty.error, 'no_steel_fissures');
-  assert.match(formatRecommend(empty), /当前没有.*钢铁裂缝/u);
+  assert.match(formatRecommend(viewOf(empty, '钢铁')), /当前没有.*钢铁裂缝/u);
 });
 
 test('九重天 scope 只返回虚空风暴，并为当前无风暴给出相关下一步', async () => {
@@ -333,7 +345,7 @@ test('九重天 scope 只返回虚空风暴，并为当前无风暴给出相关�
   assert.equal(data.fissureScope, 'storm');
   assert.equal(data.rows.length, 1);
   assert.equal(data.rows[0].storm, true);
-  assert.match(buildFissureRecommendCard(data).html, /仅九重天/u);
+  assert.match(buildFissureRecommendCard(viewOf(data, '单人 九重天')).html, /仅九重天/u);
 
   const empty = await recommendFissures(relics, {
     fissureScope: 'storm', worldState: { fissures: [fissure('normal', 'Capture')] }, localDb, prices,
@@ -341,7 +353,7 @@ test('九重天 scope 只返回虚空风暴，并为当前无风暴给出相关�
   });
   assert.equal(empty.error, 'no_storm_fissures');
   assert.equal(empty.userError.code, 'no_match');
-  assert.match(formatRecommend(empty), /已理解.*仅九重天.*当前没有.*九重天.*裂缝.*裂缝 九重天/us);
+  assert.match(formatRecommend(viewOf(empty, '单人 九重天')), /已理解.*仅九重天.*当前没有.*九重天.*裂缝.*裂缝 九重天/us);
 });
 
 test('ranks distinct relics by value before expanding each to at most two routes', async () => {
@@ -376,7 +388,7 @@ test('ranks distinct relics by value before expanding each to at most two routes
     assert.equal(routes.length, 2);
     assert.equal(new Set(routes.map((row) => row.id)).size, 2);
   }
-  assert.match(buildFissureRecommendCard(data).html, /每种最多 2 条路线/u);
+  assert.match(buildFissureRecommendCard(viewOf(data)).html, /每种最多 2 条路线/u);
 });
 
 test('fissure-first perspective keeps every fissure once and may repeat its best compatible relic', async () => {
@@ -401,7 +413,7 @@ test('fissure-first perspective keeps owned relics when platinum statistics are 
   assert.equal(data.rows.every((row) => row.valuation.fallback === 'ducat'), true);
   assert.equal(data.rows.every((row) => row.expectedValue === null), true);
   assert.equal(data.valuationIncompleteCount, worldState.fissures.length);
-  const card = buildFissureRecommendCard(data).html;
+  const card = buildFissureRecommendCard(viewOf(data, '开遗物 九重天')).html;
   assert.match(card, /白金估值暂缺/u);
   assert.match(card, /已按杜卡德兜底/u);
   assert.doesNotMatch(card, /当前没有能配上库存遗物的裂缝/u);
@@ -438,29 +450,33 @@ test('merged fissure card shows all task labels and only exposes inventory in pe
     expiry: new Date(Date.now() + 60 * 60 * 1000).toISOString(), hard: false, storm: false,
     tags: [{ key: 'speed', zh: '速刷' }],
   };
-  const publicHtml = buildFissureQueryCard({
-    title: '当前虚空裂缝', normal: [baseRow], hard: [], normalTotal: 1, hardTotal: 0, total: 1, fetchedAt: new Date().toISOString(), personalized: false,
-  }).html;
+  const decisionOf = (rows, { ok = true, scope = 'public' } = {}) => buildFissureDecision({
+    filters: { query: '', hardOnly: false, normalOnly: false, speedOnly: false, stormOnly: false, era: null, missions: [] },
+    rows, evidence: { source: 'api.warframe.com', scope: 'worldstate', freshness: 'fresh', fetchedAt: new Date().toISOString() },
+    scope, ok,
+  });
+  const publicHtml = buildFissureQueryCard(fissureViewOf({
+    decision: decisionOf([baseRow]), fetchedAt: new Date().toISOString(), personalized: false,
+  })).html;
   assert.match(publicHtml, /普通/u);
   assert.match(publicHtml, /速刷/u);
   assert.doesNotMatch(publicHtml, /前纪 D8/u);
 
-  const personalHtml = buildFissureQueryCard({
-    title: '当前虚空裂缝', normal: [{ ...baseRow, recommendation: { relic: { zh: '古纪 T1', count: 7, vaulted: true }, expectedValue: 12, expectedDucats: 40, refineZh: '无瑕' } }],
-    hard: [], normalTotal: 1, hardTotal: 0, total: 1, fetchedAt: new Date().toISOString(), personalized: true, recommendationModeZh: '白金',
-  }).html;
+  const personalHtml = buildFissureQueryCard(fissureViewOf({
+    decision: decisionOf([{ ...baseRow, recommendation: { relic: { base: 'Lith T1', zh: '古纪 T1', count: 7, vaulted: true }, expectedValue: 12, expectedDucats: 40, refineZh: '无瑕' } }], { scope: 'personal' }),
+    fetchedAt: new Date().toISOString(), personalized: true, recommendationModeZh: '白金',
+  })).html;
   assert.match(personalHtml, /推荐 古纪 T1/u);
   assert.match(personalHtml, /已入库/u);
 
-  const incompleteHtml = buildFissureQueryCard({
-    title: '当前虚空裂缝',
-    normal: [{ ...baseRow, recommendation: {
-      relic: { zh: '古纪 T1', count: 7, vaulted: true }, expectedValue: null, expectedDucats: 40,
+  const incompleteHtml = buildFissureQueryCard(fissureViewOf({
+    decision: decisionOf([{ ...baseRow, recommendation: {
+      relic: { base: 'Lith T1', zh: '古纪 T1', count: 7, vaulted: true }, expectedValue: null, expectedDucats: 40,
       refineZh: null, valuation: { priceReliable: false, missingPriceCount: 1, fallback: 'ducat' },
-    } }],
-    hard: [], normalTotal: 1, hardTotal: 0, total: 1, fetchedAt: new Date().toISOString(),
+    } }], { scope: 'personal' }),
+    fetchedAt: new Date().toISOString(),
     personalized: true, recommendationModeZh: '白金', recommendationValuationIncompleteCount: 1,
-  }).html;
+  })).html;
   assert.match(incompleteHtml, /推荐 古纪 T1/u);
   assert.match(incompleteHtml, /白金估值暂缺/u);
   assert.match(incompleteHtml, /已按杜卡德兜底/u);
@@ -503,7 +519,7 @@ test('裂缝九重天真实命令链保留估值不完整的库存推荐', async
   assert.equal(result.data.normal[0].recommendation.relic.zh, '后纪 T1');
   assert.equal(result.data.normal[0].recommendation.valuation.priceReliable, false);
   assert.equal(renderedData, result.data);
-  const html = buildFissureQueryCard(result.data).html;
+  const html = buildFissureQueryCard(fissureViewOf(result.data)).html;
   assert.match(html, /推荐 后纪 T1/u);
   assert.match(html, /白金估值暂缺/u);
   assert.doesNotMatch(html, /未匹配库存遗物/u);
@@ -512,7 +528,7 @@ test('裂缝九重天真实命令链保留估值不完整的库存推荐', async
 test('裂缝与精炼推荐保留并展示遗物入库状态', async () => {
   const fissureData = await run('balanced');
   assert.equal(fissureData.rows[0].relic.vaulted, true);
-  const fissureCard = buildFissureRecommendCard(fissureData).html;
+  const fissureCard = buildFissureRecommendCard(viewOf(fissureData)).html;
   assert.match(fissureCard, /已入库/u);
   assert.match(fissureCard, /建议(?:光辉|无瑕|不精炼)/u);
   assert.match(fissureCard, /价格优先今日中位，样本不足取90日/u);

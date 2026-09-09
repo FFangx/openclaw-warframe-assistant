@@ -15,7 +15,9 @@
 //   schema/体积/commandId/privacyScope 校验，非法或超限直接失败，绝不静默回退重解析；
 // - 未覆盖命令（其余 24 个）不建立请求，保持原有行为；
 // - Decision：本模块只产出「筛选理解 + 候选 + 结论等级 + 证据引用」四类内容；
-//   本切片先让执行结果与 followup 共享该对象，完整 Presentation 迁移留在 R12 后续切片。
+//   候选投影只携带渲染所需、非业务判断的展示事实（中文标签/时间戳/推荐摘要），
+//   卡片与文字 Presentation 只消费该 Decision（+纯展示 facts），不再从旧 data
+//   独立推导筛选、候选顺序、结论等级或缺价/陈旧证据语义。
 //
 // 安全边界（硬规则）：
 // - 拒绝未知顶层键（防走私 target/sender/raw text/快照/工具结果）；
@@ -250,18 +252,51 @@ export function deriveRecommendRequestFromFissure(request) {
 }
 
 // —— Decision（筛选理解/候选/结论等级/证据引用）——
+// 候选投影只允许携带「渲染所需、非业务判断」的展示事实（中文标签、时间戳、推荐摘要），
+// 不携带完整原始工具结果、库存原文或任何个人标识。
 
-function fissureCandidate(row) {
+function fissureRecommendationProjection(rec) {
+  if (!rec || typeof rec !== 'object') return null;
+  return {
+    relic: {
+      base: String(rec.relic?.base ?? ''),
+      zh: String(rec.relic?.zh ?? ''),
+      count: Number(rec.relic?.count) || 0,
+      vaulted: Boolean(rec.relic?.vaulted),
+    },
+    expectedValue: rec.expectedValue ?? null,
+    expectedDucats: rec.expectedDucats ?? null,
+    refineZh: rec.refineZh || null,
+    targetEconomy: rec.targetEconomy
+      ? {
+          expectedDucats: rec.targetEconomy.expectedDucats ?? null,
+          expectedPlat: rec.targetEconomy.expectedPlat ?? null,
+        }
+      : null,
+    valuation: rec.valuation
+      ? { priceReliable: rec.valuation.priceReliable ?? null }
+      : null,
+  };
+}
+
+function fissureCandidate(row, includeRecommendation = false) {
+  const recommendation = includeRecommendation ? fissureRecommendationProjection(row?.recommendation) : null;
   return {
     id: String(row?.id || ''),
     tier: String(row?.tier || ''),
     missionType: String(row?.missionType || ''),
+    mission: String(row?.mission || row?.missionType || ''),
     node: String(row?.node || ''),
     planet: String(row?.planet || ''),
+    faction: String(row?.faction || ''),
     hard: Boolean(row?.hard),
     storm: Boolean(row?.storm),
-    hasRecommendation: Boolean(row?.recommendation),
-    priceReliable: row?.recommendation?.valuation?.priceReliable ?? null,
+    tags: (Array.isArray(row?.tags) ? row.tags : [])
+      .map((tag) => ({ key: String(tag?.key ?? ''), zh: String(tag?.zh ?? '') })),
+    expiry: row?.expiry ?? null,
+    hasRecommendation: Boolean(recommendation),
+    priceReliable: recommendation?.valuation?.priceReliable ?? null,
+    recommendation,
   };
 }
 
@@ -272,11 +307,12 @@ function fissureCandidate(row) {
  */
 export function buildFissureDecision({ filters, rows, evidence, scope = 'public', ok = true }) {
   const freshness = evidence?.freshness || 'unknown';
+  const includeRecommendation = scope === 'personal';
   return {
     commandId: 'fissure',
     scope,
     understanding: filters || null,
-    candidates: (Array.isArray(rows) ? rows : []).map(fissureCandidate),
+    candidates: (Array.isArray(rows) ? rows : []).map((row) => fissureCandidate(row, includeRecommendation)),
     conclusion: !ok ? 'insufficient'
       : (scope === 'personal' || !['fresh', 'cache-hit'].includes(freshness)) ? 'inferred'
         : 'confirmed',
@@ -292,29 +328,65 @@ export function buildFissureDecision({ filters, rows, evidence, scope = 'public'
   };
 }
 
-function recommendCandidate(row) {
+function recommendCandidate(row, kind = 'route') {
   return {
+    id: String(row?.id || ''),
+    kind,
     relicBase: String(row?.relic?.base || ''),
     relicZh: String(row?.relic?.zh || ''),
     count: Number(row?.relic?.count) || 0,
+    relicVaulted: Boolean(row?.relic?.vaulted),
     tier: String(row?.tier || ''),
+    missionZh: String(row?.missionZh || ''),
     node: String(row?.node || ''),
     planet: String(row?.planet || ''),
+    hard: Boolean(row?.hard),
+    storm: Boolean(row?.storm),
+    tags: (Array.isArray(row?.tags) ? row.tags : [])
+      .map((tag) => ({ key: String(tag?.key ?? ''), zh: String(tag?.zh ?? '') })),
+    expiry: row?.expiry ?? null,
     expectedValue: row?.expectedValue ?? null,
     expectedDucats: row?.expectedDucats ?? null,
     priceReliable: row?.valuation?.priceReliable ?? null,
+    refineZh: row?.refineZh || null,
+    targetEconomy: row?.targetEconomy
+      ? {
+          expectedDucats: row.targetEconomy.expectedDucats ?? null,
+          expectedPlat: row.targetEconomy.expectedPlat ?? null,
+          efficiency: row.targetEconomy.efficiency ?? null,
+          expectedRuns: row.targetEconomy.expectedRuns ?? null,
+          opportunityPlat: row.targetEconomy.opportunityPlat ?? null,
+        }
+      : null,
+    topReward: row?.topReward
+      ? { zhName: String(row.topReward.zhName ?? ''), price: row.topReward.price ?? null }
+      : null,
+    topDucat: row?.topDucat
+      ? { zhName: String(row.topDucat.zhName ?? ''), ducats: row.topDucat.ducats ?? null }
+      : null,
+    sources: (Array.isArray(row?.sources) ? row.sources : [])
+      .map((source) => ({ place: String(source?.place ?? ''), chance: Number(source?.chance) || 0 })),
   };
 }
 
 /**
- * recommend 判定：understanding=参数理解回显，candidates=推荐候选摘要
- * （不含库存原文之外的任何个人标识），conclusion=confirmed（新鲜可靠估值）/
- * inferred（离线快照/部分缺价兜底）/ insufficient（解析失败或业务失败）。
+ * recommend 判定：understanding=参数理解回显（结构化），candidates=推荐候选摘要
+ * （含「建议获取」候选，kind='acquire'；不含库存原文之外的任何个人标识），
+ * conclusion=confirmed（新鲜可靠估值）/ inferred（离线快照/部分缺价兜底）/
+ * insufficient（解析失败或业务失败）。
  * evidence 引用 recommendFissures 附带的决策证据（worldState/priceTable/localDb）。
  */
 export function buildRecommendDecision({ parsed, data, scope = 'userPrivate' }) {
-  const understanding = data?.understanding || parsed?.understanding || null;
-  const candidates = (Array.isArray(data?.rows) ? data.rows : []).map(recommendCandidate);
+  // 结构化优先：data.understanding 是格式化回显字符串，不是筛选理解本体。
+  const structured = isPlainObject(parsed?.understanding) ? parsed.understanding
+    : isPlainObject(data?.understanding) ? data.understanding
+      : null;
+  const understanding = structured || null;
+  const routeCandidates = (Array.isArray(data?.rows) ? data.rows : [])
+    .map((row) => recommendCandidate(row, 'route'));
+  const acquireCandidates = (Array.isArray(data?.acquireRows) ? data.acquireRows : [])
+    .map((row) => recommendCandidate(row, 'acquire'));
+  const candidates = [...routeCandidates, ...acquireCandidates];
   const hasIncompletePrice = Number(data?.valuationIncompleteCount) > 0
     || candidates.some((candidate) => candidate.priceReliable === false);
   const conclusion = !data?.ok ? 'insufficient'
@@ -324,7 +396,7 @@ export function buildRecommendDecision({ parsed, data, scope = 'userPrivate' }) 
   return {
     commandId: 'recommend',
     scope,
-    understanding: isPlainObject(understanding) ? understanding : (understanding || null),
+    understanding,
     candidates,
     conclusion,
     evidence: {

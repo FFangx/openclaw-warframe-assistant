@@ -5,9 +5,26 @@ import {
   buildAccountSnapshotCard, buildDucatPlanCard, buildFissureQueryCard, buildIntelCard,
   buildWeeklyDetailCard, currency, documentShell, escapeHtml,
 } from './warframe-cards.mjs';
+import { buildFissureDecision } from './command-request.mjs';
+import { fissureView } from './shortcuts.mjs';
 
 const future = new Date(Date.now() + 3600_000).toISOString();
 const fetchedAt = '2026-08-17T08:00:00.000Z';
+
+// R12：裂缝查询卡只消费 { decision, facts }，测试同样只构造 Decision + 纯展示 facts。
+function fissureCard(rows, facts = {}, filters = {}) {
+  const decision = buildFissureDecision({
+    filters: { query: '', hardOnly: false, normalOnly: false, speedOnly: false, stormOnly: false, era: null, missions: [], ...filters },
+    rows,
+    evidence: { source: 'api.warframe.com', scope: 'worldstate', freshness: 'fresh', fetchedAt },
+  });
+  return buildFissureQueryCard(fissureView({
+    decision, fetchedAt, personalized: Boolean(facts.personalized),
+    recommendationModeZh: facts.recommendationModeZh || null,
+    recommendationValuationIncompleteCount: facts.recommendationValuationIncompleteCount || 0,
+    nextActions: facts.nextActions || [],
+  }));
+}
 
 // —— 共享原语 ——
 
@@ -44,16 +61,12 @@ function assertCardShape({ html, width = 600, forbidden = /VOID FISSURE|ARBITRAT
 }
 
 test('裂缝查询卡：标题与内容转义、中文标签齐全', () => {
-  const card = buildFissureQueryCard({
-    title: '<script>alert(1)</script>',
-    normal: [{ id: 'f1', tier: 'Lith', expiry: future, mission: '<img src=x>', faction: 'Grineer', planet: '地球', node: 'E Prime', tags: [], recommendation: null }],
-    hard: [{ id: 'f2', tier: 'Axi', expiry: future, mission: '歼灭', faction: 'Corpus', planet: '火星', node: 'Paimon', tags: [], recommendation: null }],
-    fetchedAt,
-  });
+  const card = fissureCard([
+    { id: 'f1', tier: 'Lith', expiry: future, mission: '<img src=x>', missionType: 'Capture', faction: 'Grineer', planet: '地球', node: 'E Prime', tags: [], hard: false, storm: false },
+    { id: 'f2', tier: 'Axi', expiry: future, mission: '歼灭', missionType: 'Extermination', faction: 'Corpus', planet: '火星', node: 'Paimon', tags: [], hard: true, storm: false },
+  ]);
   assertCardShape({ html: card.html, width: 800, contains: ['虚空裂缝', '普通虚空裂缝', '钢铁之路裂缝', '古纪', '后纪'] });
-  assert.ok(!card.html.includes('<script>alert(1)'));
   assert.ok(!card.html.includes('<img src=x>'));
-  assert.ok(card.html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
   assert.ok(card.html.includes('&lt;img src=x&gt;'));
   assert.ok(card.key.startsWith('fissure-'));
   assert.equal(card.width, 800);
@@ -117,7 +130,7 @@ test('情报卡：情报雷达标题、构造进度条与空态降级', () => {
 
 test('抽查卡片族均不出现英文装饰标题', () => {
   const samples = [
-    buildFissureQueryCard({ title: '裂缝', normal: [], hard: [], fetchedAt }).html,
+    buildFissureQueryCard(fissureView({ decision: buildFissureDecision({ filters: { query: '', hardOnly: false, normalOnly: false, speedOnly: false, stormOnly: false, era: null, missions: [] }, rows: [], evidence: { freshness: 'fresh' } }), fetchedAt })).html,
     buildIntelCard({ title: '情报', items: [], fetchedAt }).html,
     buildWeeklyDetailCard({ tasks: [], nextReset: future, worldStateAvailable: false }).html,
     buildAccountSnapshotCard({ title: '账号', syncedAt: fetchedAt, metrics: [] }).html,

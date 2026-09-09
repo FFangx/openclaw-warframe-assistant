@@ -1136,7 +1136,7 @@ export async function runAlecaMessage(message, options = {}) {
     };
   }
   if (parsed.command === 'recommend') {
-    const { recommendFissures, formatRecommend, formatRecommendFollowup, parseRecommendCommand, formatRecommendUnderstanding } = await import('./recommend.mjs');
+    const { recommendFissures, formatRecommend, formatRecommendFollowup, parseRecommendCommand, formatRecommendUnderstanding, recommendView } = await import('./recommend.mjs');
     const { userErrorFromDiagnostic, formatUserError } = await import('./user-error-contract.mjs');
     // R19/R17 切片：严格解析开遗物参数——筛选词、队伍、币种、偏好与商品目标必须可区分；
     // 未知或不支持的筛选不得静默落入不相关业务（「九重天」曾是奸商商品名误判）。
@@ -1157,7 +1157,7 @@ export async function runAlecaMessage(message, options = {}) {
         fetchedAt: new Date().toISOString(),
       };
       data.decision = buildRecommendDecision({ parsed: parsedRecommend, data, scope: request?.privacyScope || 'userPrivate' });
-      return { handled: true, ok: false, command: 'recommend', query: parsed.query, data, mediaUrl: null, followupText: null, text: formatRecommend(data) };
+      return { handled: true, ok: false, command: 'recommend', query: parsed.query, data, mediaUrl: null, followupText: null, text: formatRecommend(recommendView(data)) };
     }
     const { mode, squad, preference, vaultFilter, fissureScope, tierFilter, traderTarget } = parsedRecommend;
     const understanding = formatRecommendUnderstanding(parsedRecommend.understanding);
@@ -1238,12 +1238,12 @@ export async function runAlecaMessage(message, options = {}) {
     try {
       const { buildFissureRecommendCard } = await import('./warframe-cards.mjs');
       const renderCard = options.renderCard || renderWarframeCard;
-      if (!options.skipCard) mediaUrl = await renderCard(buildFissureRecommendCard(data), options.cardDir || process.env.WARFRAME_CARD_DIR);
+      if (!options.skipCard) mediaUrl = await renderCard(buildFissureRecommendCard(recommendView(data)), options.cardDir || process.env.WARFRAME_CARD_DIR);
     } catch { mediaUrl = null; }
     return {
       handled: true, ok: data.ok, command: 'recommend', query: parsed.query, data, mediaUrl,
-      followupText: mediaUrl ? formatRecommendFollowup(data) : null,
-      text: formatRecommend(data),
+      followupText: mediaUrl ? formatRecommendFollowup(recommendView(data)) : null,
+      text: formatRecommend(recommendView(data)),
     };
   }
   if (parsed.command === 'refine') {

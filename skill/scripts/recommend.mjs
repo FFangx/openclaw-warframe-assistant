@@ -1293,95 +1293,157 @@ export function formatRefineRecommend(data) {
   return lines.join('\n');
 }
 
-// 文字兜底（卡片渲染失败时用）
-export function formatRecommend(data) {
+// 价格快照标注（Decision 版）：只消费 decision.evidence.priceTable（stale/cachedAt），
+// 不读旧 data 的 priceStaleAt，保证陈旧证据语义由同一 Decision 驱动卡片与文字。
+const staleFromEvidence = (priceTable) => {
+  if (!priceTable?.stale || !priceTable.cachedAt) return null;
+  const time = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(priceTable.cachedAt));
+  return `⚠ warframe.market 暂不可用，价格为 ${time} 离线快照`;
+};
+
+/**
+ * 开遗物展示视图：把执行结果收敛为 { decision, facts }。
+ * decision 是唯一语义来源（筛选理解/候选顺序/结论等级/缺价与陈旧证据）；
+ * facts 只携带纯展示、非业务判断的事实（时间、奸商目标摘要、计数、错误回显）。
+ * 绝不携带完整原始工具结果或任何个人标识。
+ */
+export function recommendView(result) {
+  const goal = result?.ducatGoal || null;
+  return {
+    decision: result?.decision || null,
+    facts: {
+      fetchedAt: result?.fetchedAt || null,
+      error: result?.error || null,
+      unsupported: Array.isArray(result?.unsupported) ? result.unsupported : [],
+      issues: Array.isArray(result?.issues) ? result.issues : [],
+      userError: result?.userError || null,
+      ducatGoal: goal
+        ? {
+            name: String(goal.name || '目标商品'),
+            uniqueName: String(goal.uniqueName || ''),
+            ducats: goal.ducats ?? null,
+            marketPlat: goal.marketPlat ?? null,
+            ducatsPerPlat: goal.ducatsPerPlat ?? null,
+            marketBasis: goal.marketBasis || null,
+            dailyVolume: goal.dailyVolume ?? null,
+            credits: goal.credits ?? null,
+            tradingTax: goal.tradingTax ?? null,
+            shortfall: goal.shortfall ?? null,
+            currentDucats: goal.currentDucats ?? null,
+          }
+        : null,
+      squad: Number.isInteger(Number(result?.squad)) ? Number(result.squad) : null,
+      matchedRelicCount: Number.isInteger(Number(result?.matchedRelicCount)) ? Number(result.matchedRelicCount) : null,
+      totalFissures: Number(result?.totalFissures) || 0,
+      requiem: result?.requiem || null,
+      strategySync: result?.strategySync?.ok === true ? (Number(result.strategySync.priceCount) || 0) : null,
+    },
+  };
+}
+
+// 文字兜底（卡片渲染失败时用）：只消费 { decision, facts }。
+export function formatRecommend(view) {
+  const decision = view?.decision || {};
+  const facts = view?.facts || {};
+  const understanding = decision.understanding || {};
+  const candidates = decision.candidates || [];
+  const ducatGoal = facts.ducatGoal || null;
   // 失败必须回显系统如何理解输入（理解行），并给相关帮助/替代命令（下一步）。
-  const echoLine = data.understanding ? `🎯 已理解：${data.understanding}\n` : '';
+  const echoLine = understanding && Object.keys(understanding).length
+    ? `🎯 已理解：${formatRecommendUnderstanding(understanding)}\n`
+    : '';
   const nextLine = (nextSteps) => (Array.isArray(nextSteps) && nextSteps.length
     ? `\n下一步：${nextSteps.join('｜')}`
     : '');
-  if (!data.ok) {
-    if (data.error === 'unsupported_input') {
-      const hints = (data.unsupported || []).length
-        ? `不支持的写法：${data.unsupported.map((token) => `「${token}」`).join('、')}。`
+  if (decision.conclusion === 'insufficient') {
+    const error = facts.error || 'no_match';
+    if (error === 'unsupported_input') {
+      const hints = facts.unsupported.length
+        ? `不支持的写法：${facts.unsupported.map((token) => `「${token}」`).join('、')}。`
         : '';
-      const reasons = (data.issues || []);
+      const reasons = facts.issues;
       const ambiguous = reasons.length
         ? `参数冲突：${reasons.map((issue) => issue.token).join('、')}（同类参数只能写一个）。`
         : '';
-      const alternatives = Array.isArray(data.userError?.nextSteps) ? data.userError.nextSteps : ['帮助 遗物'];
+      const alternatives = Array.isArray(facts.userError?.nextSteps) ? facts.userError.nextSteps : ['帮助 遗物'];
       return `${echoLine}${hints}${ambiguous}开遗物当前支持：筛选词＝钢铁/九重天/纪元/未入库/已入库；队伍＝单人/N人；币种＝白金/杜卡德；偏好＝速刷/舒适/收益；商品目标＝「对标 商品名」。${nextLine(alternatives)}`;
     }
-    if (data.error === 'no_local_relic_db') return `${echoLine}本地遗物数据表读取失败，请确认 AlecaFrame 数据完整。${nextLine(data.userError?.nextSteps)}`;
-    if (data.error === 'no_relics_for_vault_filter') {
-      const message = data.vaultFilter === 'vaulted'
+    if (error === 'no_local_relic_db') return `${echoLine}本地遗物数据表读取失败，请确认 AlecaFrame 数据完整。${nextLine(facts.userError?.nextSteps)}`;
+    if (error === 'no_relics_for_vault_filter') {
+      const message = understanding.vaultFilter === 'vaulted'
         ? '你的库存中没有“已入库”遗物，无法按该条件推荐裂缝。'
         : '你的库存中没有“未入库”遗物，无法按该条件推荐裂缝。';
-      return `${echoLine}${message}${nextLine(data.userError?.nextSteps)}`;
+      return `${echoLine}${message}${nextLine(facts.userError?.nextSteps)}`;
     }
-    if (data.error === 'no_relics_for_tier') {
-      return `${echoLine}你的库存中没有“${FISSURE_TIERS[data.tierFilter]?.zh || data.tierFilter}”遗物，无法按该条件推荐裂缝。${nextLine(data.userError?.nextSteps)}`;
+    if (error === 'no_relics_for_tier') {
+      return `${echoLine}你的库存中没有“${FISSURE_TIERS[understanding.tierFilter]?.zh || understanding.tierFilter}”遗物，无法按该条件推荐裂缝。${nextLine(facts.userError?.nextSteps)}`;
     }
-    if (data.error === 'market_route_better') {
-      return `${echoLine}按「${data.ducatGoal?.name || '目标商品'}」当前行情，库存与当前可获取遗物中都没有达到商品保本线的候选；先拿当屏最高白金奖励更稳。${nextLine(data.userError?.nextSteps)}`;
+    if (error === 'market_route_better') {
+      return `${echoLine}按「${ducatGoal?.name || '目标商品'}」当前行情，库存与当前可获取遗物中都没有达到商品保本线的候选；先拿当屏最高白金奖励更稳。${nextLine(facts.userError?.nextSteps)}`;
     }
-    if (data.error === 'no_steel_fissures') return `${echoLine}当前没有剩余时间足够的钢铁裂缝；“钢铁”是硬筛选，去掉“钢铁”可查看全部路线。${nextLine(data.userError?.nextSteps)}`;
-    if (data.error === 'no_storm_fissures') return `${echoLine}当前没有剩余时间足够的九重天虚空风暴裂缝；“九重天”是硬筛选（只保留虚空风暴），不是收益偏好。去掉“九重天”可查看全部路线，或发「裂缝 九重天」看是否有即将到期的风暴。${nextLine(data.userError?.nextSteps)}`;
-    return `${echoLine}当前没有能配上你库存遗物的裂缝（或裂缝列表为空）。${nextLine(data.userError?.nextSteps)}`;
+    if (error === 'no_steel_fissures') return `${echoLine}当前没有剩余时间足够的钢铁裂缝；“钢铁”是硬筛选，去掉“钢铁”可查看全部路线。${nextLine(facts.userError?.nextSteps)}`;
+    if (error === 'no_storm_fissures') return `${echoLine}当前没有剩余时间足够的九重天虚空风暴裂缝；“九重天”是硬筛选（只保留虚空风暴），不是收益偏好。去掉“九重天”可查看全部路线，或发「裂缝 九重天」看是否有即将到期的风暴。${nextLine(facts.userError?.nextSteps)}`;
+    return `${echoLine}当前没有能配上你库存遗物的裂缝（或裂缝列表为空）。${nextLine(facts.userError?.nextSteps)}`;
   }
-  const ducatMode = data.mode === 'ducat';
-  const squadZh = (data.squad ?? 4) > 1 ? `${data.squad ?? 4}人组队` : '单人';
-  const preferenceZh = FISSURE_PREFERENCES[data.preference]?.zh || FISSURE_PREFERENCES.balanced.zh;
-  const vaultFilterZh = RELIC_VAULT_FILTERS[data.vaultFilter]?.zh || RELIC_VAULT_FILTERS.all.zh;
-  const fissureScopeZh = FISSURE_SCOPES[data.fissureScope]?.zh || FISSURE_SCOPES.all.zh;
-  const tierFilterZh = FISSURE_TIERS[data.tierFilter]?.zh || FISSURE_TIERS.all.zh;
-  const modeZh = ducatMode ? (data.ducatGoal ? `奸商对标：${data.ducatGoal.name}` : '赚杜卡德') : '赚白金';
+  const ducatMode = understanding.mode === 'ducat';
+  const squadZh = (facts.squad ?? 4) > 1 ? `${facts.squad ?? 4}人组队` : '单人';
+  const preferenceZh = FISSURE_PREFERENCES[understanding.preference]?.zh || FISSURE_PREFERENCES.balanced.zh;
+  const vaultFilterZh = RELIC_VAULT_FILTERS[understanding.vaultFilter]?.zh || RELIC_VAULT_FILTERS.all.zh;
+  const fissureScopeZh = FISSURE_SCOPES[understanding.fissureScope]?.zh || FISSURE_SCOPES.all.zh;
+  const tierFilterZh = FISSURE_TIERS[understanding.tierFilter]?.zh || FISSURE_TIERS.all.zh;
+  const modeZh = ducatMode ? (ducatGoal ? `奸商对标：${ducatGoal.name}` : '赚杜卡德') : '赚白金';
   const lines = [`🎯 开遗物 · ${modeZh} · ${fissureScopeZh} · ${tierFilterZh} · ${preferenceZh} · ${vaultFilterZh} · ${squadZh}口径（库存 × 双币期望）`];
-  if (data.ducatGoal) lines.push(`目标 ${data.ducatGoal.ducats} 杜 / 市场 ${data.ducatGoal.marketPlat}p｜盈亏线 1p≈${data.ducatGoal.ducatsPerPlat} 杜｜${data.ducatGoal.marketBasis === 'orders' ? '当前售价' : data.ducatGoal.marketBasis === 'today' ? '今日中位' : '市价待定'}｜日均 ${data.ducatGoal.dailyVolume ?? '—'} 件`);
-  lines.push(data.ducatGoal
-    ? `立即可开 ${data.matchedRelicCount ?? 0} 种估算过线候选；每种最多列两条当前路线。`
-    : `可立即开 ${data.matchedRelicCount ?? 0} 种遗物；每种最多列两条当前路线。`);
-  const stale = staleLine(data.priceStaleAt);
+  if (ducatGoal) lines.push(`目标 ${ducatGoal.ducats} 杜 / 市场 ${ducatGoal.marketPlat}p｜盈亏线 1p≈${ducatGoal.ducatsPerPlat} 杜｜${ducatGoal.marketBasis === 'orders' ? '当前售价' : ducatGoal.marketBasis === 'today' ? '今日中位' : '市价待定'}｜日均 ${ducatGoal.dailyVolume ?? '—'} 件`);
+  lines.push(ducatGoal
+    ? `立即可开 ${facts.matchedRelicCount ?? 0} 种估算过线候选；每种最多列两条当前路线。`
+    : `可立即开 ${facts.matchedRelicCount ?? 0} 种遗物；每种最多列两条当前路线。`);
+  const stale = staleFromEvidence(decision.evidence?.priceTable);
   if (stale) lines.push(stale);
-  data.rows.forEach((row, index) => {
+  const rows = candidates.filter((row) => row.kind !== 'acquire');
+  rows.forEach((row, index) => {
     const flags = [row.hard ? '钢铁' : '', row.storm ? '九重天' : '', ...(row.tags || []).map((tag) => tag.zh)].filter(Boolean).join('/');
-    lines.push(`${index + 1}. ${row.relic.zh} ×${row.relic.count}｜${vaultStatusZh(row.relic.vaulted)}`);
-    lines.push(`   路线 ${row.tierZh}${row.missionZh} ${row.planet}·${row.node}${flags ? `（${flags}）` : ''}`);
+    const tierZh = FISSURE_TIERS[row.tier]?.zh || row.tier;
+    lines.push(`${index + 1}. ${row.relicZh} ×${row.count}｜${row.relicVaulted ? '已入库' : '未入库'}`);
+    lines.push(`   路线 ${tierZh}${row.missionZh} ${row.planet}·${row.node}${flags ? `（${flags}）` : ''}`);
     const refineNote = row.refineZh ? `｜建议${row.refineZh}` : '';
-    lines.push(ducatMode
-      ? data.ducatGoal
+    const valueLine = ducatMode
+      ? ducatGoal
         ? `   每局期望 ${row.targetEconomy?.expectedDucats || 0} 杜 / ${row.targetEconomy?.expectedPlat || 0}p｜效率 ${row.targetEconomy?.efficiency ?? '—'} 杜/p｜约 ${row.targetEconomy?.expectedRuns ?? '—'} 局补齐、机会成本约 ${row.targetEconomy?.opportunityPlat ?? '—'}p${refineNote}`
-        : `   重点奖励 ${row.topDucat?.zhName || '—'} ${row.topDucat?.ducats || 0} 杜卡德｜期望 ${row.expectedDucats} 杜卡德 / ${row.expectedValue} 白金${refineNote}`
-      : `   重点奖励 ${row.topReward?.zhName || '—'} ${row.topReward?.price || 0} 白金｜期望 ${row.expectedValue} 白金 / ${row.expectedDucats} 杜卡德${refineNote}`);
+        : `   重点奖励 ${row.topDucat?.zhName || '—'} ${row.topDucat?.ducats || 0} 杜卡德｜期望 ${row.expectedDucats} 杜卡德 / ${row.expectedValue == null ? '—' : row.expectedValue} 白金${refineNote}`
+      : `   重点奖励 ${row.topReward?.zhName || '—'} ${row.topReward?.price || 0} 白金｜期望 ${row.priceReliable === false ? '白金估值暂缺' : `${row.expectedValue} 白金`} / ${row.expectedDucats} 杜卡德${refineNote}`;
+    lines.push(valueLine);
   });
-  if (data.ducatGoal) {
-    const acquireRows = Array.isArray(data.acquireRows) ? data.acquireRows : [];
+  if (ducatGoal) {
+    const acquireRows = candidates.filter((row) => row.kind === 'acquire');
     lines.push(`建议获取 ${acquireRows.length} 种未拥有、当前可刷的估算过线候选：`);
     for (const row of acquireRows) {
       const sources = (row.sources || []).map((source) => `${source.place} ${Math.round(Number(source.chance || 0) * 10) / 10}%`).join('；');
-      lines.push(`- ${row.relic.zh}｜每局 ${row.targetEconomy?.expectedDucats || 0} 杜 / ${row.targetEconomy?.expectedPlat || 0}p｜约 ${row.targetEconomy?.expectedRuns ?? '—'} 局｜${sources || '暂无常规来源'}`);
+      lines.push(`- ${row.relicZh}｜每局 ${row.targetEconomy?.expectedDucats || 0} 杜 / ${row.targetEconomy?.expectedPlat || 0}p｜约 ${row.targetEconomy?.expectedRuns ?? '—'} 局｜${sources || '暂无常规来源'}`);
     }
   }
-  if (data.requiem) lines.push(`另有安魂裂缝 ${data.requiem.fissures} 条，你有安魂遗物 ${data.requiem.relics} 个。`);
-  const preferenceNote = data.preference === 'speed' ? '每枚遗物优先匹配捕获/歼灭' : data.preference === 'comfort' ? '每枚遗物优先匹配防御/生存' : data.preference === 'yield' ? '每枚遗物优先匹配九重天→钢铁→无尽' : '遗物按期望收益排序，每枚最多两条路线';
-  lines.push(`${preferenceNote}；${ducatMode ? (data.ducatGoal ? '开局前只估自己携带的遗物，先过商品保本线再按期望杜卡德排序；实际四选一由 WFInfo 兜底' : '普通模式按毛杜卡德期望排序，不扣白金') : `期望按完整精炼度·${squadZh}开奖取最优·可靠成交中位估算`}，仅供参考。`);
+  if (facts.requiem) lines.push(`另有安魂裂缝 ${facts.requiem.fissures} 条，你有安魂遗物 ${facts.requiem.relics} 个。`);
+  const preferenceNote = understanding.preference === 'speed' ? '每枚遗物优先匹配捕获/歼灭' : understanding.preference === 'comfort' ? '每枚遗物优先匹配防御/生存' : understanding.preference === 'yield' ? '每枚遗物优先匹配九重天→钢铁→无尽' : '遗物按期望收益排序，每枚最多两条路线';
+  lines.push(`${preferenceNote}；${ducatMode ? (ducatGoal ? '开局前只估自己携带的遗物，先过商品保本线再按期望杜卡德排序；实际四选一由 WFInfo 兜底' : '普通模式按毛杜卡德期望排序，不扣白金') : `期望按完整精炼度·${squadZh}开奖取最优·可靠成交中位估算`}，仅供参考。`);
   return lines.join('\n');
 }
 
 // 卡片发送后的口径说明由推荐结果自身生成，避免宿主重复索引筛选常量。
 // 即使旧缓存或未来调用方缺少某个字段，也应安全回退到默认口径，而不是让整条命令崩溃。
-export function formatRecommendFollowup(data = {}) {
-  const ducatMode = data.mode === 'ducat';
-  const ducatGoal = data.ducatGoal || null;
+export function formatRecommendFollowup(view = {}) {
+  const decision = view?.decision || {};
+  const facts = view?.facts || {};
+  const understanding = decision.understanding || {};
+  const ducatMode = understanding.mode === 'ducat';
+  const ducatGoal = facts.ducatGoal || null;
   const modeZh = ducatMode
     ? (ducatGoal ? `奸商对标·${ducatGoal.name || '目标商品'}·自己携带遗物` : '普通杜卡德')
     : '赚白金';
-  const scopeZh = FISSURE_SCOPES[data.fissureScope]?.zh || FISSURE_SCOPES.all.zh;
-  const preferenceZh = FISSURE_PREFERENCES[data.preference]?.zh || FISSURE_PREFERENCES.balanced.zh;
-  const vaultFilterZh = RELIC_VAULT_FILTERS[data.vaultFilter]?.zh || RELIC_VAULT_FILTERS.all.zh;
-  const squadZh = (data.squad ?? 4) > 1 ? `${data.squad ?? 4}人组队` : '单人';
-  const strategySync = data.strategySync?.ok
-    ? `；已同步 WFInfo 奸商目标（可靠估值 ${data.strategySync.priceCount} 项）`
+  const scopeZh = FISSURE_SCOPES[understanding.fissureScope]?.zh || FISSURE_SCOPES.all.zh;
+  const preferenceZh = FISSURE_PREFERENCES[understanding.preference]?.zh || FISSURE_PREFERENCES.balanced.zh;
+  const vaultFilterZh = RELIC_VAULT_FILTERS[understanding.vaultFilter]?.zh || RELIC_VAULT_FILTERS.all.zh;
+  const squadZh = (facts.squad ?? 4) > 1 ? `${facts.squad ?? 4}人组队` : '单人';
+  const strategySync = facts.strategySync != null
+    ? `；已同步 WFInfo 奸商目标（可靠估值 ${facts.strategySync} 项）`
     : '';
   return `当前为${modeZh}·${scopeZh}·${preferenceZh}·${vaultFilterZh}${ducatGoal ? '' : `·${squadZh}口径`}${strategySync}。`;
 }
