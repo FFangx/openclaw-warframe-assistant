@@ -7,6 +7,7 @@ import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
 import { commandToolSummary, isPersonalAccountCommand, isShortcut, isSubscriptionCommand, isWeeklyCommand, isWishlistCommand } from './routing.mjs';
 import { buildEvidenceEnvelope, STATE_ASSERTION_POLICY } from './evidence.mjs';
 import { classifyNaturalWarframeQuery, DYNAMIC_QUERY_POLICY } from './intent-policy.mjs';
+import { composePromptContext } from './prompt-context.mjs';
 import { createContextBridge } from './context-bridge.mjs';
 // R17 第一片：代表链「裂缝 九重天」脱敏 trace（QQ 入口 received/authorization/delivery 三段）。
 import { authorizationResultCategory, contentHashOfFile, createQqTraceContext, deliveryResultCategory, isTraceTarget, recordQqTraceStage } from './trace-bridge.mjs';
@@ -726,17 +727,6 @@ function agentContextIsGroup(ctx: any): boolean {
   return /(?:^|:)(?:group|guild|channel)(?::|$)/u.test(hints);
 }
 
-function messageText(value: any): string {
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return value.map((item) => messageText(item?.text || item?.content || '')).join(' ');
-  return messageText(value?.content || value?.text || '');
-}
-
-function hasWarframeContext(prompt: string, messages: any[]): boolean {
-  const recent = [prompt, ...messages.slice(-8).map(messageText)].join(' ');
-  return /(?:Warframe|星际战甲|赏金|悬赏|遗物|裂缝|仲裁|尖刃弹头|Bladed Rounds|Prime|杜卡德|虚空商人|AlecaFrame|WFInfo)/iu.test(recent);
-}
-
 async function handleFastCommand(api: any, event: any, traceTrigger: string | null = null): Promise<any | undefined> {
   if (!isQQChannel(event.channel) || (!isShortcut(event.content) && !isSubscriptionCommand(event.content))) return;
   // Wishlist owns delivery ordering (primary feedback before immediate market
@@ -1319,16 +1309,18 @@ export default definePluginEntry({
     });
     // 对时效/订阅故障问句做每轮确定性约束。只注入“必须走哪类工具”，
     // 物品和参数仍由模型从自然语言提取，避免退化成关键词命令表。
+    // R18 片：上下文合成边界（门禁文本 + 短命令指代桥接 + 字节上限与过期降级）
+    // 全部收敛到 ./prompt-context.mjs 的纯函数，本钩子只做输入组装。
     api.on('before_prompt_build', async (event, ctx) => {
-      const contexts = [];
       const intent = classifyNaturalWarframeQuery(event.prompt);
-      if (intent.requiredOperation && hasWarframeContext(event.prompt, event.messages || [])) {
-        contexts.push(`[Warframe 动态查询门禁] 本轮问题属于订阅历史/漏提醒诊断。必须先调用 warframe_assistant operation=${intent.requiredOperation}，query 只传用户关注的物品或订阅条件；若还问当前轮，再追加对应 operation=command 当前查询。禁止用 lookup drops、静态 wiki 或模型记忆替代。`);
-      }
       const key = contextBridgeKey(event, ctx);
-      const bridged = key ? shortCommandContext.consumePrompt(key) : '';
-      if (bridged) contexts.push(bridged);
-      if (contexts.length) return { prependContext: contexts.join('\n') };
+      const composed = composePromptContext({
+        intent,
+        prompt: event.prompt,
+        messages: event.messages || [],
+        bridged: key ? shortCommandContext.consumePrompt(key) : '',
+      });
+      if (composed) return { prependContext: composed.prependContext };
     }, { priority: 1800 });
     // 长期会话可能仍保留旧版“直接 exec 脚本”的上下文。阻止模型绕过注册工具，
     // 让它收到明确错误后改调 warframe_assistant；插件自己的 execFile 不经过此钩子。

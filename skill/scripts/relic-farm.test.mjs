@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildRelicFarmPlan, classifyRelicSources } from './relic-farm.mjs';
-import { buildRelicFarmCard, buildRelicFarmSetCard, buildShortcutContextEnvelope, buildShortcutNextActions, parseNaturalWorldQuestion, parseShortcutMessage } from './shortcuts.mjs';
+import { buildRelicFarmCard, buildRelicFarmSetCard, buildShortcutContextEnvelope, buildShortcutNextActions, contextEnvelopeExpiry, parseNaturalWorldQuestion, parseShortcutMessage } from './shortcuts.mjs';
 import { renderNextActions } from './card-actions.mjs';
 import { buildWhereToBuyCard } from './vendor-shop-card.mjs';
 
@@ -11,6 +11,16 @@ const matches = [
   { name: 'Meso S2', zhName: '前纪 S2', vaulted: false, rewards: [target] },
   { name: 'Axi S3', zhName: '后纪 S3', vaulted: true, rewards: [target] },
 ];
+
+test('R18：上下文信封过期时间覆盖顶层字段并选择最早业务时间', () => {
+  assert.equal(contextEnvelopeExpiry({ expiry: '2026-09-09T12:30:00.000Z' }), '2026-09-09T12:30:00.000Z');
+  assert.equal(contextEnvelopeExpiry({
+    expiresAt: '2026-09-09T13:00:00.000Z',
+    normal: [{ expiry: '2026-09-09T12:10:00.000Z' }],
+    hard: [{ expiresAt: '2026-09-09T12:20:00.000Z' }],
+  }), '2026-09-09T12:10:00.000Z');
+  assert.equal(contextEnvelopeExpiry({ expiry: 'not-a-date', rows: [{}] }), null);
+});
 
 test('正式获取短命令走确定性路线，口语获取问法只由自然语言路由改写', () => {
   assert.deepEqual(parseShortcutMessage('获取 悟空Prime系统蓝图'), { command: 'relic-farm', query: '悟空Prime系统蓝图' });

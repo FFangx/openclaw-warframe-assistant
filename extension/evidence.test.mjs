@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildEvidenceEnvelope, STATE_ASSERTION_POLICY } from './evidence.mjs';
+import { buildEvidenceEnvelope, classifyFreshness, STATE_ASSERTION_POLICY } from './evidence.mjs';
+
+test('classifyFreshness 边界：到期即过期；只有 asOf 记 undated_expiry；全缺记 unknown', () => {
+  const now = Date.parse('2026-09-09T12:00:00.000Z');
+  assert.equal(classifyFreshness(null, null, now), 'unknown');
+  assert.equal(classifyFreshness('2026-09-09T11:59:59.000Z', '2026-09-09T11:00:00.000Z', now), 'expired');
+  assert.equal(classifyFreshness('2026-09-09T12:00:00.000Z', '2026-09-09T11:00:00.000Z', now), 'expired');
+  assert.equal(classifyFreshness('2026-09-09T12:00:01.000Z', '2026-09-09T11:00:00.000Z', now), 'current');
+  assert.equal(classifyFreshness('', '2026-09-09T11:00:00.000Z', now), 'undated_expiry');
+});
 
 test('静态掉落资料不会被标记成当前状态证据', () => {
   const evidence = buildEvidenceEnvelope({ ok: true, source: 'drops' }, 'lookup', 'drops Bladed Rounds');

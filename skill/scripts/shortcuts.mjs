@@ -1941,6 +1941,27 @@ export function buildShortcutNextActions(data, parsed = {}) {
   return [];
 }
 
+// 上下文信封的业务过期时间：取卡片内最早的有效 expiry（裂缝/赏金等时效事实）。
+// 无任何有效 expiry（市价、静态获取路线）返回 null，与 evidence 新鲜度语义一致：
+// 只有显式过期时间才能判定为已过期（undated 不伪装成过期，也不作为当前证据）。
+export function contextEnvelopeExpiry(data) {
+  const values = [
+    data?.expiry,
+    data?.expiresAt,
+    ...(Array.isArray(data?.normal) ? data.normal : []),
+    ...(Array.isArray(data?.hard) ? data.hard : []),
+    ...(Array.isArray(data?.fissures) ? data.fissures : []),
+    ...(Array.isArray(data?.rows) ? data.rows : []),
+    ...(Array.isArray(data?.matches) ? data.matches : []),
+  ].flatMap((entry) => (typeof entry === 'string'
+    ? [entry]
+    : [entry?.expiry, entry?.expiresAt]))
+    .map((value) => Date.parse(String(value || '')))
+    .filter(Number.isFinite);
+  if (!values.length) return null;
+  return new Date(Math.min(...values)).toISOString();
+}
+
 export function buildShortcutContextEnvelope(data, parsed = {}) {
   if (!data?.ok) return null;
   const query = String(parsed.query || data.query || '').trim();
@@ -1968,7 +1989,8 @@ export function buildShortcutContextEnvelope(data, parsed = {}) {
     summary = `当前匹配 ${data.total || 0} 条裂缝。`;
   }
   if (!entity?.displayName && !entity?.canonicalName) return null;
-  return { ok: true, kind: data.kind, query, scope: data.personalized ? 'personal' : 'public', summary, entities: [entity], nextActions: data.nextActions || [], fetchedAt: data.fetchedAt };
+  const expiry = contextEnvelopeExpiry(data);
+  return { ok: true, kind: data.kind, query, scope: data.personalized ? 'personal' : 'public', summary, entities: [entity], nextActions: data.nextActions || [], fetchedAt: data.fetchedAt, ...(expiry ? { expiry } : {}) };
 }
 
 // —— R17 第一片：代表链「裂缝 九重天」脱敏 trace 辅助 ——

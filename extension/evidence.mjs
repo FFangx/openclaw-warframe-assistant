@@ -16,6 +16,14 @@ function firstWord(value) {
   return String(value || '').trim().split(/\s+/u)[0] || '';
 }
 
+// 现有 evidence 新鲜度语义的唯一事实源：有明确 expiry 才判 current/expired；
+// 只有 asOf 而无 expiry 记 undated_expiry；两者都缺记 unknown。
+export function classifyFreshness(expiresAt, asOf = null, now = Date.now()) {
+  const expiryMs = Date.parse(String(expiresAt || ''));
+  if (Number.isFinite(expiryMs)) return expiryMs > now ? 'current' : 'expired';
+  return asOf ? 'undated_expiry' : 'unknown';
+}
+
 export function buildEvidenceEnvelope(result, operation = 'command', query = '') {
   const facts = result?.facts || null;
   const kind = String(result?.kind || '').trim();
@@ -48,10 +56,7 @@ export function buildEvidenceEnvelope(result, operation = 'command', query = '')
 
   const asOf = facts?.fetchedAt || result?.fetchedAt || result?.sourceTimestamp || result?.data?.fetchedAt || null;
   const expiresAt = facts?.expiry || facts?.expiresAt || result?.expiry || result?.expiresAt || result?.data?.expiry || null;
-  const expiryMs = Date.parse(String(expiresAt || ''));
-  const freshness = Number.isFinite(expiryMs)
-    ? (expiryMs > Date.now() ? 'current' : 'expired')
-    : (asOf ? 'undated_expiry' : 'unknown');
+  const freshness = classifyFreshness(expiresAt, asOf);
   let finding = result?.ok === false ? 'unavailable' : 'reported';
   if (facts?.type === 'bounty-reward-current-check') {
     finding = facts.currentlyAvailable === true ? 'confirmed_present' : 'confirmed_absent_in_scope';

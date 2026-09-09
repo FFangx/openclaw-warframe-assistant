@@ -1,8 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createContextBridge } from './context-bridge.mjs';
+import { createContextBridge, CONSUMED_PAYLOAD_MAX_BYTES } from './context-bridge.mjs';
+import { buildEvidenceEnvelope } from './evidence.mjs';
 
 const sample = { ok: true, kind: 'relic-farm', query: '夜灵p', summary: '候选遗物均已入库', entities: [{ type: 'prime-set', displayName: '夜灵 Prime', canonicalName: 'Revenant Prime' }], nextActions: [{ command: 'wm 夜灵p', label: '查整套价格' }] };
+
+function payloadOf(prompt) {
+  const marker = '[Warframe 短命令上下文] ';
+  const start = prompt.indexOf(marker);
+  assert.ok(start >= 0, '桥接上下文标记缺失');
+  const payloadStart = start + marker.length;
+  const end = prompt.indexOf('\n', payloadStart);
+  assert.ok(end > payloadStart, '桥接上下文必须保持 [Warframe 短命令上下文] <json> 结构');
+  return JSON.parse(prompt.slice(payloadStart, end));
+}
+
 
 test('bridge is isolated by caller key and contains only the safe envelope', () => {
   const bridge = createContextBridge();
@@ -129,4 +141,126 @@ test('nextActions 消毒后与卡片渲染端同构：只保留 command+label，
   // 渲染端 renderNextActions 同样只画前两条 command，超出部分两侧一致丢弃
   assert.doesNotMatch(prompt, /"command":"extra"/u);
   assert.doesNotMatch(prompt, /"label":"不应上卡"/u);
+});
+
+test('R18：桥接载荷只允许白名单键，原始身份/target/sender/token/快照/工具结果不进入', () => {
+  const bridge = createContextBridge();
+  const hostile = {
+    ok: true, kind: 'fissure', query: '九重天', scope: 'public',
+    summary: '当前匹配 6 条裂缝。',
+    entities: [{ type: 'fissure-query', displayName: '当前虚空裂缝', canonicalName: '九重天' }],
+    nextActions: [{ command: '开遗物', label: '按库存推荐遗物' }],
+    fetchedAt: '2026-09-09T00:00:00.000Z',
+    rawSnapshot: { secret: 'RAW_SENTINEL' },
+    target: 'qqbot:group:9999', senderId: 'SENDER_SENTINEL',
+    token: 'TOKEN_SENTINEL', apiKey: 'KEY_SENTINEL',
+    authorization: 'Bearer AUTH_SENTINEL', cookie: 'sid=COOKIE_SENTINEL',
+    fullToolResult: { orders: [{ seller: 'SELLER_SENTINEL', platinum: 1 }] },
+    ownerOpenId: 'OWNER_SENTINEL', conversationId: 'CONV_SENTINEL',
+  };
+  bridge.remember('k', hostile);
+  const prompt = bridge.consumePrompt('k');
+  for (const sentinel of ['RAW_SENTINEL', 'SENDER_SENTINEL', 'TOKEN_SENTINEL', 'KEY_SENTINEL',
+    'AUTH_SENTINEL', 'COOKIE_SENTINEL', 'SELLER_SENTINEL', 'OWNER_SENTINEL', 'CONV_SENTINEL']) {
+    assert.doesNotMatch(prompt, new RegExp(sentinel, 'u'), sentinel);
+  }
+  assert.doesNotMatch(prompt, /qqbot:group:9999/u);
+  // 结构白名单：item 只有 kind/query/summary/entities/nextActions/fetchedAt(+stale)，
+  // entity 只有 type/displayName/canonicalName，action 只有 command/label
+  const payload = payloadOf(prompt);
+  const itemKeys = new Set(['kind', 'query', 'summary', 'entities', 'nextActions', 'fetchedAt', 'stale']);
+  const entityKeys = new Set(['type', 'displayName', 'canonicalName']);
+  const actionKeys = new Set(['command', 'label']);
+  for (const item of payload) {
+    for (const key of Object.keys(item)) assert.ok(itemKeys.has(key), `unexpected item key: ${key}`);
+    for (const entity of item.entities || []) {
+      for (const key of Object.keys(entity)) assert.ok(entityKeys.has(key), `unexpected entity key: ${key}`);
+    }
+    for (const action of item.nextActions || []) {
+      for (const key of Object.keys(action)) assert.ok(actionKeys.has(key), `unexpected action key: ${key}`);
+    }
+  }
+});
+
+test('R18：已过期实时事实不携带 summary，仅保留指代锚点并明确降级', () => {
+  const clock = Date.parse('2026-09-09T12:00:00.000Z');
+  const bridge = createContextBridge({ now: () => clock });
+  const stale = {
+    ok: true, kind: 'bounty', query: '尖刃弹头', scope: 'public',
+    summary: '本轮在出：希图斯 赏金（5.68%）',
+    entities: [{ type: 'bounty', displayName: '尖刃弹头', canonicalName: '尖刃弹头' }],
+    nextActions: [],
+    fetchedAt: '2026-09-09T11:50:00.000Z',
+    expiry: '2026-09-09T11:59:59.000Z',
+  };
+  assert.equal(bridge.remember('k', stale), true);
+  const prompt = bridge.consumePrompt('k');
+  const payload = payloadOf(prompt);
+  assert.equal(payload[0].stale, true);
+  assert.equal('summary' in payload[0], false);
+  assert.doesNotMatch(prompt, /本轮在出/u);
+  assert.match(prompt, /其中标记为 stale 的条目仅为指代解析保留；其实时事实已过期，不得作为当前状态证据/u);
+  // 指代锚点保留：仍可解析「刚才那个」
+  assert.match(prompt, /尖刃弹头/u);
+});
+
+test('R18：未过期与无 expiry 条目不携带 stale 标记，也不出现降级句（既有语义兼容）', () => {
+  const clock = Date.parse('2026-09-09T12:00:00.000Z');
+  const bridge = createContextBridge({ now: () => clock });
+  const fresh = {
+    ...sample,
+    summary: '当前匹配 6 条裂缝。',
+    fetchedAt: '2026-09-09T11:50:00.000Z',
+    expiry: '2026-09-09T12:30:00.000Z',
+  };
+  bridge.remember('a', fresh);
+  bridge.remember('b', sample);
+  const freshPayload = payloadOf(bridge.consumePrompt('a'));
+  assert.equal('stale' in freshPayload[0], false);
+  assert.equal(freshPayload[0].summary, '当前匹配 6 条裂缝。');
+  const plainPayload = payloadOf(bridge.consumePrompt('b'));
+  assert.equal('stale' in plainPayload[0], false);
+  assert.equal(plainPayload[0].summary, '候选遗物均已入库');
+  assert.doesNotMatch(bridge.consumePrompt('a'), /其实时事实已过期/u);
+  assert.doesNotMatch(bridge.consumePrompt('b'), /其实时事实已过期/u);
+});
+
+test('R18：新鲜度边界与 evidence 语义一致（恰好到期即视为过期）', () => {
+  const clock = Date.parse('2026-09-09T12:00:00.000Z');
+  const bridge = createContextBridge({ now: () => clock });
+  const atExpiry = {
+    ...sample,
+    fetchedAt: '2026-09-09T11:00:00.000Z',
+    expiry: '2026-09-09T12:00:00.000Z',
+  };
+  bridge.remember('k', atExpiry);
+  const payload = payloadOf(bridge.consumePrompt('k'));
+  assert.equal(payload[0].stale, true);
+  const evidence = buildEvidenceEnvelope(
+    { ok: true, kind: 'bounty', facts: { fetchedAt: atExpiry.fetchedAt, expiry: atExpiry.expiry } },
+    'command', '赏金 示例',
+  );
+  assert.equal(evidence.freshness, 'expired');
+});
+
+test('R18：体积裁剪时 canonicalName 缺失仍保留 displayName 指代锚点', () => {
+  const bridge = createContextBridge();
+  bridge.remember('k', {
+    ok: true,
+    kind: 'fissure',
+    query: '九重天'.repeat(40),
+    summary: '摘要'.repeat(120),
+    entities: Array.from({ length: 3 }, (_, index) => ({
+      type: 'fissure-query'.repeat(4),
+      displayName: `显示锚点${index}`.repeat(20),
+      canonicalName: '',
+    })),
+    nextActions: Array.from({ length: 2 }, (_, index) => ({
+      command: `开遗物${index}`.repeat(20),
+      label: `动作${index}`.repeat(20),
+    })),
+    fetchedAt: '2026-09-09T00:00:00.000Z',
+  });
+  const payload = payloadOf(bridge.consumePrompt('k'));
+  assert.match(payload[0].entities[0].displayName, /显示锚点0/u);
 });
