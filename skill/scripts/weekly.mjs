@@ -538,7 +538,23 @@ function nightwaveConquestDone(inventory, worldState, challengeRequired) {
 function evaluateAutoCheck(inventory, worldState, now = Date.now(), challengeRequired = null, syncedAt = null, options = {}) {
   const auto = {};      // taskId → true：判据确定的本周完成
   const progress = {};  // taskId → 进度文本（有进度不等于完成）
-  if (!inventory) return { auto, progress };
+  const evidence = {};  // taskId → 脱敏周期证据；不包含原始快照、账号标识或任务实例 ID
+  const cycleStart = weekStart(new Date(now));
+  const cycleEnd = nextReset(new Date(now));
+  const asOf = Number.isFinite(Date.parse(String(syncedAt || ''))) ? new Date(syncedAt).toISOString() : null;
+  const confirm = (taskId, basis, source = 'alecaframe') => {
+    auto[taskId] = true;
+    evidence[taskId] = {
+      finding: 'confirmed_complete',
+      scope: 'weekly',
+      cycleStart,
+      cycleEnd,
+      asOf,
+      source,
+      basis,
+    };
+  };
+  if (!inventory) return { auto, progress, evidence };
   // 双衍回廊：EndlessXP 按 Category 分普通/钢铁；Expiry 过期 = 上周陈旧数据，不采信
   for (const [category, taskId] of [['EXC_NORMAL', 'circuit-normal'], ['EXC_HARD', 'circuit-steel']]) {
     const entry = (inventory.EndlessXP || []).find((item) => item.Category === category);
@@ -547,13 +563,13 @@ function evaluateAutoCheck(inventory, worldState, now = Date.now(), challengeReq
     if (!goal) continue;
     const earned = Number(entry.Earn) || 0;
     progress[taskId] = `阶层经验 ${Math.min(earned, goal)}/${goal}`;
-    if (earned >= goal) auto[taskId] = true;
+    if (earned >= goal) confirm(taskId, 'circuit-earned-goal');
   }
   // 衰退室：每周 5 次搜索脉冲，ResetDate 在未来才是本周计数
   if (msOf(inventory.EntratiVaultCountResetDate) > now) {
     const count = Number(inventory.EntratiVaultCountLastPeriod) || 0;
     progress.netracell = `本周 ${Math.min(count, 5)}/5 次`;
-    if (count >= 5) auto.netracell = true;
+    if (count >= 5) confirm('netracell', 'netracell-count-with-reset');
   }
   // 沉沦之地：领奖到最后一层 checkpoint 即全清
   for (const [category, taskId] of [['DM_COH_NORMAL', 'descendia-normal'], ['DM_COH_HARD', 'descendia-steel']]) {
@@ -563,11 +579,13 @@ function evaluateAutoCheck(inventory, worldState, now = Date.now(), challengeReq
     if (!top) continue;
     const claimed = Number(entry.FloorClaimed) || 0;
     progress[taskId] = `已领 ${Math.min(claimed, top)}/${top} 层`;
-    if (claimed >= top) auto[taskId] = true;
+    if (claimed >= top) confirm(taskId, 'descendia-claimed-checkpoint');
   }
   // 执刑官：领奖记录的 SortieId 与本周 archonHunt.id 一致才算本周完成（上周记录自然对不上）
   const sortieId = inventory.LastLiteSortieReward?.[0]?.SortieId?.$oid;
-  if (sortieId && worldState?.archonHunt?.id && sortieId === worldState.archonHunt.id) auto.archon = true;
+  if (sortieId && worldState?.archonHunt?.id && sortieId === worldState.archonHunt.id) {
+    confirm('archon', 'archon-reward-id-match', 'alecaframe+worldstate');
+  }
   // 电波：🔴 SeasonChallengeHistory 只记「激活过」不是「完成」（2026-08-06 用户实锤两条未做挑战在列）。
   // 完成判定=ChallengeProgress.Progress ≥ ExportChallenges.requiredCount（与日历同款 join）；
   // 映射缺失（网络挂）时宁不核销也不报进度，不用激活记录充数
@@ -580,20 +598,22 @@ function evaluateAutoCheck(inventory, worldState, now = Date.now(), challengeReq
       return required > 0 && (progressByKey.get(key) ?? 0) >= required;
     }).length;
     progress.nightwave = `周挑战 ${hits}/${challenges.length}`;
-    if (hits === challenges.length) auto.nightwave = true;
+    if (hits === challenges.length) confirm('nightwave', 'nightwave-progress-targets', 'alecaframe+worldstate');
   }
   // 泰辛商店已移入独立「商店」模板，周常不再追踪购买状态（2026-08-05）
   // 卡尔周任务：WeekCount 锚点 2014-02-10（周一，实测 651=2026-08-03 周）对齐本周才采信，CompletedMission 为准
   const kahlWeek = Math.floor((now - Date.UTC(2014, 1, 10)) / 604_800_000);
   const kahlMission = ((inventory.Affiliations || []).find((item) => item.Tag === 'KahlSyndicate')?.WeeklyMissions || [])
     .find((item) => Number(item.WeekCount) === kahlWeek);
-  if (kahlMission?.CompletedMission === true) auto.kahl = true;
+  if (kahlMission?.CompletedMission === true) confirm('kahl', 'kahl-week-completed');
   // 1999 日历：游戏内一个季节横跨约 3 个月，但现实轮换窗口仍是一周。
   // SeasonType + Iteration 对齐当前 worldstate 后，LastCompletedDayIdx 到达最后有效节点即可可靠核销。
   const calInfo = calendarSeasonProgress(inventory, worldState);
   if (calInfo) {
     progress['calendar-1999'] = `已推进 ${calInfo.doneCount}/${calInfo.totalCount} 节点`;
-    if (calInfo.totalCount > 0 && calInfo.doneCount === calInfo.totalCount) auto['calendar-1999'] = true;
+    if (calInfo.totalCount > 0 && calInfo.doneCount === calInfo.totalCount) {
+      confirm('calendar-1999', 'calendar-season-progress', 'alecaframe+worldstate');
+    }
   }
   // 科研最佳分：基础 1 点 + 8 个个人/装备参数，每关最多 9 点；只完成
   // 两关最多 18 点。因此 >=19 能严格证明三关完整通关，低分只展示而不猜。
@@ -605,9 +625,9 @@ function evaluateAutoCheck(inventory, worldState, now = Date.now(), challengeReq
     const research = archimedeaResearchProgress(inventory, kind, now, syncedAt, { evidence, priorScore: history?.score ?? null });
     if (!research) continue;
     progress[taskId] = research.text;
-    if (research.completed) auto[taskId] = true;
+    if (research.completed) confirm(taskId, `archimedea-score-${research.evidence}`);
   }
-  return { auto, progress };
+  return { auto, progress, evidence };
 }
 
 export function archimedeaResearchProgress(inventory, kind, now = Date.now(), syncedAt = null, options = {}) {
@@ -1388,6 +1408,9 @@ async function renderResult(record, cardDir, actionText = '', skipped = new Set(
     ...(mediaUrl ? { mediaUrl } : {}),
     tasks: rows,
     autoChecked: autoIds,
+    autoEvidence: Object.fromEntries(autoIds
+      .filter((id) => autoResult?.evidence?.[id])
+      .map((id) => [id, autoResult.evidence[id]])),
     weekStart: record.weekStart,
     nextReset: nextReset(),
   };

@@ -92,6 +92,58 @@ test('科研重置日期已推进到下一周界时，同分也能证明属于�
   const result = evaluateAutoCheck(inventory, null, now, null, syncedAt, { conquestSamples: samples({ score: 21 }) });
   assert.equal(result.auto['deep-archimedea'], true);
   assert.match(result.progress['deep-archimedea'], /三关已完成/u);
+  assert.equal(result.evidence['deep-archimedea'].basis, 'archimedea-score-reset-boundary');
+  assert.equal(result.evidence['deep-archimedea'].cycleStart, '2026-08-10T00:00:00.000Z');
+  assert.equal(result.evidence['deep-archimedea'].cycleEnd, '2026-08-17T00:00:00.000Z');
+});
+
+test('两类科研本周同为 34 分时按各自分数字段核销', () => {
+  const now = Date.UTC(2026, 8, 9, 20, 7);
+  const resetAt = Date.parse(nextReset(new Date(now)));
+  const syncedAt = new Date(now - 60_000).toISOString();
+  const inventory = {
+    EntratiLabConquestUnlocked: 1,
+    EntratiLabConquestCacheScoreMission: 34,
+    EchoesHexConquestUnlocked: 1,
+    EchoesHexConquestCacheScoreMission: 34,
+    EntratiVaultCountResetDate: { $date: { $numberLong: String(resetAt) } },
+  };
+  const samples = [
+    { kind: 'EntratiLab', weekStart: '2026-08-31T00:00:00.000Z', score: 34, syncedAt, at: syncedAt },
+    { kind: 'EchoesHex', weekStart: '2026-08-31T00:00:00.000Z', score: 0, tokens: [], syncedAt, at: syncedAt },
+  ];
+  const result = evaluateAutoCheck(inventory, null, now, null, syncedAt, { conquestSamples: samples });
+  assert.equal(result.auto['deep-archimedea'], true);
+  assert.equal(result.auto['temporal-archimedea'], true);
+  assert.equal(result.progress['deep-archimedea'], '本周最佳 34 研究点 · 三关已完成 · 已达精英解锁线');
+  assert.equal(result.progress['temporal-archimedea'], '本周最佳 34 研究点 · 三关已完成 · 已达精英解锁线');
+});
+
+test('回廊、衰退室、沉沦之地与卡尔均生成本周期核销证据', () => {
+  const now = Date.UTC(2026, 8, 9, 12);
+  const expiry = { $date: { $numberLong: String(Date.parse(nextReset(new Date(now)))) } };
+  const weekCount = Math.floor((now - Date.UTC(2014, 1, 10)) / 604_800_000);
+  const inventory = {
+    EndlessXP: [
+      { Category: 'EXC_NORMAL', Expiry: expiry, Earn: 100, PendingRewards: [{ RequiredTotalXp: 100 }] },
+      { Category: 'EXC_HARD', Expiry: expiry, Earn: 200, PendingRewards: [{ RequiredTotalXp: 200 }] },
+    ],
+    EntratiVaultCountResetDate: expiry,
+    EntratiVaultCountLastPeriod: 5,
+    DescentRewards: [
+      { Category: 'DM_COH_NORMAL', Expiry: expiry, FloorClaimed: 21, PendingRewards: [{ FloorCheckpoint: 21 }] },
+      { Category: 'DM_COH_HARD', Expiry: expiry, FloorClaimed: 21, PendingRewards: [{ FloorCheckpoint: 21 }] },
+    ],
+    Affiliations: [{ Tag: 'KahlSyndicate', WeeklyMissions: [{ WeekCount: weekCount, CompletedMission: true }] }],
+  };
+  const result = evaluateAutoCheck(inventory, null, now, null, new Date(now).toISOString());
+  for (const id of ['circuit-normal', 'circuit-steel', 'netracell', 'descendia-normal', 'descendia-steel', 'kahl']) {
+    assert.equal(result.auto[id], true, id);
+    assert.equal(result.evidence[id].finding, 'confirmed_complete', id);
+    assert.equal(result.evidence[id].scope, 'weekly', id);
+    assert.equal(result.evidence[id].cycleStart, '2026-09-07T00:00:00.000Z', id);
+    assert.equal(result.evidence[id].cycleEnd, '2026-09-14T00:00:00.000Z', id);
+  }
 });
 
 test('科研重置日期已推进到下一周界时，无历史样本也能确认本周分数', () => {
@@ -590,6 +642,8 @@ test('电波挑战进度达到 requiredCount 时计入并可在全中时核销',
   const result = evaluateAutoCheck(inventory, worldState, Date.now(), challengeRequired);
   assert.equal(result.progress.nightwave, '周挑战 1/1');
   assert.equal(result.auto.nightwave, true);
+  assert.equal(result.evidence.nightwave.basis, 'nightwave-progress-targets');
+  assert.equal(result.evidence.nightwave.source, 'alecaframe+worldstate');
 });
 
 test('电波部分挑战无 requiredCount 时只按已知项计数、不整体核销', () => {
@@ -604,7 +658,10 @@ test('电波部分挑战无 requiredCount 时只按已知项计数、不整体�
 test('执刑官：快照 SortieId 与本周 archonHunt.id 一致才核销，对不上或无世界状态不猜', () => {
   const inventory = { LastLiteSortieReward: [{ SortieId: { $oid: 'abc123' }, StoreItem: '/Lotus/Powersuits/Test', Manifest: {} }] };
   const worldState = { archonHunt: { id: 'abc123', boss: 'Archon Amar' } };
-  assert.equal(evaluateAutoCheck(inventory, worldState).auto.archon, true);
+  const matched = evaluateAutoCheck(inventory, worldState);
+  assert.equal(matched.auto.archon, true);
+  assert.equal(matched.evidence.archon.basis, 'archon-reward-id-match');
+  assert.equal(matched.evidence.archon.source, 'alecaframe+worldstate');
   assert.equal(evaluateAutoCheck(inventory, { archonHunt: { id: 'other' } }).auto.archon, undefined);
   assert.equal(evaluateAutoCheck(inventory, null).auto.archon, undefined);
 });

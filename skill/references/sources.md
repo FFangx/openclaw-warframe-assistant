@@ -116,6 +116,7 @@ Language: zh-hans
 - AlecaFrame 通过 Overwolf 在登录和加载场景期间更新账号库存；本机快照位于 `%LOCALAPPDATA%\AlecaFrame\lastData.dat`
 - 只读适配器使用 AlecaFrame 客户端自身公开可检查的 AES-CBC 格式解封快照，不读取 `WFMarketToken.tk`，不修改 AlecaFrame 或游戏文件
 - 快照外层的 `InventoryJson` 包含库存、装备、段位、货币、遗物、MOD、赋能及若干个人进度字段；输出前只抽取白名单字段，不得回显账号 ID、实例 ID、原始 JSON 或令牌
+- 周常个人事实来自 `lastData.dat`：`EndlessXP`（回廊）、`DescentRewards`（沉沦之地）、`Affiliations[].WeeklyMissions`（卡尔）、`LastLiteSortieReward`（执刑官对账）、`ChallengeProgress`（电波）、`CalendarProgress`（1999 日历）、`EntratiVaultCount*`（衰退室/共享周界）及两组 `EntratiLab/EchoesHex Conquest*` 科研字段。`deltas.dat` 只有近期物品增量且没有可靠周界，不参与核销；静态 `cachedData/json` 只用于名称与资料，也不能证明个人完成
 - 中文名称优先使用 `%LOCALAPPDATA%\AlecaFrame\cachedData\json\lang.json` 的 `zh.name`；战甲名称保持英文，标准部件名称使用本地中文映射
 - 可靠个人查询：段位、货币余额、剩余交易、物品数量、遗物精炼与数量、赋能等级与数量
 - 周常字段只按证据强度展示：`DescentRewards` 可显示沉沦之地层数；`EntratiVaultCountLastPeriod` 明确属于上一周期；最近突击/执刑官奖励和午夜电波历史没有可靠周期归属时不得自动标记本周完成

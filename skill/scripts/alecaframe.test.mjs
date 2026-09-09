@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { annotateParentOwnership, parseAlecaMessage, splitInventoryQueryList } from './alecaframe.mjs';
+import { annotateParentOwnership, parseAlecaMessage, splitInventoryQueryList, weeklyEvidence } from './alecaframe.mjs';
 
 // —— 显式多物品库存查询（2026-08-13 实机修复：延凡草、瑶丛 不能被当成一个名称） ——
 
@@ -68,6 +68,39 @@ test('parseAlecaMessage 非白名单输入返回 null 不拦截', () => {
   assert.equal(parseAlecaMessage('精炼推荐 单人 杜卡德 额外参数'), null);
   assert.equal(parseAlecaMessage('商店 泰辛 额外参数'), null);
   assert.equal(parseAlecaMessage(''), null);
+});
+
+test('账号周常覆盖 11 项证据，并分别显示两类科研分数', async () => {
+  const future = { $date: { $numberLong: String(Date.now() + 3 * 86400000) } };
+  const weekCount = Math.floor((Date.now() - Date.UTC(2014, 1, 10)) / 604_800_000);
+  const snapshot = {
+    syncedAt: new Date().toISOString(),
+    inventory: {
+      EntratiLabConquestUnlocked: 1,
+      EntratiLabConquestCacheScoreMission: 34,
+      EchoesHexConquestUnlocked: 1,
+      EchoesHexConquestCacheScoreMission: 34,
+      EntratiVaultCountLastPeriod: 4,
+      EntratiVaultCountResetDate: future,
+      LastLiteSortieReward: [{}],
+      Affiliations: [{ Tag: 'KahlSyndicate', WeeklyMissions: [{ WeekCount: weekCount, CompletedMission: true }] }],
+      DescentRewards: [
+        { Category: 'DM_COH_NORMAL', Expiry: future, FloorClaimed: 9, PendingRewards: [{ FloorCheckpoint: 21 }] },
+        { Category: 'DM_COH_HARD', Expiry: future, FloorClaimed: 0, PendingRewards: [{ FloorCheckpoint: 21 }] },
+      ],
+      EndlessXP: [
+        { Category: 'EXC_NORMAL', Expiry: future, Earn: 100, PendingRewards: [{ RequiredTotalXp: 1000 }] },
+        { Category: 'EXC_HARD', Expiry: future, Earn: 200, PendingRewards: [{ RequiredTotalXp: 2000 }] },
+      ],
+      ChallengeProgress: [{ Name: 'A', Progress: 1 }],
+      CalendarProgress: { SeasonProgress: { LastCompletedDayIdx: 1 } },
+    },
+  };
+  const result = await weeklyEvidence(snapshot);
+  assert.equal(result.data.rows.length, 11);
+  assert.equal(result.data.rows.find((row) => row.name === '深层科研').value, '34 研究点');
+  assert.equal(result.data.rows.find((row) => row.name === '时光科研').value, '34 研究点');
+  assert.match(result.text, /这些数据只用于辅助判断/u);
 });
 
 // —— 父成品持有标注：快照缺装备栏时保守返回 null，绝不误判“可以兑换” ——

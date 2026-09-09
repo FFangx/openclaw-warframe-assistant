@@ -777,17 +777,61 @@ function bsonDate(value) {
 }
 
 async function weeklyEvidence(snapshot) {
-  const rewards = (snapshot.inventory.DescentRewards || []).map((item) => ({
-    name: item.Category === 'DM_COH_HARD' ? '沉沦之地（钢铁）' : '沉沦之地（普通）',
-    value: `${safeNumber(item.FloorClaimed)} 层`,
-    detail: bsonDate(item.Expiry) ? `记录有效至 ${formatTime(bsonDate(item.Expiry))}` : '账号快照记录',
-  }));
-  const entratiCount = safeNumber(snapshot.inventory.EntratiVaultCountLastPeriod);
+  const inventory = snapshot.inventory;
+  const now = Date.now();
+  const expiryDetail = (value, fallback) => {
+    const expiry = bsonDate(value);
+    return expiry && Date.parse(expiry) > now ? `本周期有效至 ${formatTime(expiry)}` : fallback;
+  };
+  const descentByCategory = new Map((inventory.DescentRewards || []).map((item) => [item.Category, item]));
+  const circuitByCategory = new Map((inventory.EndlessXP || []).map((item) => [item.Category, item]));
+  const descentRow = (category, name) => {
+    const item = descentByCategory.get(category);
+    const goal = Math.max(0, ...((item?.PendingRewards || []).map((reward) => safeNumber(reward.FloorCheckpoint))));
+    const claimed = safeNumber(item?.FloorClaimed);
+    const expired = item && !(Date.parse(String(bsonDate(item.Expiry) || '')) > now);
+    return {
+      name,
+      value: goal > 0 ? `${expired ? '上期 ' : ''}${Math.min(claimed, goal)}/${goal} 层` : '无可验证进度',
+      detail: item ? expiryDetail(item.Expiry, '周期已过期，不用于自动核销') : '快照无该难度记录',
+    };
+  };
+  const circuitRow = (category, name) => {
+    const item = circuitByCategory.get(category);
+    const goal = Math.max(0, ...((item?.PendingRewards || []).map((reward) => safeNumber(reward.RequiredTotalXp))));
+    const earned = safeNumber(item?.Earn);
+    const expired = item && !(Date.parse(String(bsonDate(item.Expiry) || '')) > now);
+    return {
+      name,
+      value: goal > 0 ? `${expired ? '上期 ' : ''}${Math.min(earned, goal)}/${goal} 经验` : '无可验证进度',
+      detail: item ? expiryDetail(item.Expiry, '周期已过期，不用于自动核销') : '快照无该难度记录',
+    };
+  };
+  const researchRow = (kind, name) => {
+    const score = safeNumber(inventory[`${kind}ConquestCacheScoreMission`]);
+    const unlocked = safeNumber(inventory[`${kind}ConquestUnlocked`]) > 0;
+    return {
+      name,
+      value: unlocked || score > 0 ? `${score} 研究点` : '未解锁或无记录',
+      detail: '周常卡会结合快照时间、周重置与历史样本确认周期',
+    };
+  };
+  const currentKahlWeek = Math.floor((now - Date.UTC(2014, 1, 10)) / 604_800_000);
+  const kahl = ((inventory.Affiliations || []).find((item) => item.Tag === 'KahlSyndicate')?.WeeklyMissions || [])
+    .find((item) => safeNumber(item.WeekCount) === currentKahlWeek);
+  const calendar = inventory.CalendarProgress?.SeasonProgress;
   const rows = [
-    ...rewards,
-    { name: '衰退室', value: `${entratiCount} 次`, detail: '字段标记为上一周期，仅作参考' },
-    { name: '执刑官猎杀', value: snapshot.inventory.LastLiteSortieReward?.length ? '有最近奖励记录' : '未检测到记录', detail: '无法仅凭快照确认是否属于本周' },
-    { name: '午夜电波', value: `${(snapshot.inventory.SeasonChallengeHistory || []).length} 条历史`, detail: '当前挑战完成状态暂不能可靠判定' },
+    { name: '执刑官猎杀', value: inventory.LastLiteSortieReward?.length ? '有最近奖励记录' : '未检测到记录', detail: '需与本周执刑官任务 ID 对账' },
+    researchRow('EntratiLab', '深层科研'),
+    researchRow('EchoesHex', '时光科研'),
+    { name: '衰退室', value: `${safeNumber(inventory.EntratiVaultCountLastPeriod)}/5 次`, detail: expiryDetail(inventory.EntratiVaultCountResetDate, '周重置时间无效，不用于自动核销') },
+    { name: '击溃合一众', value: kahl?.CompletedMission === true ? '本周已完成' : '未检测到本周完成', detail: kahl ? `周序号 ${currentKahlWeek} 已对齐` : '快照无本周任务记录' },
+    descentRow('DM_COH_NORMAL', '沉沦之地（普通）'),
+    descentRow('DM_COH_HARD', '沉沦之地（钢铁）'),
+    circuitRow('EXC_NORMAL', '无尽回廊（普通）'),
+    circuitRow('EXC_HARD', '无尽回廊（钢铁）'),
+    { name: '午夜电波周常', value: `${(inventory.ChallengeProgress || []).length} 条进度记录`, detail: '需与本周挑战及目标数量对账' },
+    { name: '1999 日历', value: calendar ? `最后完成节点 ${safeNumber(calendar.LastCompletedDayIdx) + 1}` : '无进度记录', detail: '需与当前赛季、轮次和本周有效节点对账' },
   ];
   const data = { kind: 'inventory', subtype: '账号周常证据', title: '账号周常 · 可验证进度', syncedAt: snapshot.syncedAt, rows, totalMatches: rows.length, totalCount: rows.length, countUnit: '项' };
   return { data, text: `${formatInventory(data, '')}\n\n这些数据只用于辅助判断，不会自动把含糊项目勾成已完成。` };
@@ -815,7 +859,7 @@ function formatInventory(data, emptyText) {
   return lines.join('\n');
 }
 
-export { readSnapshot };
+export { readSnapshot, weeklyEvidence };
 
 // 模式词→队伍人数：单人/solo=1，N人=N（限 1~4），默认 4 人组队对齐 AlecaFrame
 function parseSquad(query) {
