@@ -18,6 +18,8 @@ import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+// R15 第二片：与 alecaframe 共用同一个版本化白名单适配器，业务不再直接读原始信封。
+import { adaptAccountSnapshot } from './account-snapshot.mjs';
 import { getMarketPriceIndex, stripDataUriReplacer } from './wfdata.mjs';
 import { promisify } from 'node:util';
 import { buildDropsAlertCard, renderWarframeCard } from './warframe-cards.mjs';
@@ -79,6 +81,8 @@ function parseArgs(argv) {
 
 // ---------- 快照读取与计数 ----------
 
+// R15 第二片：信封解析与顶层白名单由共享适配器负责；这里保持原有返回形状
+// （inventory / syncedAt / fileMtimeMs），调用方与用户输出不变。
 async function readSnapshot(alecaDir) {
   const file = path.join(alecaDir, 'lastData.dat');
   const encrypted = await readFile(file);
@@ -90,17 +94,14 @@ async function readSnapshot(alecaDir) {
     text = Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
   }
   const envelope = JSON.parse(text.replace(/\0+$/gu, ''));
-  // 两种格式：旧版包 InventoryJson 信封；新版（2026-08 起）顶层直接就是库存对象
-  const inventoryText = envelope.InventoryJson || envelope.InventoryJSON;
-  const inventory = inventoryText
-    ? (typeof inventoryText === 'string' ? JSON.parse(inventoryText) : inventoryText)
-    : (envelope.MiscItems || envelope.RawUpgrades ? envelope : null);
-  if (!inventory) throw new Error('账号快照中没有库存数据');
   const fileStat = await stat(file);
-  const oid = inventory.LastInventorySync?.$oid || inventory.LastInventorySync?.oid || '';
-  const oidSeconds = /^[0-9a-f]{24}$/iu.test(oid) ? Number.parseInt(oid.slice(0, 8), 16) : 0;
-  const syncedAt = oidSeconds > 0 ? new Date(oidSeconds * 1000).toISOString() : fileStat.mtime.toISOString();
-  return { inventory, syncedAt, fileMtimeMs: fileStat.mtimeMs };
+  const snapshot = adaptAccountSnapshot(envelope, {
+    alecaDir,
+    fileMtime: fileStat.mtime.toISOString(),
+    fileMtimeMs: fileStat.mtimeMs,
+    missingInventoryMessage: '账号快照中没有库存数据',
+  });
+  return { inventory: snapshot.inventory, syncedAt: snapshot.syncedAt, fileMtimeMs: snapshot.fileMtimeMs };
 }
 
 // 把快照压成「物品路径 → 总数量」。Upgrades（已装等级的 MOD/赋能）按条目数计 1。

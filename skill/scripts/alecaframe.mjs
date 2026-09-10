@@ -8,6 +8,8 @@ import { access, readFile, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+// R15 第二片：lastData → 版本化、白名单的 AccountSnapshot v1（业务只看适配后字段）。
+import { adaptAccountSnapshot } from './account-snapshot.mjs';
 import { matchCommandText } from './command-registry.mjs';
 import { buildAccountSnapshotCard, buildInventorySnapshotCard, renderWarframeCard } from './warframe-cards.mjs';
 import { stripDataUriReplacer } from './wfdata.mjs';
@@ -93,6 +95,9 @@ async function readJson(file) {
   return JSON.parse(await readFile(file, 'utf8'));
 }
 
+// R15 第二片：解密后交给 account-snapshot 适配器——顶层白名单过滤 + 字段元数据；
+// 原始 envelope（可能含令牌/账号标识/未来新增字段）不再外传。
+// inventory / syncedAt / fileMtime / alecaDir 语义与适配前保持一致。
 async function readSnapshot(alecaDir = defaultAlecaDir()) {
   const file = path.join(alecaDir, 'lastData.dat');
   await access(file);
@@ -105,17 +110,12 @@ async function readSnapshot(alecaDir = defaultAlecaDir()) {
     text = Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
   }
   const envelope = JSON.parse(text.replace(/\0+$/gu, ''));
-  // 两种格式：旧版包 InventoryJson 信封；新版（2026-08 起）顶层直接就是库存对象
-  const inventoryText = envelope.InventoryJson || envelope.InventoryJSON;
-  const inventory = inventoryText
-    ? (typeof inventoryText === 'string' ? JSON.parse(inventoryText) : inventoryText)
-    : (envelope.MiscItems || envelope.RawUpgrades ? envelope : null);
-  if (!inventory) throw new Error('账号快照中没有库存数据，请先启动 AlecaFrame 和游戏完成一次加载。');
   const fileStat = await stat(file);
-  const oid = inventory.LastInventorySync?.$oid || inventory.LastInventorySync?.oid || '';
-  const oidSeconds = /^[0-9a-f]{24}$/iu.test(oid) ? Number.parseInt(oid.slice(0, 8), 16) : 0;
-  const syncedAt = oidSeconds > 0 ? new Date(oidSeconds * 1000).toISOString() : fileStat.mtime.toISOString();
-  return { inventory, envelope, syncedAt, fileMtime: fileStat.mtime.toISOString(), alecaDir };
+  return adaptAccountSnapshot(envelope, {
+    alecaDir,
+    fileMtime: fileStat.mtime.toISOString(),
+    fileMtimeMs: fileStat.mtimeMs,
+  });
 }
 
 function safeNumber(value) {
