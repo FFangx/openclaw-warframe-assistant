@@ -11,6 +11,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { getBountyZhMaps, staleCachedJson } from './wfdata.mjs';
 import { loadWorldState } from './worldstate-source.mjs';
+// R15 第四片：集团声望读取只走语义视图。
+import { buildAccountView } from './account-view.mjs';
 
 const BOUNTY_CYCLE_URL = 'https://oracle.browse.wf/bounty-cycle';
 const DROP_DATA_BASE = 'https://drops.warframestat.us/data';
@@ -19,31 +21,31 @@ const FETCH_TIMEOUT_MS = 20_000;
 const execFileAsync = promisify(execFile);
 
 // 三开放世界 + 别名（resolveBountyPlace 用）；顺序=卡片从上到下；standingUnit：Deimos 悬赏给母亲信物不是声望
-// affTag/dailyKey：快照 Affiliations 集团标签与日声望余量键（实验室日余量键=Cavia，2026-08-06 探针实证）
+// affTag：快照里的集团标签；今日剩余声望字段由 account-view 的语义映射按 tag 解析（实验室=Cavia，2026-08-06 探针实证）
 export const BOUNTY_PLACES = Object.freeze([
   {
     key: 'cetus', zh: '希图斯', syndicate: 'Ostrons', npc: '孔尊', planet: '地球 · 夜灵平野', standingUnit: '声望',
-    affTag: 'CetusSyndicate', dailyKey: 'DailyAffiliationCetus',
+    affTag: 'CetusSyndicate',
     alias: ['希图斯', '夜灵平野', '平野', '地球', 'cetus', '孔尊'],
   },
   {
     key: 'fortuna', zh: '福尔图娜', syndicate: 'Solaris United', npc: 'Eudico', planet: '金星 · 奥布山谷', standingUnit: '声望',
-    affTag: 'SolarisSyndicate', dailyKey: 'DailyAffiliationSolaris',
+    affTag: 'SolarisSyndicate',
     alias: ['福尔图娜', '奥布山谷', '金星', '索拉里斯', 'fortuna', 'eudico'],
   },
   {
     key: 'deimos', zh: '殁世幽都', syndicate: 'Entrati', npc: '母亲', planet: '火卫二 · 魔胎之境', standingUnit: '母亲信物',
-    affTag: 'EntratiSyndicate', dailyKey: 'DailyAffiliationEntrati',
+    affTag: 'EntratiSyndicate',
     alias: ['殁世幽都', '魔胎之境', '火卫二', 'deimos', '英择谛', 'entrati', '母亲'],
   },
 ]);
 
 // 扎里曼/实验室挑战板（oracle bounty-cycle 键 → 展示名）+ 别名（resolveBountyBoard 用）
 const CYCLE_BOARDS = Object.freeze([
-  { key: 'ZarimanSyndicate', zh: '扎里曼', npc: '管理者', planet: '扎里曼十号', affTag: 'ZarimanSyndicate', dailyKey: 'DailyAffiliationZariman', alias: ['扎里曼', '扎里曼十号', 'zariman'] },
+  { key: 'ZarimanSyndicate', zh: '扎里曼', npc: '管理者', planet: '扎里曼十号', affTag: 'ZarimanSyndicate', alias: ['扎里曼', '扎里曼十号', 'zariman'] },
   // 官方名=解剖圣所（dict.zh SolarMapEntratiLabsShortcut 实证）；「悬赏 实验室」等旧用法全走别名
-  { key: 'EntratiLabSyndicate', zh: '解剖圣所', npc: '斐波那契', planet: '火卫二实验室', affTag: 'EntratiLabSyndicate', dailyKey: 'DailyAffiliationCavia', alias: ['实验室', '圣所', '解剖圣所', '阿尔布雷希特', '阿尔布雷希特实验室', 'entratilab', '琵琶鱼', '斐波那契'] },
-  { key: 'HexSyndicate', zh: '六人组', npc: '六人组', planet: '霍瓦尼亚（1999）', affTag: 'HexSyndicate', dailyKey: 'DailyAffiliationHex', alias: ['六人组', 'hex', '1999'] },
+  { key: 'EntratiLabSyndicate', zh: '解剖圣所', npc: '斐波那契', planet: '火卫二实验室', affTag: 'EntratiLabSyndicate', alias: ['实验室', '圣所', '解剖圣所', '阿尔布雷希特', '阿尔布雷希特实验室', 'entratilab', '琵琶鱼', '斐波那契'] },
+  { key: 'HexSyndicate', zh: '六人组', npc: '六人组', planet: '霍瓦尼亚（1999）', affTag: 'HexSyndicate', alias: ['六人组', 'hex', '1999'] },
 ]);
 
 // 1999 同伴官方中文名（dict.zh Messenger 词条实证；Amir 内部名 Jabir）
@@ -317,22 +319,21 @@ export function resolveBountyBoard(query) {
   return null;
 }
 
-// 六区集团声望挂载（仅用户私聊，索引卡右列用）：快照 Affiliations（总声望+等级）+ DailyAffiliation*（今日余量）
-// 快照缺字段的区静默跳过；调用方失败整体降级无声望列
-export function attachBountyStanding(data, inventory) {
-  if (!inventory) return data;
-  const affiliations = Array.isArray(inventory.Affiliations) ? inventory.Affiliations : [];
+// 六区集团声望挂载（仅用户私聊，索引卡右列用）：语义视图给出该集团的
+// 总声望 + 等级 + 今日剩余；缺字段的区静默跳过，调用方失败整体降级无声望列。
+export function attachBountyStanding(data, input) {
+  if (!input) return data;
+  const { standing } = buildAccountView(input);
   const metaOf = (key) => [...BOUNTY_PLACES, ...CYCLE_BOARDS].find((entry) => entry.key === key);
   for (const region of [...(data.places || []), ...(data.boards || [])]) {
     const meta = metaOf(region.key);
     if (!meta?.affTag) continue;
-    const affiliation = affiliations.find((entry) => entry.Tag === meta.affTag);
+    const affiliation = standing.affiliation(meta.affTag);
     if (!affiliation) continue;
-    const daily = Number(inventory[meta.dailyKey]);
     region.standing = {
-      standing: Number(affiliation.Standing) || 0,
-      title: Number(affiliation.Title) || 0,
-      daily: Number.isFinite(daily) ? daily : null,
+      standing: affiliation.standing,
+      title: affiliation.title,
+      daily: standing.dailyRemaining(meta.affTag),
     };
   }
   return data;

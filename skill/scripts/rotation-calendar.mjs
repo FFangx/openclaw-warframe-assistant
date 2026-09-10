@@ -8,6 +8,8 @@
 
 import { pathToFileURL } from 'node:url';
 import { staleCachedJson } from './wfdata.mjs';
+// R15 第四片：账号读取只走语义视图。
+import { INVENTORY_SCOPES, buildAccountView } from './account-view.mjs';
 import { documentShell, escapeHtml } from './warframe-cards.mjs';
 
 const LIVE_JS_URL = 'https://browse.wf/typestripped/live.js';
@@ -84,7 +86,8 @@ export function parseVarziaSchedule(worldState, now = Date.now()) {
 // inventory/names 可空（降级无「已有」标）；worldState 可空（瓦奇娅列显示获取失败）
 export async function buildRotationCalendar({ weeks = 8, inventory = null, names = null, worldState = null, now = Date.now() } = {}) {
   const tables = await getRotationTables();
-  const suitSet = new Set((inventory?.Suits || []).map((suit) => suit.ItemType));
+  // R15 第四片：战甲持有判定只走语义视图（warframes 集合，uniqueName 精确比对）。
+  const suitSet = buildAccountView(inventory).inventory.itemTypes(INVENTORY_SCOPES.WARFRAMES);
   const owned = (enName) => Boolean(enName && names?.uniqByName && suitSet.size && suitSet.has(names.uniqByName.get(enName)));
   const varzia = worldState ? parseVarziaSchedule(worldState, now) : [];
   const currentWeek = Math.trunc((now - CIRCUIT_EPOCH_MS) / WEEK_MS);

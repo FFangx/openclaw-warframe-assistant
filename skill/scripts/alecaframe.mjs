@@ -10,6 +10,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 // R15 第二片：lastData → 版本化、白名单的 AccountSnapshot v1（业务只看适配后字段）。
 import { adaptAccountSnapshot } from './account-snapshot.mjs';
+// R15 第四片：语义账号视图——业务只按语义命名空间读取，不再书写 AlecaFrame 原始字段名。
+import { CIRCUIT_TRACKS, DESCENT_TRACKS, INVENTORY_SCOPES, RESEARCH_TRACKS, buildAccountView } from './account-view.mjs';
 import { matchCommandText } from './command-registry.mjs';
 import { buildAccountSnapshotCard, buildInventorySnapshotCard, renderWarframeCard } from './warframe-cards.mjs';
 import { stripDataUriReplacer } from './wfdata.mjs';
@@ -39,17 +41,8 @@ const QUERY_ALIASES = {
   工程: 'vauban', 剑圣: 'ash', 充沛: 'arcane energize', 充沛赋能: 'arcane energize',
 };
 
-const ACCOUNT_GROUPS = [
-  'MiscItems', 'Recipes', 'Consumables', 'RawUpgrades', 'FusionTreasures', 'FlavourItems',
-  'SpecialItems', 'DataKnives', 'LongGuns', 'Pistols', 'Melee', 'Suits', 'Sentinels',
-  'SentinelWeapons', 'SpaceGuns', 'SpaceMelee', 'SpaceSuits', 'OperatorAmps', 'OperatorSuits',
-  'CrewShipWeapons', 'DrifterMelee', 'Horses', 'Motorcycles', 'KubrowPets',
-];
-const EQUIPMENT_GROUPS = [
-  'LongGuns', 'Pistols', 'Melee', 'Suits', 'Sentinels', 'SentinelWeapons',
-  'SpaceGuns', 'SpaceMelee', 'SpaceSuits', 'OperatorAmps', 'OperatorSuits',
-  'CrewShipWeapons', 'DrifterMelee', 'Horses', 'Motorcycles', 'KubrowPets',
-];
+// R15 第四片：库存组名与装备栏组合已移入 account-view 的语义集合/作用域，
+// 本模块只保留展示与目录所需的常量。
 const CATALOG_FILES = [
   'Arcanes.json', 'Mods.json', 'Misc.json', 'Resources.json', 'Gear.json', 'Primary.json',
   'Secondary.json', 'Melee.json', 'Warframes.json', 'Sentinels.json', 'SentinelWeapons.json',
@@ -116,11 +109,6 @@ async function readSnapshot(alecaDir = defaultAlecaDir()) {
     fileMtime: fileStat.mtime.toISOString(),
     fileMtimeMs: fileStat.mtimeMs,
   });
-}
-
-function safeNumber(value) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : 0;
 }
 
 function localizeRelicName(value) {
@@ -200,28 +188,11 @@ async function loadCatalog(alecaDir, localize) {
   return byUniqueName;
 }
 
-function collectOwned(inventory) {
-  const rows = [];
-  for (const group of ACCOUNT_GROUPS) {
-    const values = Array.isArray(inventory[group]) ? inventory[group] : [];
-    for (const value of values) {
-      if (!value?.ItemType) continue;
-      const isCounted = value.ItemCount != null;
-      rows.push({
-        uniqueName: value.ItemType,
-        count: isCounted ? safeNumber(value.ItemCount) : 1,
-        rank: null,
-        group,
-      });
-    }
-  }
-  for (const value of inventory.Upgrades || []) {
-    if (!value?.ItemType) continue;
-    let rank = 0;
-    try { rank = safeNumber(JSON.parse(value.UpgradeFingerprint || '{}').lvl); } catch { rank = 0; }
-    rows.push({ uniqueName: value.ItemType, count: 1, rank, group: 'Upgrades' });
-  }
-  return rows;
+// R15 第四片：库存行改由语义视图提供——数量口径（未声明数量=1 件）、
+// 已装升级每条计 1 件并带指纹等级，全部由边界定义，这里只做展示聚合。
+function collectOwned(view) {
+  return view.inventory.rows(INVENTORY_SCOPES.ALL)
+    .map((row) => ({ uniqueName: row.itemType, count: row.quantity ?? 1, rank: row.rank, group: row.collection }));
 }
 
 function aggregateRows(rows) {
@@ -242,9 +213,11 @@ function rankText(ranks) {
 }
 
 async function accountSummary(snapshot) {
-  const { inventory, syncedAt } = snapshot;
-  const miscCount = (uniqueName) => safeNumber((inventory.MiscItems || []).find((item) => item.ItemType === uniqueName)?.ItemCount);
-  const ducats = miscCount('/Lotus/Types/Items/MiscItems/PrimeBucks');
+  const view = buildAccountView(snapshot);
+  const { account } = view;
+  // 兼容旧口径：余额取资源集合里首个同路径条目的显式数量，不跨重复行累计。
+  const miscCount = (uniqueName) => view.inventory.amountOf(uniqueName, INVENTORY_SCOPES.RESOURCES);
+  const ducats = view.account.ducatBalance;
   const relics = await loadRelics(snapshot);
   const arcanes = await loadArcanes(snapshot);
   // 热门商店货币（2026-08-06 用户点名）：赤毒/钢铁精华/裂罅碎块/存货储备/双衍天赋×2/电波代币
@@ -253,9 +226,10 @@ async function accountSummary(snapshot) {
   const iconOf = async (uniqueName, cdnImage = null) => (await gameIconDataUri(uniqueName))
     || (cdnImage ? await imageDataUri(`https://cdn.alecaframe.com/warframeData/img/${cdnImage}`) : null);
   // 电波商店代币每赛季换 uniqueName（NoraIntermissionFifteenCreds…），按前缀模糊找当季那条
-  const noraEntry = (inventory.MiscItems || []).find((item) => /\/MiscItems\/Nora\w*Creds$/u.test(String(item.ItemType)));
+  const noraEntry = view.inventory.rows(INVENTORY_SCOPES.RESOURCES)
+    .find((item) => /\/MiscItems\/Nora\w*Creds$/u.test(String(item.itemType)));
   const language = await loadLanguage(snapshot.alecaDir).catch(() => ({}));
-  const noraZh = noraEntry ? (language[noraEntry.ItemType]?.zh?.name || '电波商店代币') : null;
+  const noraZh = noraEntry ? (language[noraEntry.itemType]?.zh?.name || '电波商店代币') : null;
   const SHOP_CURRENCIES = [
     { label: '赤毒', uniqueName: '/Lotus/Types/Items/MiscItems/Kuva', color: '#d64541' },
     { label: '苦栓', uniqueName: '/Lotus/Types/Gameplay/Duviri/Resource/DuviriDragonDropItem', color: '#e0a458' },
@@ -264,7 +238,7 @@ async function accountSummary(snapshot) {
     { label: '存货储备', uniqueName: '/Lotus/Types/Items/MiscItems/KahlCreds', color: '#d8b26e' },
     { label: '翠绿天赋', uniqueName: '/Lotus/Types/JadeShadowsPart2Mission/Gameplay/Resources/AshFavor', cdnImage: 'SiriusCoinResource.png', color: '#7ede9e' },
     { label: '猩红天赋', uniqueName: '/Lotus/Types/JadeShadowsPart2Mission/Gameplay/Resources/GarudaFavor', cdnImage: 'OrionCoinResource.png', color: '#ff7d88' },
-    ...(noraEntry ? [{ label: noraZh, uniqueName: String(noraEntry.ItemType), color: '#4FC3F7' }] : []),
+    ...(noraEntry ? [{ label: noraZh, uniqueName: String(noraEntry.itemType), color: '#4FC3F7' }] : []),
   ];
   const shopMetrics = await Promise.all(SHOP_CURRENCIES.map(async (entry) => ({
     label: entry.label,
@@ -275,14 +249,14 @@ async function accountSummary(snapshot) {
   const data = {
     kind: 'account',
     title: '我的账号状态',
-    syncedAt,
+    syncedAt: view.syncedAt,
     metrics: [
-      { label: '段位', value: safeNumber(inventory.PlayerLevel) },
-      { label: '剩余交易', value: safeNumber(inventory.TradesRemaining) },
-      { label: '现金', value: safeNumber(inventory.RegularCredits).toLocaleString('zh-CN'), currencyKind: 'credit' },
-      { label: '内融核心', value: safeNumber(inventory.FusionPoints).toLocaleString('zh-CN'), currencyKind: 'endo' },
+      { label: '段位', value: account.masteryRank },
+      { label: '剩余交易', value: account.tradesRemaining },
+      { label: '现金', value: account.credits.toLocaleString('zh-CN'), currencyKind: 'credit' },
+      { label: '内融核心', value: account.endo.toLocaleString('zh-CN'), currencyKind: 'endo' },
       { label: '杜卡德金币', value: ducats.toLocaleString('zh-CN'), currencyKind: 'ducat' },
-      { label: '白金', value: (safeNumber(inventory.PremiumCredits) + safeNumber(inventory.PremiumCreditsFree)).toLocaleString('zh-CN'), currencyKind: 'plat' },
+      { label: '白金', value: account.platinum.total.toLocaleString('zh-CN'), currencyKind: 'plat' },
       ...shopMetrics,
     ],
     footnote: `遗物 ${relics.reduce((sum, item) => sum + item.count, 0)} 个 · 满级赋能 ${arcanes.filter((item) => item.rank === item.maxRank).reduce((sum, item) => sum + item.count, 0)} 个`,
@@ -291,24 +265,25 @@ async function accountSummary(snapshot) {
 }
 
 export async function loadRelics(snapshot) {
+  const view = buildAccountView(snapshot);
   const [catalog, localize] = await Promise.all([
     readCatalogJson(snapshot.alecaDir, 'Relics.json').then((items) => (Array.isArray(items) ? items : [])),
     loadLanguage(snapshot.alecaDir),
   ]);
   const byUniqueName = new Map(catalog.map((item) => [item.uniqueName, item]));
-  return (snapshot.inventory.MiscItems || []).flatMap((owned) => {
-    const item = byUniqueName.get(owned.ItemType);
+  return view.inventory.rows(INVENTORY_SCOPES.RESOURCES).flatMap((owned) => {
+    const item = byUniqueName.get(owned.itemType);
     if (!item) return [];
     const englishName = item.name || '';
     const baseName = englishName.replace(/\s+(Intact|Exceptional|Flawless|Radiant)$/iu, '');
     const refinement = englishName.match(/(Intact|Exceptional|Flawless|Radiant)$/iu)?.[1] || '';
     return [{
-      uniqueName: owned.ItemType,
+      uniqueName: owned.itemType,
       englishName,
       baseName,
       refinement,
-      name: localizeRelicName(englishName) === '未收录遗物' ? (localize(owned.ItemType) || '未收录遗物') : localizeRelicName(englishName),
-      count: safeNumber(owned.ItemCount),
+      name: localizeRelicName(englishName) === '未收录遗物' ? (localize(owned.itemType) || '未收录遗物') : localizeRelicName(englishName),
+      count: owned.quantity ?? 0,
       vaulted: Boolean(item.vaulted),
     }];
   });
@@ -366,23 +341,24 @@ async function relicQuery(snapshot, rawQuery) {
 }
 
 async function loadArcanes(snapshot) {
+  const view = buildAccountView(snapshot);
   const [catalog, localize] = await Promise.all([
     readCatalogJson(snapshot.alecaDir, 'Arcanes.json').then((items) => (Array.isArray(items) ? items : [])),
     loadLanguage(snapshot.alecaDir),
   ]);
   const byUniqueName = new Map(catalog.map((item) => [item.uniqueName, item]));
   const rows = [];
-  for (const owned of snapshot.inventory.RawUpgrades || []) {
-    const item = byUniqueName.get(owned.ItemType);
+  const maxRankOf = (item) => Math.max(0, (item.levelStats?.length || 1) - 1);
+  // 未装升级：按数量计；已装升级：每条 1 件、等级取指纹（语义视图已解析，这里不再碰指纹键名）。
+  for (const owned of view.inventory.rows(INVENTORY_SCOPES.RAW_UPGRADES)) {
+    const item = byUniqueName.get(owned.itemType);
     if (!item) continue;
-    rows.push({ uniqueName: owned.ItemType, englishName: item.name, name: localize(owned.ItemType) || '未收录赋能', rank: 0, maxRank: Math.max(0, (item.levelStats?.length || 1) - 1), count: safeNumber(owned.ItemCount) });
+    rows.push({ uniqueName: owned.itemType, englishName: item.name, name: localize(owned.itemType) || '未收录赋能', rank: 0, maxRank: maxRankOf(item), count: owned.quantity ?? 0 });
   }
-  for (const owned of snapshot.inventory.Upgrades || []) {
-    const item = byUniqueName.get(owned.ItemType);
+  for (const owned of view.inventory.rows(INVENTORY_SCOPES.UPGRADES)) {
+    const item = byUniqueName.get(owned.itemType);
     if (!item) continue;
-    let rank = 0;
-    try { rank = safeNumber(JSON.parse(owned.UpgradeFingerprint || '{}').lvl); } catch { rank = 0; }
-    rows.push({ uniqueName: owned.ItemType, englishName: item.name, name: localize(owned.ItemType) || '未收录赋能', rank, maxRank: Math.max(0, (item.levelStats?.length || 1) - 1), count: 1 });
+    rows.push({ uniqueName: owned.itemType, englishName: item.name, name: localize(owned.itemType) || '未收录赋能', rank: owned.rank ?? 0, maxRank: maxRankOf(item), count: 1 });
   }
   return rows;
 }
@@ -443,6 +419,7 @@ function categoryKeyOf(meta) {
 // 全库存统一估值条目：[{catKey, uniqueName, name, englishName, count, rank, refinement, unit, total, ducats}]
 // 价格分档：0 级/无档=p0；升过级的 MOD/赋能按满级档 pMax（wm 行情只有两档，非满级按满级算并在 detail 标注）
 export async function assembleInventoryValuation(snapshot, options = {}) {
+  const view = buildAccountView(snapshot);
   const drops = await import('./drops.mjs');
   const [{ fetchTradeStatistics }, catalog, marketEntries] = await Promise.all([
     import('./trader-shopping.mjs'),
@@ -490,16 +467,10 @@ export async function assembleInventoryValuation(snapshot, options = {}) {
       setRequired: Math.max(1, Number(meta.setRequired) || 1),
     });
   };
-  for (const group of ['MiscItems', 'Recipes', 'Consumables', 'RawUpgrades']) {
-    for (const item of snapshot.inventory[group] || []) {
-      if (item?.ItemType) put(item.ItemType, safeNumber(item.ItemCount) || 1, 0);
-    }
-  }
-  for (const item of snapshot.inventory.Upgrades || []) {
-    if (!item?.ItemType) continue;
-    let rank = 0;
-    try { rank = safeNumber(JSON.parse(item.UpgradeFingerprint || '{}').lvl); } catch { rank = 0; }
-    put(item.ItemType, 1, rank);
+  for (const row of view.inventory.rows(INVENTORY_SCOPES.VALUATION)) {
+    if (!row.itemType) continue;
+    // 估值口径：数量 0 或缺省按 1 件计（有物品就不算 0 价值），已装升级每条 1 件并带指纹等级。
+    put(row.itemType, (row.quantity ?? 1) || 1, row.rank ?? 0);
   }
   const categoryKeys = options.categoryKeys
     ? new Set(Array.isArray(options.categoryKeys) ? options.categoryKeys : [options.categoryKeys])
@@ -524,16 +495,15 @@ export async function assembleInventoryValuation(snapshot, options = {}) {
       };
     }
   }));
-  return annotateParentOwnership(entries, snapshot.inventory);
+  return annotateParentOwnership(entries, view);
 }
 
 // Prime 部件 → 对应成品是否当前在库。快照缺少全部装备栏时返回 null，
 // 让杜卡德规划器走保守分支，绝不因无法确认而误换最后一套。
-export function annotateParentOwnership(entries, inventory) {
-  const known = EQUIPMENT_GROUPS.some((group) => Array.isArray(inventory?.[group]));
-  const owned = new Set(EQUIPMENT_GROUPS.flatMap((group) => (Array.isArray(inventory?.[group]) ? inventory[group] : []))
-    .map((item) => item?.ItemType)
-    .filter(Boolean));
+export function annotateParentOwnership(entries, input) {
+  const view = buildAccountView(input);
+  const known = view.equipment.known();
+  const owned = view.equipment.itemTypes();
   return (entries || []).map((entry) => ({
     ...entry,
     parentOwned: entry.parentUniqueName ? (known ? owned.has(entry.parentUniqueName) : null) : null,
@@ -610,6 +580,7 @@ function valuationRowDetail(entry) {
 }
 
 async function inventoryQuery(snapshot, rawQuery) {
+  const view = buildAccountView(snapshot);
   // 「我的库存 赋能/MOD/遗物/部件/杂项」= 分类明细（价值降序，模板同总览）
   const category = resolveInventoryCategory(rawQuery);
   if (category) {
@@ -679,7 +650,7 @@ async function inventoryQuery(snapshot, rawQuery) {
   ]);
   const requestedItems = splitInventoryQueryList(rawQuery);
   if (requestedItems.length > 1) {
-    const allOwned = aggregateRows(collectOwned(snapshot.inventory)).map((item) => {
+    const allOwned = aggregateRows(collectOwned(view)).map((item) => {
       const metadata = catalog.get(item.uniqueName);
       const directName = localize(item.uniqueName);
       return {
@@ -739,7 +710,7 @@ async function inventoryQuery(snapshot, rawQuery) {
     return { data, text: formatInventory(data, '没有找到这些物品的本地库存记录。') };
   }
   const key = compact(query);
-  const owned = aggregateRows(collectOwned(snapshot.inventory)).map((item) => {
+  const owned = aggregateRows(collectOwned(view)).map((item) => {
     const metadata = catalog.get(item.uniqueName);
     const directName = localize(item.uniqueName);
     const displayName = metadata?.displayName || directName || '未收录物品';
@@ -771,45 +742,35 @@ async function inventoryQuery(snapshot, rawQuery) {
   return { data, text: formatInventory(data, `没有找到“${rawQuery}”的本地库存记录。`) };
 }
 
-function bsonDate(value) {
-  const milliseconds = Number(value?.$date?.$numberLong ?? value?.$date ?? value);
-  return Number.isFinite(milliseconds) ? new Date(milliseconds).toISOString() : null;
-}
-
+// 周常证据面板：日期口径（epoch 毫秒归一化）由 account-view 的语义视图提供，
+// 本模块不再解析 BSON 日期包装。
 async function weeklyEvidence(snapshot) {
-  const inventory = snapshot.inventory;
+  const view = buildAccountView(snapshot);
+  const { weekly, standing, account } = view;
   const now = Date.now();
-  const expiryDetail = (value, fallback) => {
-    const expiry = bsonDate(value);
-    return expiry && Date.parse(expiry) > now ? `本周期有效至 ${formatTime(expiry)}` : fallback;
-  };
-  const descentByCategory = new Map((inventory.DescentRewards || []).map((item) => [item.Category, item]));
-  const circuitByCategory = new Map((inventory.EndlessXP || []).map((item) => [item.Category, item]));
-  const descentRow = (category, name) => {
-    const item = descentByCategory.get(category);
-    const goal = Math.max(0, ...((item?.PendingRewards || []).map((reward) => safeNumber(reward.FloorCheckpoint))));
-    const claimed = safeNumber(item?.FloorClaimed);
-    const expired = item && !(Date.parse(String(bsonDate(item.Expiry) || '')) > now);
+  const expiryDetail = (expiryMs, fallback) => (Number.isFinite(expiryMs) && expiryMs > now
+    ? `本周期有效至 ${formatTime(new Date(expiryMs).toISOString())}`
+    : fallback);
+  const descentRow = (track, name) => {
+    const item = weekly.descent(track, now);
     return {
       name,
-      value: goal > 0 ? `${expired ? '上期 ' : ''}${Math.min(claimed, goal)}/${goal} 层` : '无可验证进度',
-      detail: item ? expiryDetail(item.Expiry, '周期已过期，不用于自动核销') : '快照无该难度记录',
+      value: item && item.goal > 0 ? `${item.expired ? '上期 ' : ''}${Math.min(item.claimed, item.goal)}/${item.goal} 层` : '无可验证进度',
+      detail: item ? expiryDetail(item.expiryMs, '周期已过期，不用于自动核销') : '快照无该难度记录',
     };
   };
-  const circuitRow = (category, name) => {
-    const item = circuitByCategory.get(category);
-    const goal = Math.max(0, ...((item?.PendingRewards || []).map((reward) => safeNumber(reward.RequiredTotalXp))));
-    const earned = safeNumber(item?.Earn);
-    const expired = item && !(Date.parse(String(bsonDate(item.Expiry) || '')) > now);
+  const circuitRow = (track, name) => {
+    const item = weekly.circuit(track, now);
     return {
       name,
-      value: goal > 0 ? `${expired ? '上期 ' : ''}${Math.min(earned, goal)}/${goal} 经验` : '无可验证进度',
-      detail: item ? expiryDetail(item.Expiry, '周期已过期，不用于自动核销') : '快照无该难度记录',
+      value: item && item.goal > 0 ? `${item.expired ? '上期 ' : ''}${Math.min(item.earned, item.goal)}/${item.goal} 经验` : '无可验证进度',
+      detail: item ? expiryDetail(item.expiryMs, '周期已过期，不用于自动核销') : '快照无该难度记录',
     };
   };
-  const researchRow = (kind, name) => {
-    const score = safeNumber(inventory[`${kind}ConquestCacheScoreMission`]);
-    const unlocked = safeNumber(inventory[`${kind}ConquestUnlocked`]) > 0;
+  const researchRow = (track, name) => {
+    const research = weekly.research(track);
+    const score = research?.score ?? 0;
+    const unlocked = Boolean(research?.unlocked);
     return {
       name,
       value: unlocked || score > 0 ? `${score} 研究点` : '未解锁或无记录',
@@ -817,23 +778,24 @@ async function weeklyEvidence(snapshot) {
     };
   };
   const currentKahlWeek = Math.floor((now - Date.UTC(2014, 1, 10)) / 604_800_000);
-  const kahl = ((inventory.Affiliations || []).find((item) => item.Tag === 'KahlSyndicate')?.WeeklyMissions || [])
-    .find((item) => safeNumber(item.WeekCount) === currentKahlWeek);
-  const calendar = inventory.CalendarProgress?.SeasonProgress;
+  const kahl = standing.weeklyMission('KahlSyndicate', currentKahlWeek);
+  const calendar = weekly.calendar();
+  const netracell = weekly.netracell();
+  const archon = weekly.archonRewards();
   const rows = [
-    { name: '执刑官猎杀', value: inventory.LastLiteSortieReward?.length ? '有最近奖励记录' : '未检测到记录', detail: '需与本周执刑官任务 ID 对账' },
-    researchRow('EntratiLab', '深层科研'),
-    researchRow('EchoesHex', '时光科研'),
-    { name: '衰退室', value: `${safeNumber(inventory.EntratiVaultCountLastPeriod)}/5 次`, detail: expiryDetail(inventory.EntratiVaultCountResetDate, '周重置时间无效，不用于自动核销') },
-    { name: '击溃合一众', value: kahl?.CompletedMission === true ? '本周已完成' : '未检测到本周完成', detail: kahl ? `周序号 ${currentKahlWeek} 已对齐` : '快照无本周任务记录' },
-    descentRow('DM_COH_NORMAL', '沉沦之地（普通）'),
-    descentRow('DM_COH_HARD', '沉沦之地（钢铁）'),
-    circuitRow('EXC_NORMAL', '无尽回廊（普通）'),
-    circuitRow('EXC_HARD', '无尽回廊（钢铁）'),
-    { name: '午夜电波周常', value: `${(inventory.ChallengeProgress || []).length} 条进度记录`, detail: '需与本周挑战及目标数量对账' },
-    { name: '1999 日历', value: calendar ? `最后完成节点 ${safeNumber(calendar.LastCompletedDayIdx) + 1}` : '无进度记录', detail: '需与当前赛季、轮次和本周有效节点对账' },
+    { name: '执刑官猎杀', value: archon.count ? '有最近奖励记录' : '未检测到记录', detail: '需与本周执刑官任务 ID 对账' },
+    researchRow(RESEARCH_TRACKS.DEEP, '深层科研'),
+    researchRow(RESEARCH_TRACKS.TEMPORAL, '时光科研'),
+    { name: '衰退室', value: `${netracell.count}/5 次`, detail: expiryDetail(netracell.resetAtMs, '周重置时间无效，不用于自动核销') },
+    { name: '击溃合一众', value: kahl?.completed === true ? '本周已完成' : '未检测到本周完成', detail: kahl ? `周序号 ${currentKahlWeek} 已对齐` : '快照无本周任务记录' },
+    descentRow(DESCENT_TRACKS.NORMAL, '沉沦之地（普通）'),
+    descentRow(DESCENT_TRACKS.STEEL, '沉沦之地（钢铁）'),
+    circuitRow(CIRCUIT_TRACKS.NORMAL, '无尽回廊（普通）'),
+    circuitRow(CIRCUIT_TRACKS.STEEL, '无尽回廊（钢铁）'),
+    { name: '午夜电波周常', value: `${weekly.challengeProgress().size} 条进度记录`, detail: '需与本周挑战及目标数量对账' },
+    { name: '1999 日历', value: calendar ? `最后完成节点 ${(calendar.lastCompletedDayIdx ?? -1) + 1}` : '无进度记录', detail: '需与当前赛季、轮次和本周有效节点对账' },
   ];
-  const data = { kind: 'inventory', subtype: '账号周常证据', title: '账号周常 · 可验证进度', syncedAt: snapshot.syncedAt, rows, totalMatches: rows.length, totalCount: rows.length, countUnit: '项' };
+  const data = { kind: 'inventory', subtype: '账号周常证据', title: '账号周常 · 可验证进度', syncedAt: account.syncedAt, rows, totalMatches: rows.length, totalCount: rows.length, countUnit: '项' };
   return { data, text: `${formatInventory(data, '')}\n\n这些数据只用于辅助判断，不会自动把含糊项目勾成已完成。` };
 }
 
@@ -911,7 +873,7 @@ export async function runAlecaMessage(message, options = {}) {
     if (parsed.query) {
       // 详情卡：我的该武器紫卡 × wm 拍卖行情
       const [weaponDir, attrSlug] = await Promise.all([getRivenWeaponDir(), getRivenAttrSlug()]);
-      const detail = await assembleRivenDetail(parsed.query, { inventory: snapshot.inventory, table, attrZh, lang, weaponDir, attrSlug });
+      const detail = await assembleRivenDetail(parsed.query, { inventory: snapshot, table, attrZh, lang, weaponDir, attrSlug });
       if (!detail.found) {
         return { handled: true, ok: false, command: 'rivens', query: parsed.query, text: detail.reason || `库存里没有「${parsed.query}」的紫卡。发「我的紫卡」看列表，再用「紫卡 序号」（如 紫卡 3）或武器名看详情。` };
       }
@@ -931,7 +893,7 @@ export async function runAlecaMessage(message, options = {}) {
         text: `${detail.weaponZh} 紫卡 ×${detail.rivens.length}；${est}`,
       };
     }
-    const data = await assembleRivens({ inventory: snapshot.inventory, table, attrZh, lang });
+    const data = await assembleRivens({ inventory: snapshot, table, attrZh, lang });
     // 武器图：wm riven 目录 thumb 逐张解析（已预热本地缓存），拉挂静默无图
     let weaponDir = {};
     try {
@@ -969,14 +931,15 @@ export async function runAlecaMessage(message, options = {}) {
   }
   if (parsed.command === 'rotation-calendar') {
     // 卡主体是排期表；快照只用于「已有」标，读失败照样出卡
-    let inventory = null;    try { inventory = (await readSnapshot(options.alecaDir)).inventory; } catch { inventory = null; }
+    let snapshot = null;
+    try { snapshot = await readSnapshot(options.alecaDir); } catch { snapshot = null; }
     const { buildRotationCalendar, buildRotationCalendarCard } = await import('./rotation-calendar.mjs');
     const { loadOfficialWorldState } = await import('./vendor-shop.mjs');
     const { loadNameTables } = await import('./weekly.mjs');
     const [worldState, names] = await Promise.all([loadOfficialWorldState().catch(() => null), loadNameTables().catch(() => null)]);
     let data;
     try {
-      data = await buildRotationCalendar({ inventory, names, worldState });
+      data = await buildRotationCalendar({ inventory: snapshot, names, worldState });
     } catch (error) {
       return { handled: true, ok: false, command: 'rotation-calendar', text: `轮换排期数据暂时拉取失败（${String(error?.message || error)}），请稍后重试。` };
     }
@@ -1008,11 +971,11 @@ export async function runAlecaMessage(message, options = {}) {
   }
   if (parsed.command === 'weekly-deals') {
     // 与周一订阅推送同一条装配链（buildWeeklyDeals）；快照只用于已购标，读失败降级无标照常出卡
-    let inventory = null;
-    try { inventory = (await readSnapshot(options.alecaDir)).inventory; } catch { inventory = null; }
+    let snapshot = null;
+    try { snapshot = await readSnapshot(options.alecaDir); } catch { snapshot = null; }
     const shop = await import('./vendor-shop.mjs');
     const { buildWeeklyDealsCard } = await import('./vendor-shop-card.mjs');
-    const context = await shop.loadShopContext({ inventory });
+    const context = await shop.loadShopContext({ account: snapshot });
     const deals = await shop.buildWeeklyDeals(context);
     if (!deals.sections.length && !deals.varzia) {
       return { handled: true, ok: false, command: 'weekly-deals', query: '', text: '本周好货暂时装配不出来（数据源不可用），发「商店」看全商人总览。' };
@@ -1029,12 +992,11 @@ export async function runAlecaMessage(message, options = {}) {
   }
   if (parsed.command === 'shop') {
     // 商店卡主体是世界数据；快照只用于已购标注，读失败照样出卡（诚实降级：无已购标）
-    let inventory = null;
-    try { inventory = (await readSnapshot(options.alecaDir)).inventory; } catch { inventory = null; }
+    let snapshot = null;
+    try { snapshot = await readSnapshot(options.alecaDir); } catch { snapshot = null; }
     const { loadShopContext, resolveVendorAlias, buildShopOverview, buildVendorDetail, buildVarziaDetail, buildDarvoDetail } = await import('./vendor-shop.mjs');
     const { buildShopOverviewCard, buildVendorDetailCard, buildVarziaCard, buildDarvoCard } = await import('./vendor-shop-card.mjs');
-    const context = await loadShopContext();
-    context.inventory = inventory;
+    const context = await loadShopContext({ account: snapshot });
     let card = null;
     let data = null;
     let text = '';
@@ -1108,7 +1070,7 @@ export async function runAlecaMessage(message, options = {}) {
     } catch { /* 无图降级 */ }
     try {
       const { gameIconDataUri } = await import('./wfdata.mjs');
-      data.glyphDataUri = await gameIconDataUri(snapshot.inventory.ActiveAvatarImageType) || null;
+      data.glyphDataUri = await gameIconDataUri(buildAccountView(snapshot).account.glyphImagePath) || null;
     } catch { data.glyphDataUri = null; }
     let mediaUrl = null;
     try {
@@ -1132,7 +1094,7 @@ export async function runAlecaMessage(message, options = {}) {
       const lang = await getLangTable({ alecaDir: snapshot.alecaDir });
       zhOf = (uniq) => lang[uniq]?.zh?.name || null;
     } catch { zhOf = null; }
-    const data = await traderShopping(snapshot.inventory, {
+    const data = await traderShopping(snapshot, {
       alecaDir: snapshot.alecaDir,
       ...(inventoryValuation ? { inventoryValuation } : {}),
       ...(zhOf ? { zhOf } : {}),
@@ -1218,7 +1180,7 @@ export async function runAlecaMessage(message, options = {}) {
           const lang = await getLangTable({ alecaDir: snapshot.alecaDir });
           zhOf = (uniq) => lang[uniq]?.zh?.name || null;
         } catch { zhOf = null; }
-        const traderData = await traderShopping(snapshot.inventory, {
+        const traderData = await traderShopping(snapshot, {
           alecaDir: snapshot.alecaDir,
           ...(inventoryValuation ? { inventoryValuation } : {}),
           ...(zhOf ? { zhOf } : {}),
@@ -1344,7 +1306,7 @@ export async function runAlecaMessage(message, options = {}) {
     // 玩家浮印头图（glyph，2026-08-06 用户拍板三卡全接）：快照 ActiveAvatarImageType → browse.wf 游戏原图；失败退原 SVG
     try {
       const { gameIconDataUri } = await import('./wfdata.mjs');
-      result.data.glyphDataUri = await gameIconDataUri(snapshot.inventory.ActiveAvatarImageType) || null;
+      result.data.glyphDataUri = await gameIconDataUri(buildAccountView(snapshot).account.glyphImagePath) || null;
     } catch { result.data.glyphDataUri = null; }
     const card = result.data.kind === 'account' ? buildAccountSnapshotCard(result.data) : buildInventorySnapshotCard(result.data);
     mediaUrl = await renderWarframeCard(card, options.cardDir || process.env.WARFRAME_CARD_DIR);

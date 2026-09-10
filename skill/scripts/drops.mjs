@@ -20,6 +20,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 // R15 第二片：与 alecaframe 共用同一个版本化白名单适配器，业务不再直接读原始信封。
 import { adaptAccountSnapshot } from './account-snapshot.mjs';
+// R15 第四片：库存读取只走语义账号视图。
+import { INVENTORY_SCOPES, buildAccountView } from './account-view.mjs';
 import { getMarketPriceIndex, stripDataUriReplacer } from './wfdata.mjs';
 import { promisify } from 'node:util';
 import { buildDropsAlertCard, renderWarframeCard } from './warframe-cards.mjs';
@@ -43,9 +45,6 @@ const LOCK_STALE_MS = 2 * 60 * 1000;
 // 与插件同源：本地脚本无权直调 gateway，发消息走 openclaw CLI；测试可用环境变量注入假 CLI
 const OPENCLAW_CLI = process.env.OPENCLAW_CLI_PATH
   || path.join(process.env.APPDATA || '', 'npm', 'node_modules', 'openclaw', 'openclaw.mjs');
-
-// 快照里参与掉落 diff 的库存分组：数量类 + MOD/赋能类
-const COUNTED_GROUPS = ['MiscItems', 'Recipes', 'Consumables', 'FusionTreasures', 'RawUpgrades'];
 
 const COMPONENT_ZH = {
   Blueprint: '蓝图', Chassis: '机体蓝图', Neuroptics: '头部神经光元蓝图', Systems: '系统蓝图',
@@ -81,8 +80,8 @@ function parseArgs(argv) {
 
 // ---------- 快照读取与计数 ----------
 
-// R15 第二片：信封解析与顶层白名单由共享适配器负责；这里保持原有返回形状
-// （inventory / syncedAt / fileMtimeMs），调用方与用户输出不变。
+// R15 第二片：信封解析与顶层白名单由共享适配器负责；R15 第四片：库存读取再经语义视图，
+// 本模块不再书写 AlecaFrame 原始字段名。
 async function readSnapshot(alecaDir) {
   const file = path.join(alecaDir, 'lastData.dat');
   const encrypted = await readFile(file);
@@ -95,29 +94,19 @@ async function readSnapshot(alecaDir) {
   }
   const envelope = JSON.parse(text.replace(/\0+$/gu, ''));
   const fileStat = await stat(file);
-  const snapshot = adaptAccountSnapshot(envelope, {
+  return adaptAccountSnapshot(envelope, {
     alecaDir,
     fileMtime: fileStat.mtime.toISOString(),
     fileMtimeMs: fileStat.mtimeMs,
     missingInventoryMessage: '账号快照中没有库存数据',
   });
-  return { inventory: snapshot.inventory, syncedAt: snapshot.syncedAt, fileMtimeMs: snapshot.fileMtimeMs };
 }
 
-// 把快照压成「物品路径 → 总数量」。Upgrades（已装等级的 MOD/赋能）按条目数计 1。
-function countInventory(inventory) {
-  const counts = {};
-  const add = (type, amount) => {
-    if (!type) return;
-    counts[type] = (counts[type] || 0) + amount;
-  };
-  for (const group of COUNTED_GROUPS) {
-    for (const item of Array.isArray(inventory[group]) ? inventory[group] : []) {
-      add(item?.ItemType, item?.ItemCount != null ? Number(item.ItemCount) || 0 : 1);
-    }
-  }
-  for (const item of Array.isArray(inventory.Upgrades) ? inventory.Upgrades : []) add(item?.ItemType, 1);
-  return counts;
+// 把快照压成「物品路径 → 总数量」：数量口径（未声明数量按 1 件、已装升级每条计 1）
+// 由 account-view 的掉落监测作用域定义，这里只做容器转换。
+function countInventory(input) {
+  const view = buildAccountView(input);
+  return Object.fromEntries(view.inventory.quantityTotals(INVENTORY_SCOPES.DROP_MONITOR));
 }
 
 // ---------- 本地目录：路径 → 名称/分类/稀有度 ----------
@@ -579,7 +568,7 @@ async function monitorDrops(options = {}) {
     catch (error) {
       return { output: 'NO_REPLY\n', data: { ok: false, reason: 'snapshot_read_failed', error: String(error?.message || error) } };
     }
-    const counts = countInventory(snapshot.inventory);
+    const counts = countInventory(snapshot);
 
     // 首次运行：只建基线，不推送
     if (!state.baseline) {
@@ -649,7 +638,7 @@ async function monitorDrops(options = {}) {
     if (!skipIcons) {
       try {
         const { gameIconDataUri } = await import('./wfdata.mjs');
-        glyphDataUri = await gameIconDataUri(snapshot.inventory.ActiveAvatarImageType) || null;
+        glyphDataUri = await gameIconDataUri(buildAccountView(snapshot).account.glyphImagePath) || null;
       } catch { glyphDataUri = null; }
     }
     const card = buildDropsAlertCard({

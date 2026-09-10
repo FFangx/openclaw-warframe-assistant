@@ -938,45 +938,83 @@ test('受影响消费方在适配前后输出一致（掉落/周常核销/赏金
   assert.equal(adaptedAuto.auto.kahl, true);
 });
 
+// R15 第四片源码合同：业务模块不得再直接书写 AlecaFrame 原始字段名。
+// 边界模块（信封/白名单/投影 + 语义映射）是唯一豁免；测试 fixture 天然豁免（本文件不在名单内）。
+const BOUNDARY_SOURCE_FILES = new Set(['account-snapshot.mjs', 'account-view.mjs']);
 const CONSUMER_SOURCE_FILES = [
   'alecaframe.mjs', 'bounties.mjs', 'drops.mjs', 'rivens.mjs', 'rotation-calendar.mjs',
   'shortcuts.mjs', 'subscriptions.mjs', 'trader-shopping.mjs', 'vendor-shop.mjs',
   'warframe-cards.mjs', 'weekly-mega-card.mjs', 'weekly.mjs',
 ];
-// 同名字段但不是账号快照：state.inventory.length（奸商货单行）与聚合对象上的 count
-const NON_SNAPSHOT_PROPERTIES = new Set(['count', 'length']);
+// 账号条目/嵌套层的独有键：与厂商清单（ExportVendors）等其它数据源不重名，可全局限定。
+const ACCOUNT_NESTED_KEYS = [
+  'UpgradeFingerprint', 'WeeklyMissions', 'WeekCount', 'CompletedMission',
+  'FloorClaimed', 'FloorCheckpoint', 'RequiredTotalXp', 'PurchaseHistory', 'VendorType',
+  'NumPurchased', 'LastCompletedDayIdx', 'ActivatedChallenges', 'SeasonProgress',
+  'YearProgress', 'SeasonType', 'SortieId', 'LastInventorySync',
+];
+// 条目键同时是官方厂商清单的键（price.ItemType / price.ItemCount），因此只禁止
+// 「从账号来源读取」这一种写法：接收者链里出现 inventory/account/snapshot 才算越界。
+const ACCOUNT_ENTRY_KEYS = new Set(['ItemType', 'ItemCount']);
+const ACCOUNT_RECEIVER = /(?:^|[^\w$])([A-Za-z_$][\w$]*)((?:\??\.[A-Za-z_$][\w$]*)+)/gu;
+const ACCOUNT_RECEIVER_SEGMENT = /^(?:inventory|Inventory|account|Account|snapshot|Snapshot)$/u;
+
+function stripComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//gu, ' ').replace(/^\s*\/\/.*$/gmu, ' ');
+}
 
 async function consumerSource(name) {
   const text = await readFile(new URL(`./${name}`, import.meta.url), 'utf8');
-  return text.replace(/^\s*\/\/.*$/gmu, '');
+  return stripComments(text);
 }
 
-function stringArrayConstant(source, constant) {
-  const block = source.match(new RegExp(`const ${constant} = \\[([\\s\\S]*?)\\];`, 'u'));
-  assert.ok(block, `${constant} not found in consumer source`);
-  return [...block[1].matchAll(/'([^']+)'/gu)].map((match) => match[1]);
+function occurrences(source, field) {
+  const member = new RegExp(`\\.${field}\\b`, 'gu');
+  const literal = new RegExp(`(['"\`])${field}\\1`, 'gu');
+  return (source.match(member) || []).length + (source.match(literal) || []).length;
 }
 
-test('白名单覆盖消费方读取的全部快照字段（兼容性合同）', async () => {
-  const consumed = new Set();
+test('源码合同：业务模块不再出现任何 AlecaFrame 快照顶层字段名', async () => {
+  assert.equal(BOUNDARY_SOURCE_FILES.has('account-view.mjs'), true);
+  const violations = [];
   for (const name of CONSUMER_SOURCE_FILES) {
+    assert.equal(BOUNDARY_SOURCE_FILES.has(name), false, `${name} 不能同时是边界模块与业务模块`);
     const source = await consumerSource(name);
-    for (const match of source.matchAll(/(?:[A-Za-z_$][\w$]*\??\.)*inventory\??\.([A-Za-z_][A-Za-z0-9_]*)/gu)) {
-      if (!NON_SNAPSHOT_PROPERTIES.has(match[1])) consumed.add(match[1]);
+    for (const field of ACCOUNT_SNAPSHOT_ALLOWLIST) {
+      if (occurrences(source, field)) violations.push(`${name}: ${field}`);
     }
   }
-  const alecaSource = await consumerSource('alecaframe.mjs');
-  for (const constant of ['ACCOUNT_GROUPS', 'EQUIPMENT_GROUPS']) {
-    for (const field of stringArrayConstant(alecaSource, constant)) consumed.add(field);
+  assert.deepEqual(violations, []);
+});
+
+test('源码合同：业务模块不再出现账号条目/嵌套层原始键名', async () => {
+  const violations = [];
+  for (const name of CONSUMER_SOURCE_FILES) {
+    const source = await consumerSource(name);
+    for (const field of ACCOUNT_NESTED_KEYS) {
+      if (occurrences(source, field)) violations.push(`${name}: ${field}`);
+    }
   }
-  for (const field of stringArrayConstant(await consumerSource('drops.mjs'), 'COUNTED_GROUPS')) consumed.add(field);
-  for (const field of stringArrayConstant(await consumerSource('trader-shopping.mjs'), 'OWNED_GROUPS')) consumed.add(field);
-  for (const match of (await consumerSource('bounties.mjs')).matchAll(/dailyKey: '([A-Za-z]+)'/gu)) consumed.add(match[1]);
-  // 动态模板键：inventory[`${kind}ConquestUnlocked`] / CacheScoreMission
-  for (const kind of ['EntratiLab', 'EchoesHex']) {
-    consumed.add(`${kind}ConquestUnlocked`);
-    consumed.add(`${kind}ConquestCacheScoreMission`);
+  assert.deepEqual(violations, []);
+});
+
+test('源码合同：账号条目键只能出现在其它数据源语境，不能从账号来源读取', async () => {
+  const violations = [];
+  for (const name of CONSUMER_SOURCE_FILES) {
+    const source = await consumerSource(name);
+    for (const match of source.matchAll(ACCOUNT_RECEIVER)) {
+      const chain = [match[1], ...match[2].split('.')].map((segment) => segment.replace(/^\?/u, ''));
+      if (!ACCOUNT_ENTRY_KEYS.has(chain.at(-1))) continue;
+      if (chain.slice(0, -1).some((segment) => ACCOUNT_RECEIVER_SEGMENT.test(segment))) {
+        violations.push(`${name}: ${chain.join('.')}`);
+      }
+    }
   }
-  assert.ok(consumed.size >= 40, `consumer field scan too small: ${consumed.size}`);
-  assert.deepEqual([...consumed].filter((field) => !ACCOUNT_SNAPSHOT_ALLOWLIST.includes(field)).sort(), []);
+  assert.deepEqual(violations, []);
+});
+
+test('字段映射完整：白名单 100% 有语义出口，且边界不多读任何字段', async () => {
+  const { ACCOUNT_VIEW_RAW_TOP_LEVEL_FIELDS } = await import('./account-view.mjs');
+  assert.deepEqual([...ACCOUNT_VIEW_RAW_TOP_LEVEL_FIELDS].sort(), [...ACCOUNT_SNAPSHOT_ALLOWLIST].sort());
+  assert.equal(new Set(ACCOUNT_VIEW_RAW_TOP_LEVEL_FIELDS).size, ACCOUNT_VIEW_RAW_TOP_LEVEL_FIELDS.length);
 });

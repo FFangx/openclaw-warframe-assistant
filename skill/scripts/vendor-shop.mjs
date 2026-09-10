@@ -20,6 +20,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { staleCachedJson } from './wfdata.mjs';
 import { cycleDurationOf, generateVendorOffers } from './vendor-rotation.mjs';
 import { loadNameTables, storeItemZh } from './weekly.mjs';
+// R15 第四片：账号读取只走语义视图。
+import { buildAccountView } from './account-view.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const EXPORT_VENDORS_URL = 'https://browse.wf/warframe-public-export-plus/ExportVendors.json';
@@ -101,18 +103,10 @@ const msOf = (value) => {
   return Number.isFinite(parsed) ? parsed : Number.NaN;
 };
 
-export function vendorPurchases(inventory, typeName) {
-  const vendor = (inventory?.RecentVendorPurchases || []).find((entry) => String(entry.VendorType) === typeName);
-  return (vendor?.PurchaseHistory || []).map((entry) => ({
-    expiryMs: msOf(entry.Expiry),
-    // Mongo ObjectId 的前 4 字节是记录创建时间。服务端会把上周购买记录的
-    // Expiry 推进到新周期，因此 expiry 相等仍不足以证明「本周购买」。
-    createdMs: /^[0-9a-f]{24}$/iu.test(String(entry.ItemId || ''))
-      ? Number.parseInt(String(entry.ItemId).slice(0, 8), 16) * 1000
-      : Number.NaN,
-    num: Number(entry.NumPurchased) || 1,
-    itemId: String(entry.ItemId || ''),
-  })).filter((entry) => entry.itemId);
+// R15 第四片：已购记录只走语义视图的 vendorPurchases 选择器（Expiry/ItemId/NumPurchased
+// 与创建时刻推导都在边界完成）。入参兼容 AccountSnapshot / 语义视图 / 旧合成库存对象。
+export function vendorPurchases(input, typeName) {
+  return buildAccountView(input).vendorPurchases.of(typeName);
 }
 
 // ==== 已购三档判定（本功能的核心纯函数，测试重点） ====
@@ -308,14 +302,16 @@ export function purchasesForCycle(purchases, cycleExpiryMs, cycleStartMs = Numbe
 
 // ==== 装配：单商人详情 ====
 
-// 返回一份「渲染无关」的数据对象，卡片层照着画；inventory 传 null = 无已购标（降级）
-export async function buildVendorDetail(vendorKey, { vendors, meta, names, inventory, now = Date.now(), purchaseNotBeforeMs = Number.NEGATIVE_INFINITY } = {}) {
+// 返回一份「渲染无关」的数据对象，卡片层照着画；account 传 null = 无已购标（降级）。
+// account 兼容 AccountSnapshot / 语义视图 / 旧合成库存对象（旧键名 inventory 继续接受）。
+export async function buildVendorDetail(vendorKey, { vendors, meta, names, account = null, inventory = null, now = Date.now(), purchaseNotBeforeMs = Number.NEGATIVE_INFINITY } = {}) {
+  const accountInput = account ?? inventory;
   const manifest = vendors[vendorKey];
   if (!manifest) return null;
   const kind = classifyVendor(manifest);
   const vendorMeta = meta[vendorKey] || {};
-  const purchases = inventory
-    ? vendorPurchases(inventory, vendorKey).filter((purchase) => purchase.createdMs >= purchaseNotBeforeMs && purchase.createdMs <= now)
+  const purchases = accountInput
+    ? vendorPurchases(accountInput, vendorKey).filter((purchase) => purchase.createdMs >= purchaseNotBeforeMs && purchase.createdMs <= now)
     : [];
 
   const detail = {
@@ -444,7 +440,8 @@ export function buildDarvoDetail(worldState, names) {
 
 // ==== 装配：总览 ====
 
-export async function buildShopOverview({ vendors, meta, names, inventory, worldState, now = Date.now() } = {}) {
+export async function buildShopOverview({ vendors, meta, names, account = null, inventory = null, worldState, now = Date.now() } = {}) {
+  const accountInput = account ?? inventory;
   const rows = [];
   for (const entry of SHOP_VENDORS) {
     if (entry.key === 'varzia') {
@@ -462,7 +459,7 @@ export async function buildShopOverview({ vendors, meta, names, inventory, world
         : { key: 'darvo', zhName: '达尔沃每日特惠', badge: '每日轮换', expiryMs: null, summary: '特惠获取失败', bought: null });
       continue;
     }
-    const detail = await buildVendorDetail(entry.key, { vendors, meta, names, inventory, now });
+    const detail = await buildVendorDetail(entry.key, { vendors, meta, names, account: accountInput, now });
     if (!detail) continue;
     const kindBadge = detail.kind === 'rotating' ? '随机轮换'
       : detail.kind === 'cyclic' ? (detail.cycleMs === 604_800_000 ? '每周轮换' : detail.cycleMs > 0 && detail.cycleMs <= 86_400_000 ? '每日限购重置' : '周期轮换')
@@ -508,13 +505,14 @@ function dealTierOf(vendorKey, row) {
   return null;
 }
 
-// 返回渲染无关的数据对象；inventory=null 时已购标降级消失（诚实降级，与详情卡同约定）
-export async function buildWeeklyDeals({ vendors, meta, names, inventory, worldState, now = Date.now() } = {}) {
+// 返回渲染无关的数据对象；account=null 时已购标降级消失（诚实降级，与详情卡同约定）
+export async function buildWeeklyDeals({ vendors, meta, names, account = null, inventory = null, worldState, now = Date.now() } = {}) {
+  const accountInput = account ?? inventory;
   const sections = [];
   const { weekEndMs } = teshinWeekInfo(now);
   const weekStartMs = weekEndMs - 604_800_000;
   for (const key of [TESHIN_KEY, DONDA_KEY]) {
-    const detail = await buildVendorDetail(key, { vendors, meta, names, inventory, now, purchaseNotBeforeMs: weekStartMs });
+    const detail = await buildVendorDetail(key, { vendors, meta, names, account: accountInput, now, purchaseNotBeforeMs: weekStartMs });
     if (!detail) continue;
     const rows = [];
     for (const row of [...detail.rotating, ...detail.evergreen]) {
@@ -629,14 +627,14 @@ export async function attachRowIcons(rows, { alecaDir = null } = {}) {
 
 // ==== 汇总入口：一次拉齐所有依赖（命令层调这个） ====
 
-export async function loadShopContext({ inventory = null } = {}) {
+export async function loadShopContext({ account = null, inventory = null } = {}) {
   const [{ vendors, stale }, meta, names, worldState] = await Promise.all([
     loadExportVendors(),
     loadVendorMeta(),
     loadNameTables({ includeShopCatalogs: true }),
     loadOfficialWorldState(),
   ]);
-  return { vendors, meta, names, worldState, inventory, stale };
+  return { vendors, meta, names, worldState, account: account ?? inventory, stale };
 }
 
 // 按用户输入找收录商人（序号 → 别名精确 → 包含）；返回 SHOP_VENDORS 条目或 null

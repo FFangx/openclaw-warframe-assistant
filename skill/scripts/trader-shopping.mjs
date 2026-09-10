@@ -18,6 +18,8 @@ import path from 'node:path';
 import { resilientJsonRequest } from './http-resilience.mjs';
 // 规范路由常量（R5 数据源合同）：Market 只读端点基址与官方 worldState/warframestat。
 import { DE_OFFICIAL_WORLDSTATE_URL, MARKET_BASE_URL, WARFRAMESTAT_BASE_URL } from './data-source-contract.mjs';
+// R15 第四片：账号读取只走语义视图。
+import { INVENTORY_SCOPES, buildAccountView } from './account-view.mjs';
 
 const WORLDSTATE_BASE = WARFRAMESTAT_BASE_URL;
 const OFFICIAL_WORLDSTATE_URL = DE_OFFICIAL_WORLDSTATE_URL;
@@ -61,15 +63,6 @@ export function normalizeTraderLocation(value) {
   }
   return raw;
 }
-
-// 快照里代表「已拥有」的库存组（探针实测：升过级的 MOD 在 Upgrades，不在 RawUpgrades）
-const OWNED_GROUPS = [
-  'RawUpgrades', 'Upgrades', 'MiscItems', 'Recipes', 'Consumables', 'FlavourItems',
-  'LongGuns', 'Pistols', 'Melee', 'Sentinels', 'SentinelWeapons',
-  'SpaceGuns', 'SpaceMelee', 'SpaceSuits', 'OperatorAmps',
-];
-
-const DUCAT_ITEM_TYPE = '/Lotus/Types/Items/MiscItems/PrimeBucks';
 
 // 端点健康键：与 shortcuts/wfdata 共用同一份 health 文件，熔断与累计遥测跨入口一致。
 // 键名与 data-source-contract.mjs 的 market-readonly 端点注册表一一对应（合同测试核对）。
@@ -224,21 +217,15 @@ export async function loadMarketCatalog() {
   return result.data;
 }
 
-// —— 库存拥有索引：uniqueName 精确比对（零名称模糊） ——
-export function buildOwnedIndex(inventory) {
-  const owned = new Set();
-  for (const group of OWNED_GROUPS) {
-    for (const entry of inventory?.[group] || []) {
-      if (entry?.ItemType) owned.add(entry.ItemType);
-    }
-  }
-  return owned;
+// —— 库存拥有索引：uniqueName 精确比对（零名称模糊）——
+// R15 第四片：持有范围由 account-view 的 ownership 作用域定义。
+export function buildOwnedIndex(input) {
+  return buildAccountView(input).inventory.itemTypes(INVENTORY_SCOPES.OWNERSHIP);
 }
 
-export function readDucatBalance(inventory) {
-  const entry = (inventory?.MiscItems || []).find((item) => item.ItemType === DUCAT_ITEM_TYPE);
-  const count = Number(entry?.ItemCount);
-  return Number.isFinite(count) ? count : 0;
+// 杜卡德余额：语义视图的账号标量（无记录 = 0）。
+export function readDucatBalance(input) {
+  return buildAccountView(input).account.ducatBalance;
 }
 
 const round1 = (value) => Math.round(Number(value) * 10) / 10;
@@ -799,8 +786,10 @@ export async function appraiseTraderGoods(goods, options = {}) {
   return rows;
 }
 
-// 主入口：inventory=解密后的快照库存对象；traderState/officialTrader/catalog/statisticsFetcher/zhOf 可注入
-export async function traderShopping(inventory, options = {}) {
+// 主入口：input=AccountSnapshot / 语义视图 / 旧合成库存对象（旧调用方直接传库存仍兼容）；
+// traderState/officialTrader/catalog/statisticsFetcher/zhOf 可注入。
+export async function traderShopping(input, options = {}) {
+  const account = buildAccountView(input).account;
   // 双源并发：官方源权威（到货瞬间无镜像延迟），warframestat 补英文名；全挂才报错
   let state = options.traderState ?? null;
   if (!state) {
@@ -822,12 +811,12 @@ export async function traderShopping(inventory, options = {}) {
     location: normalizeTraderLocation(state.location),
     activation: state.activation,
     expiry: state.expiry,
-    ducatBalance: readDucatBalance(inventory),
+    ducatBalance: account.ducatBalance,
   };
   if (!Array.isArray(state.inventory) || !state.inventory.length) {
     return { ...base, ok: true, arrived: false, rows: [] };
   }
-  const owned = buildOwnedIndex(inventory);
+  const owned = buildOwnedIndex(input);
   const rows = await appraiseTraderGoods(state.inventory, { ...options, owned });
   let safeDucatAvailable = null;
   // 双路线经济性：奸商=兑换杜卡德的 Prime 部件机会成本+现金标价；
@@ -844,7 +833,7 @@ export async function traderShopping(inventory, options = {}) {
         ...(options.ducatCatalog ? { catalog: options.ducatCatalog } : {}),
       });
       safeDucatAvailable = ducatCandidates.reduce((sum, entry) => sum + entry.available * entry.ducatsEach, 0);
-      const currentCredits = Number(inventory?.RegularCredits) || 0;
+      const currentCredits = account.credits;
       // 预计开遗物次数：全库最优遗物每发期望杜卡德（Intact 口径，±30% 区间）；失败不阻塞
       const bestExpectation = await bestRelicExpectation({
         relicDb: options.relicDb,
@@ -895,7 +884,7 @@ export async function traderShopping(inventory, options = {}) {
     ok: true,
     arrived: true,
     rows,
-    currentCredits: Number(inventory?.RegularCredits) || 0,
+    currentCredits: account.credits,
     safeDucatAvailable,
     wantDucats,
     ducatShortfall: Math.max(0, wantDucats - base.ducatBalance),

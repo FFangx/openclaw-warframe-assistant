@@ -14,6 +14,8 @@ import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { staleCachedJson } from './wfdata.mjs';
+// R15 第四片：账号读取只走语义视图；指纹键名归一化也在边界完成。
+import { buildAccountView, normalizeRivenRecord } from './account-view.mjs';
 import { currency, documentShell, escapeHtml } from './warframe-cards.mjs';
 
 // 未开封紫卡图标（AlecaFrame mod_riven.png 复制进 assets/）；缺失退无图
@@ -157,12 +159,15 @@ export function appraiseAttr(tag, rawValue, { stats, omegaAtt, traitMult, rank }
   };
 }
 
-// 指纹整卡复算：buffs/curses 全词条 + 满级口径（fusionLimit）
-export function appraiseFingerprint(fp, itemType, table) {
+// 指纹整卡复算：buffs/curses 全词条 + 满级口径（fusionLimit）。
+// 入参兼容旧合成指纹对象（AlecaFrame UpgradeFingerprint）与语义紫卡记录；
+// 指纹键名只在 account-view 的语义归一化里出现。
+export function appraiseFingerprint(fingerprint, itemType, table) {
+  const riven = normalizeRivenRecord(fingerprint);
   const typeData = table?.dataByRivenInternalID?.[itemType];
-  const ws = fp?.compat ? table?.weaponStats?.[fp.compat] : null;
-  const nBuffs = fp?.buffs?.length || 0;
-  const nCurses = fp?.curses?.length || 0;
+  const ws = riven.weaponKey ? table?.weaponStats?.[riven.weaponKey] : null;
+  const nBuffs = riven.attributes.buffs.length;
+  const nCurses = riven.attributes.curses.length;
   const mod = table?.modifiersBasedOnTraitCount?.find((m) => m.goodModifiersCount === nBuffs && m.badModifiersCount === nCurses);
   const rank = typeData?.fusionLimit ?? 8;
   const ctx = (curse) => ({
@@ -175,8 +180,8 @@ export function appraiseFingerprint(fp, itemType, table) {
     weaponEn: ws?.name || null,
     omegaAtt: ws?.omegaAtt ?? null,
     rank,
-    buffs: (fp?.buffs || []).map((b) => appraiseAttr(b.Tag, b.Value, ctx(false))),
-    curses: (fp?.curses || []).map((c) => ({ ...appraiseAttr(c.Tag, c.Value, ctx(true)), curse: true })),
+    buffs: riven.attributes.buffs.map((attribute) => appraiseAttr(attribute.tag, attribute.value, ctx(false))),
+    curses: riven.attributes.curses.map((attribute) => ({ ...appraiseAttr(attribute.tag, attribute.value, ctx(true)), curse: true })),
   };
 }
 
@@ -198,22 +203,24 @@ export function gradeOf(rollPct, curse = false) {
 }
 
 // 神卡判定（AlecaFrame 红星同款社区表）：某组 mandatory ⊆ buffs 且 buffs ⊆ mandatory∪optional，且负词条全在可接受列表
-export function isGodRoll(fp, weaponStats) {
+export function isGodRoll(fingerprint, weaponStats) {
   const gr = weaponStats?.goodRolls;
   if (!gr) return false;
-  const buffs = (fp?.buffs || []).map((b) => b.Tag);
-  const curses = (fp?.curses || []).map((c) => c.Tag);
+  const riven = normalizeRivenRecord(fingerprint);
+  const buffs = riven.attributes.buffs.map((attribute) => attribute.tag);
+  const curses = riven.attributes.curses.map((attribute) => attribute.tag);
   const groupOk = (gr.goodAttrs || []).some((group) => (group.mandatory || []).every((m) => buffs.includes(m))
     && buffs.every((b) => (group.mandatory || []).includes(b) || (group.optional || []).includes(b)));
   return groupOk && curses.every((c) => (gr.acceptedBadAttrs || []).includes(c));
 }
 
-// 紫卡名重建：buffs 按 Value 降序 → 前缀…+末位后缀（Hera-vexido：hera+vexi+do 实证）；缺前后缀返回 null
-export function rivenName(fp, itemType, table) {
+// 紫卡名重建：buffs 按价值降序 → 前缀…+末位后缀（Hera-vexido：hera+vexi+do 实证）；缺前后缀返回 null
+export function rivenName(fingerprint, itemType, table) {
+  const riven = normalizeRivenRecord(fingerprint);
   const stats = table?.dataByRivenInternalID?.[itemType]?.rivenStats;
-  const buffs = [...(fp?.buffs || [])].sort((a, b) => b.Value - a.Value);
+  const buffs = [...riven.attributes.buffs].sort((a, b) => b.value - a.value);
   if (!stats || buffs.length < 2) return null;
-  const parts = buffs.map((b, i) => (i === buffs.length - 1 ? stats[b.Tag]?.suffixTag : stats[b.Tag]?.prefixTag));
+  const parts = buffs.map((attribute, i) => (i === buffs.length - 1 ? stats[attribute.tag]?.suffixTag : stats[attribute.tag]?.prefixTag));
   if (parts.some((p) => !p)) return null;
   const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
   return buffs.length === 2 ? `${cap(parts[0])}${parts[1]}` : `${cap(parts[0])}-${parts.slice(1).join('')}`;
@@ -222,6 +229,7 @@ export function rivenName(fp, itemType, table) {
 // ==== 装配 ====
 
 export async function assembleRivens({ inventory, table, attrZh = {}, lang = null, veiledPrices = {} }) {
+  const view = buildAccountView(inventory);
   const zhOf = (tag, fallback) => attrZh[tag] || fallback || tag;
   const weaponZh = (compat) => lang?.[compat]?.zh?.name || null;
   const veiledValue = (name) => {
@@ -231,29 +239,22 @@ export async function assembleRivens({ inventory, table, attrZh = {}, lang = nul
     return { price: quote.platinum ?? null, marketBasis: quote.basis ?? null, dailyVolume: quote.dailyVolume ?? null };
   };
 
+  // 已开封：语义视图已给出「指纹可解析且带武器键」的紫卡记录，这里不再解析指纹键名。
   const unveiled = [];
-  for (const u of inventory?.Upgrades || []) {
-    if (!/\/Randomized\//u.test(u.ItemType || '')) continue;
-    let fp;
-    try { fp = JSON.parse(u.UpgradeFingerprint || '{}'); } catch { continue; }
-    if (!fp.compat) {
-      // Upgrades 里也可能有未开封（带 challenge 指纹）
-      unveiled.push(null);
-      continue;
-    }
-    const appraised = appraiseFingerprint(fp, u.ItemType, table);
-    const ws = table?.weaponStats?.[fp.compat];
+  for (const riven of view.rivens.installed()) {
+    const appraised = appraiseFingerprint(riven, riven.itemType, table);
+    const ws = table?.weaponStats?.[riven.weaponKey];
     unveiled.push({
-      compat: fp.compat,
-      weaponZh: weaponZh(fp.compat) || appraised.weaponEn || fp.compat.split('/').pop(),
+      compat: riven.weaponKey,
+      weaponZh: weaponZh(riven.weaponKey) || appraised.weaponEn || riven.weaponKey.split('/').pop(),
       weaponEn: appraised.weaponEn,
-      name: rivenName(fp, u.ItemType, table),
-      polarity: POLARITY_ZH[fp.pol] || fp.pol || '?',
-      rerolls: fp.rerolls || 0,
-      mr: fp.lvlReq || 8,
+      name: rivenName(riven, riven.itemType, table),
+      polarity: POLARITY_ZH[riven.polarity] || riven.polarity || '?',
+      rerolls: riven.rerolls || 0,
+      mr: riven.masteryRequirement || 8,
       omegaAtt: appraised.omegaAtt,
       rank: appraised.rank,
-      god: isGodRoll(fp, ws),
+      god: isGodRoll(riven, ws),
       attrs: [...appraised.buffs, ...appraised.curses].map((attr) => ({
         ...attr,
         zh: zhOf(attr.tag, attr.short),
@@ -263,26 +264,20 @@ export async function assembleRivens({ inventory, table, attrZh = {}, lang = nul
   }
   const opened = unveiled.filter(Boolean);
 
-  // 未开封：RawUpgrades（纯计数）+ Upgrades 带 challenge 的
+  // 未开封：未装升级的紫卡条目（纯计数）+ 已装但只有开封挑战的条目。
   const veiled = [];
-  for (const u of inventory?.RawUpgrades || []) {
-    if (!/\/Randomized\//u.test(u.ItemType || '')) continue;
-    const meta = table?.dataByRivenInternalID?.[u.ItemType];
-    const en = meta?.veiledName || u.ItemType.split('/').pop();
-    veiled.push({ zh: VEILED_ZH[en] || en, en, count: u.ItemCount || 1, challenge: null, ...veiledValue(en) });
-  }
-  for (const u of inventory?.Upgrades || []) {
-    if (!/\/Randomized\//u.test(u.ItemType || '')) continue;
-    let fp;
-    try { fp = JSON.parse(u.UpgradeFingerprint || '{}'); } catch { continue; }
-    if (fp.compat || !fp.challenge) continue;
-    const meta = table?.dataByRivenInternalID?.[u.ItemType];
-    const en = meta?.veiledName || u.ItemType.split('/').pop();
-    veiled.push({
-      zh: VEILED_ZH[en] || en, en, count: 1,
-      challenge: { progress: fp.challenge.Progress || 0, required: fp.challenge.Required || 0 },
-      ...veiledValue(en),
-    });
+  for (const row of view.rivens.veiled()) {
+    const meta = table?.dataByRivenInternalID?.[row.itemType];
+    const en = meta?.veiledName || row.itemType.split('/').pop();
+    if (row.challenge) {
+      veiled.push({
+        zh: VEILED_ZH[en] || en, en, count: 1,
+        challenge: { progress: row.challenge.progress || 0, required: row.challenge.required || 0 },
+        ...veiledValue(en),
+      });
+      continue;
+    }
+    veiled.push({ zh: VEILED_ZH[en] || en, en, count: row.quantity || 1, challenge: null, ...veiledValue(en) });
   }
 
   // 排序：神卡在前，然后按洗练次数降序（投入多的排前面）
@@ -547,11 +542,10 @@ export async function assembleRivenDetail(query, { inventory, table, attrZh = {}
   if (dirEntry?.slug) {
     const auctions = await fetchRivenAuctions(dirEntry.slug, auctionFetcher);
     if (auctions) {
-      // 每张卡各自算相似度（同武器多张时词条不同）
+      // 每张卡各自算相似度（同武器多张时词条不同）；attrs 已由装配层给出语义 tag/curse
       market = mine.map((riven) => {
-        const fp = { buffs: riven.attrs.filter((a) => !a.curse), curses: riven.attrs.filter((a) => a.curse) };
-        const myPos = fp.buffs.map((b) => attrSlug[b.tag]).filter(Boolean);
-        const myNeg = fp.curses.map((c) => attrSlug[c.tag]).filter(Boolean);
+        const myPos = riven.attrs.filter((attr) => !attr.curse).map((attr) => attrSlug[attr.tag]).filter(Boolean);
+        const myNeg = riven.attrs.filter((attr) => attr.curse).map((attr) => attrSlug[attr.tag]).filter(Boolean);
         return appraiseAgainstMarket(myPos, myNeg, auctions);
       });
     }
@@ -647,10 +641,10 @@ export function buildRivenDetailCard(data, fetchedAt = new Date().toISOString())
 async function main() {
   const { readSnapshot } = await import('./alecaframe.mjs');
   const { getLangTable } = await import('./wfdata.mjs');
-  const { inventory, alecaDir } = await readSnapshot();
-  const lang = await getLangTable({ alecaDir }).catch(() => null);
-  const [table, attrZh] = await Promise.all([loadRivenTable(alecaDir), getRivenAttrZh()]);
-  const data = await assembleRivens({ inventory, table, attrZh, lang });
+  const snapshot = await readSnapshot();
+  const lang = await getLangTable({ alecaDir: snapshot.alecaDir }).catch(() => null);
+  const [table, attrZh] = await Promise.all([loadRivenTable(snapshot.alecaDir), getRivenAttrZh()]);
+  const data = await assembleRivens({ inventory: snapshot, table, attrZh, lang });
   try {
     const prices = await getVeiledPrices(data.veiled.map((v) => v.en));
     for (const v of data.veiled) if (prices[v.en] != null) {

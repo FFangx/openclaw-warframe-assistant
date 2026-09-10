@@ -168,9 +168,9 @@ async function defaultWeeklyRender(weeklyStatePath, context, state, cardDir) {
       const [{ readSnapshot }, shop, shopCard] = await Promise.all([
         import('./alecaframe.mjs'), import('./vendor-shop.mjs'), import('./vendor-shop-card.mjs'),
       ]);
-      let inventory = null;
-      try { ({ inventory } = await readSnapshot()); } catch { inventory = null; }
-      const shopContext = await shop.loadShopContext({ inventory });
+      let snapshot = null;
+      try { snapshot = await readSnapshot(); } catch { snapshot = null; }
+      const shopContext = await shop.loadShopContext({ account: snapshot });
       const deals = await shop.buildWeeklyDeals(shopContext);
       if (deals.sections.length || deals.varzia) {
         dealsMediaUrl = await renderWarframeCard(shopCard.buildWeeklyDealsCard(deals), cardDir);
@@ -866,8 +866,8 @@ async function appendShopCandidates(candidates, subscriptions, state) {
   const context = await loadShopContext();
   try {
     const { readSnapshot } = await import('./alecaframe.mjs');
-    context.inventory = (await readSnapshot()).inventory;
-  } catch { context.inventory = null; } // 快照读失败=当未购，宁多提醒
+    context.account = await readSnapshot();
+  } catch { context.account = null; } // 快照读失败=当未购，宁多提醒
   candidates.shop = candidates.shop || [];
   candidates['vendor-item'] = candidates['vendor-item'] || [];
   const compactText = (value) => String(value ?? '').normalize('NFKC').toLowerCase().replace(/[\s_\-:：·'’&（）()]+/gu, '');

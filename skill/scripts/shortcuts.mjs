@@ -2083,7 +2083,7 @@ export async function runShortcut(message, options = {}) {
     if (!parsed.query && (options.personalAllowed === true || process.env.WARFRAME_PERSONAL_OK === '1')) {
       try {
         const { readSnapshot } = await import('./alecaframe.mjs');
-        attachBountyStanding(data, (await readSnapshot()).inventory);
+        attachBountyStanding(data, await readSnapshot());
       } catch { /* 无声望降级 */ }
     }
     let card = null;

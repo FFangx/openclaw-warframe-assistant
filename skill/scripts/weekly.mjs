@@ -6,6 +6,11 @@ import { pathToFileURL } from 'node:url';
 import { renderWarframeCard } from './warframe-cards.mjs';
 import { buildWeeklyMegaCard } from './weekly-mega-card.mjs';
 import { readSnapshot } from './alecaframe.mjs';
+// R15 第四片：账号读取只走语义视图；轨道/科研/日历等口径由 account-view 定义。
+import {
+  CIRCUIT_TRACKS, DESCENT_TRACKS, INVENTORY_SCOPES, RESEARCH_TRACKS, buildAccountView,
+  researchSampleKind, resolveResearchTrack,
+} from './account-view.mjs';
 import { getBountyZhMaps, getChallengeZhMap, getCalendarChallengeMap, getCalendarStateZhMap, getLangTable, getOfficialTextMap, getOracleConquestMap, getOracleConquestTailMap, getSeasonChallengeRequired, readAlecaJson, staleCachedJson, stripDataUriReplacer } from './wfdata.mjs';
 import { loadWorldState } from './worldstate-source.mjs';
 import { getLearnedCalendarUpgradeEntries, queuePendingCalendarUpgrade } from './calendar-upgrade-fallback.mjs';
@@ -470,16 +475,7 @@ async function fetchWorldState(seed = null) {
 }
 
 // —— 自动打卡：AlecaFrame 快照 → 本周已完成项（快照过加载点才更新，最终一致而非实时）——
-const msOf = (value) => {
-  const raw = value?.$date?.$numberLong ?? value?.$date ?? value;
-  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : NaN;
-  if (/^-?\d+$/u.test(String(raw ?? ''))) {
-    const numeric = Number(raw);
-    return Number.isFinite(numeric) ? numeric : NaN;
-  }
-  const parsed = Date.parse(String(raw ?? ''));
-  return Number.isFinite(parsed) ? parsed : NaN;
-};
+// 快照时间口径（epoch 毫秒归一化）已移入 account-view 的语义视图，这里不再解析原始日期包装。
 
 // —— 科研分数周对齐（2026-08-18 实锤，修复跨周误核销）——
 // 快照的 ConquestCacheScoreMission 是「客户端缓存的周总分」：周一重置后若玩家本周尚未
@@ -498,8 +494,8 @@ function lastPreWeekConquestSample(samples, kind, now = Date.now()) {
     .at(-1) || null;
 }
 
-function conquestResetAligned(inventory, now = Date.now()) {
-  const resetMs = msOf(inventory?.EntratiVaultCountResetDate);
+function conquestResetAligned(view, now = Date.now()) {
+  const resetMs = view.weekly.netracell().resetAtMs;
   const expectedResetMs = Date.parse(nextReset(new Date(now)));
   return Number.isFinite(resetMs)
     && resetMs > now
@@ -507,14 +503,15 @@ function conquestResetAligned(inventory, now = Date.now()) {
     && resetMs === expectedResetMs;
 }
 
-function conquestWeekEvidence(inventory, kind, history, nightwaveConquestDone, now = Date.now()) {
+// 语义轨道 id（旧命名 EntratiLab/EchoesHex 仍接受）→ 分数 / 令牌证据。
+function conquestWeekEvidence(view, track, history, nightwaveConquestDone, now = Date.now()) {
   if (nightwaveConquestDone) return 'nightwave';
-  if (conquestResetAligned(inventory, now)) return 'reset-boundary';
+  if (conquestResetAligned(view, now)) return 'reset-boundary';
   if (!history) return null;
-  const score = Math.max(0, Number(inventory?.[`${kind}ConquestCacheScoreMission`]) || 0);
-  if (score !== Number(history.score)) return 'score-change';
-  if (kind === 'EchoesHex') {
-    const tokens = JSON.stringify((inventory?.EchoesHexConquestBonusTokensGiven || []).map(Number));
+  const research = view.weekly.research(track);
+  if ((research?.score ?? 0) !== Number(history.score)) return 'score-change';
+  if (track === RESEARCH_TRACKS.TEMPORAL) {
+    const tokens = JSON.stringify(research?.tokens ?? []);
     if (tokens !== JSON.stringify((history.tokens || []).map(Number))) return 'tokens';
   }
   return null;
@@ -522,11 +519,11 @@ function conquestWeekEvidence(inventory, kind, history, nightwaveConquestDone, n
 
 // 本周电波征服挑战完成 = 本周活跃挑战里存在 CompleteConquest 类挑战且快照进度达标。
 // 与本周活跃列表 join，周界天然正确；该挑战不在轮换时返回 false，不参与判定。
-function nightwaveConquestDone(inventory, worldState, challengeRequired) {
+function nightwaveConquestDone(view, worldState, challengeRequired) {
   const challenges = (worldState?.nightwave?.activeChallenges || [])
     .filter((item) => !item.isDaily && /completeconquest/iu.test(String(item.id || '')));
   if (!challenges.length || !challengeRequired || !Object.keys(challengeRequired).length) return false;
-  const progressByKey = new Map((inventory?.ChallengeProgress || []).map((item) => [String(item.Name || '').toLowerCase(), Number(item.Progress) || 0]));
+  const progressByKey = view.weekly.challengeProgress();
   return challenges.some((item) => {
     const key = String(item.id).replace(/^\d+/u, '');
     const required = Number(challengeRequired[key]) || 0;
@@ -534,8 +531,9 @@ function nightwaveConquestDone(inventory, worldState, challengeRequired) {
   });
 }
 
-// 纯函数便于打桩测试；worldState 缺失时跳过需要对账的项（执刑官/电波），其余判据只看快照自身周界
-function evaluateAutoCheck(inventory, worldState, now = Date.now(), challengeRequired = null, syncedAt = null, options = {}) {
+// 纯函数便于打桩测试；worldState 缺失时跳过需要对账的项（执刑官/电波），其余判据只看快照自身周界。
+// 入参兼容 AccountSnapshot / 语义视图 / 旧合成库存对象（既有调用方与测试夹具不变）。
+function evaluateAutoCheck(input, worldState, now = Date.now(), challengeRequired = null, syncedAt = null, options = {}) {
   const auto = {};      // taskId → true：判据确定的本周完成
   const progress = {};  // taskId → 进度文本（有进度不等于完成）
   const evidence = {};  // taskId → 脱敏周期证据；不包含原始快照、账号标识或任务实例 ID
@@ -554,44 +552,44 @@ function evaluateAutoCheck(inventory, worldState, now = Date.now(), challengeReq
       basis,
     };
   };
-  if (!inventory) return { auto, progress, evidence };
-  // 双衍回廊：EndlessXP 按 Category 分普通/钢铁；Expiry 过期 = 上周陈旧数据，不采信
-  for (const [category, taskId] of [['EXC_NORMAL', 'circuit-normal'], ['EXC_HARD', 'circuit-steel']]) {
-    const entry = (inventory.EndlessXP || []).find((item) => item.Category === category);
-    if (!entry || !(msOf(entry.Expiry) > now)) continue;
-    const goal = Math.max(0, ...(entry.PendingRewards || []).map((reward) => Number(reward.RequiredTotalXp) || 0));
+  const view = buildAccountView(input);
+  if (!view.hasInventory) return { auto, progress, evidence };
+  // 双衍回廊：按语义轨道分普通/钢铁；过期 = 上周陈旧数据，不采信
+  for (const [track, taskId] of [[CIRCUIT_TRACKS.NORMAL, 'circuit-normal'], [CIRCUIT_TRACKS.STEEL, 'circuit-steel']]) {
+    const entry = view.weekly.circuit(track, now);
+    if (!entry || entry.expired) continue;
+    const goal = entry.goal;
     if (!goal) continue;
-    const earned = Number(entry.Earn) || 0;
-    progress[taskId] = `阶层经验 ${Math.min(earned, goal)}/${goal}`;
-    if (earned >= goal) confirm(taskId, 'circuit-earned-goal');
+    progress[taskId] = `阶层经验 ${Math.min(entry.earned, goal)}/${goal}`;
+    if (entry.earned >= goal) confirm(taskId, 'circuit-earned-goal');
   }
-  // 衰退室：每周 5 次搜索脉冲，ResetDate 在未来才是本周计数
-  if (msOf(inventory.EntratiVaultCountResetDate) > now) {
-    const count = Number(inventory.EntratiVaultCountLastPeriod) || 0;
+  // 衰退室：每周 5 次搜索脉冲，重置时刻在未来才是本周计数
+  const netracell = view.weekly.netracell();
+  if (netracell.resetAtMs > now) {
+    const count = netracell.count;
     progress.netracell = `本周 ${Math.min(count, 5)}/5 次`;
     if (count >= 5) confirm('netracell', 'netracell-count-with-reset');
   }
   // 沉沦之地：领奖到最后一层 checkpoint 即全清
-  for (const [category, taskId] of [['DM_COH_NORMAL', 'descendia-normal'], ['DM_COH_HARD', 'descendia-steel']]) {
-    const entry = (inventory.DescentRewards || []).find((item) => item.Category === category);
-    if (!entry || !(msOf(entry.Expiry) > now)) continue;
-    const top = Math.max(0, ...(entry.PendingRewards || []).map((reward) => Number(reward.FloorCheckpoint) || 0));
+  for (const [track, taskId] of [[DESCENT_TRACKS.NORMAL, 'descendia-normal'], [DESCENT_TRACKS.STEEL, 'descendia-steel']]) {
+    const entry = view.weekly.descent(track, now);
+    if (!entry || entry.expired) continue;
+    const top = entry.goal;
     if (!top) continue;
-    const claimed = Number(entry.FloorClaimed) || 0;
-    progress[taskId] = `已领 ${Math.min(claimed, top)}/${top} 层`;
-    if (claimed >= top) confirm(taskId, 'descendia-claimed-checkpoint');
+    progress[taskId] = `已领 ${Math.min(entry.claimed, top)}/${top} 层`;
+    if (entry.claimed >= top) confirm(taskId, 'descendia-claimed-checkpoint');
   }
   // 执刑官：领奖记录的 SortieId 与本周 archonHunt.id 一致才算本周完成（上周记录自然对不上）
-  const sortieId = inventory.LastLiteSortieReward?.[0]?.SortieId?.$oid;
+  const sortieId = view.weekly.archonRewards().firstSortieId;
   if (sortieId && worldState?.archonHunt?.id && sortieId === worldState.archonHunt.id) {
     confirm('archon', 'archon-reward-id-match', 'alecaframe+worldstate');
   }
   // 电波：🔴 SeasonChallengeHistory 只记「激活过」不是「完成」（2026-08-06 用户实锤两条未做挑战在列）。
-  // 完成判定=ChallengeProgress.Progress ≥ ExportChallenges.requiredCount（与日历同款 join）；
+  // 完成判定=挑战进度 ≥ ExportChallenges.requiredCount（与日历同款 join）；
   // 映射缺失（网络挂）时宁不核销也不报进度，不用激活记录充数
   const challenges = (worldState?.nightwave?.activeChallenges || []).filter((item) => !item.isDaily);
   if (challenges.length && challengeRequired && Object.keys(challengeRequired).length) {
-    const progressByKey = new Map((inventory.ChallengeProgress || []).map((item) => [String(item.Name || '').toLowerCase(), Number(item.Progress) || 0]));
+    const progressByKey = view.weekly.challengeProgress();
     const hits = challenges.filter((item) => {
       const key = String(item.id).replace(/^\d+/u, '');
       const required = Number(challengeRequired[key]) || 0;
@@ -603,12 +601,11 @@ function evaluateAutoCheck(inventory, worldState, now = Date.now(), challengeReq
   // 泰辛商店已移入独立「商店」模板，周常不再追踪购买状态（2026-08-05）
   // 卡尔周任务：WeekCount 锚点 2014-02-10（周一，实测 651=2026-08-03 周）对齐本周才采信，CompletedMission 为准
   const kahlWeek = Math.floor((now - Date.UTC(2014, 1, 10)) / 604_800_000);
-  const kahlMission = ((inventory.Affiliations || []).find((item) => item.Tag === 'KahlSyndicate')?.WeeklyMissions || [])
-    .find((item) => Number(item.WeekCount) === kahlWeek);
-  if (kahlMission?.CompletedMission === true) confirm('kahl', 'kahl-week-completed');
+  const kahlMission = view.standing.weeklyMission('KahlSyndicate', kahlWeek);
+  if (kahlMission?.completed === true) confirm('kahl', 'kahl-week-completed');
   // 1999 日历：游戏内一个季节横跨约 3 个月，但现实轮换窗口仍是一周。
   // SeasonType + Iteration 对齐当前 worldstate 后，LastCompletedDayIdx 到达最后有效节点即可可靠核销。
-  const calInfo = calendarSeasonProgress(inventory, worldState);
+  const calInfo = calendarSeasonProgress(view, worldState);
   if (calInfo) {
     progress['calendar-1999'] = `已推进 ${calInfo.doneCount}/${calInfo.totalCount} 节点`;
     if (calInfo.totalCount > 0 && calInfo.doneCount === calInfo.totalCount) {
@@ -618,11 +615,11 @@ function evaluateAutoCheck(inventory, worldState, now = Date.now(), challengeReq
   // 科研最佳分：基础 1 点 + 8 个个人/装备参数，每关最多 9 点；只完成
   // 两关最多 18 点。因此 >=19 能严格证明三关完整通关，低分只展示而不猜。
   // 分数字段按周重置，但仍要求快照本周同步，防止跨周沿用旧记录。
-  const nwConquestDone = nightwaveConquestDone(inventory, worldState, challengeRequired);
-  for (const [kind, taskId] of [['EntratiLab', 'deep-archimedea'], ['EchoesHex', 'temporal-archimedea']]) {
-    const history = lastPreWeekConquestSample(options?.conquestSamples, kind, now);
-    const evidence = conquestWeekEvidence(inventory, kind, history, nwConquestDone, now);
-    const research = archimedeaResearchProgress(inventory, kind, now, syncedAt, { evidence, priorScore: history?.score ?? null });
+  const nwConquestDone = nightwaveConquestDone(view, worldState, challengeRequired);
+  for (const [track, taskId] of [[RESEARCH_TRACKS.DEEP, 'deep-archimedea'], [RESEARCH_TRACKS.TEMPORAL, 'temporal-archimedea']]) {
+    const history = lastPreWeekConquestSample(options?.conquestSamples, researchSampleKind(track), now);
+    const evidence = conquestWeekEvidence(view, track, history, nwConquestDone, now);
+    const research = archimedeaResearchProgress(view, track, now, syncedAt, { evidence, priorScore: history?.score ?? null });
     if (!research) continue;
     progress[taskId] = research.text;
     if (research.completed) confirm(taskId, `archimedea-score-${research.evidence}`);
@@ -630,11 +627,13 @@ function evaluateAutoCheck(inventory, worldState, now = Date.now(), challengeReq
   return { auto, progress, evidence };
 }
 
-export function archimedeaResearchProgress(inventory, kind, now = Date.now(), syncedAt = null, options = {}) {
+// 入参兼容语义轨道 id 与历史 kind（EntratiLab / EchoesHex）。
+export function archimedeaResearchProgress(input, track, now = Date.now(), syncedAt = null, options = {}) {
   const syncedMs = Date.parse(String(syncedAt || ''));
   if (!Number.isFinite(syncedMs) || syncedMs < Date.parse(weekStart(new Date(now)))) return null;
-  const score = Math.max(0, Number(inventory?.[`${kind}ConquestCacheScoreMission`]) || 0);
-  const unlocked = Number(inventory?.[`${kind}ConquestUnlocked`]) > 0;
+  const research = buildAccountView(input).weekly.research(resolveResearchTrack(track));
+  const score = research?.score ?? 0;
+  const unlocked = Boolean(research?.unlocked);
   if (!unlocked && score <= 0) return null;
   const evidence = options.evidence || null;
   const completed = Boolean(evidence) && score >= 19;
@@ -654,23 +653,24 @@ export function archimedeaResearchProgress(inventory, kind, now = Date.now(), sy
 // —— 1999 日历赛季进度（语义 2026-08-05 用户三步实测定死） ——
 // LastCompletedDayIdx=全类型最后完成节点（0 起算，索引即 worldstate days 数组序，-1=本赛季没做过）
 // 周界校验：快照 SeasonType/Iteration 必须与 worldstate 当前赛季对齐，防隔赛季陈旧数据误标
-function calendarSeasonProgress(inventory, worldState) {
-  const sp = inventory?.CalendarProgress?.SeasonProgress;
+function calendarSeasonProgress(input, worldState) {
+  const view = buildAccountView(input);
+  const calendar = view.weekly.calendar();
   const days = Array.isArray(worldState?.calendar?.days) ? worldState.calendar.days : [];
-  if (!sp || !days.length) return null;
+  if (!calendar || !days.length) return null;
   const seasonZh = String(worldState.calendar.season || '').toUpperCase();
-  const snapSeason = String(sp.SeasonType || '').replace(/^CST_/u, '').toUpperCase();
+  const snapSeason = String(calendar.seasonType || '').replace(/^CST_/u, '').toUpperCase();
   if (!seasonZh || snapSeason !== seasonZh) return null;
   const iteration = Number(worldState.calendar.yearIteration);
-  if (Number.isFinite(iteration) && Number(inventory.CalendarProgress.Iteration) !== iteration) return null;
-  const lastIdx = Number.isFinite(Number(sp.LastCompletedDayIdx)) ? Number(sp.LastCompletedDayIdx) : -1;
+  if (Number.isFinite(iteration) && calendar.iteration !== iteration) return null;
+  const lastIdx = calendar.lastCompletedDayIdx ?? -1;
   // 进度口径只数有事件的节点（days 里有空事件日，指针却按数组位置计数）
   const active = days.map((day, idx) => ({ idx, has: (day.events || []).length > 0 })).filter((day) => day.has);
   const doneCount = active.filter((day) => day.idx <= lastIdx).length;
-  // 挑战进度：ActivatedChallenges 含已完成项（实锤），完成判定必须拿 ChallengeProgress 对 requiredCount
-  const progressByKey = new Map((inventory.ChallengeProgress || []).map((item) => [String(item.Name || '').toLowerCase(), Number(item.Progress) || 0]));
-  const challenges = (sp.ActivatedChallenges || []).map((key) => ({ key: String(key).toLowerCase(), cur: progressByKey.get(String(key).toLowerCase()) ?? 0 }));
-  const upgrades = (inventory.CalendarProgress.YearProgress?.Upgrades || []).map(String);
+  // 挑战进度：ActivatedChallenges 含已完成项（实锤），完成判定必须拿挑战进度对 requiredCount
+  const progressByKey = view.weekly.challengeProgress();
+  const challenges = calendar.activatedChallenges.map((key) => ({ key: key.toLowerCase(), cur: progressByKey.get(key.toLowerCase()) ?? 0 }));
+  const upgrades = [...calendar.yearUpgrades];
   return { lastIdx, doneCount, totalCount: active.length, challenges, upgrades, upgradeCount: upgrades.length };
 }
 
@@ -701,27 +701,33 @@ function chosenFlags(officialEvents, count, pickPath) {
 // 读真实快照的包装；任何异常静默降级为「无自动数据」，手动打卡不受影响
 async function autoCheckFromSnapshot(worldState, conquestSamples = []) {
   try {
-    const { inventory, syncedAt } = await readSnapshot();
+    const snapshot = await readSnapshot();
+    const view = buildAccountView(snapshot);
     // 电波完成量映射：网络失败返空对象，电波项自然跳过（宁不核销）
     const challengeRequired = worldState ? await getSeasonChallengeRequired() : null;
     const now = Date.now();
-    const result = evaluateAutoCheck(inventory, worldState, now, challengeRequired, syncedAt, { conquestSamples });
+    const result = evaluateAutoCheck(view, worldState, now, challengeRequired, view.syncedAt, { conquestSamples });
     // 本轮科研分数样本：供以后各周判断「分数是否真的变过」
-    const observations = collectConquestObservations(inventory, syncedAt, now);
-    return { ...result, syncedAt, inventory, observations };
+    const observations = collectConquestObservations(view, view.syncedAt, now);
+    return { ...result, syncedAt: view.syncedAt, view, observations };
   } catch {
     return null;
   }
 }
 
-function collectConquestObservations(inventory, syncedAt, now) {
-  if (!inventory) return [];
+function collectConquestObservations(input, syncedAt, now) {
+  const view = buildAccountView(input);
+  if (!view.hasInventory) return [];
   const sampleWeek = weekStart(new Date(Date.parse(String(syncedAt)) || now));
   const at = new Date(now).toISOString();
-  return [
-    { kind: 'EntratiLab', weekStart: sampleWeek, score: Math.max(0, Number(inventory.EntratiLabConquestCacheScoreMission) || 0), syncedAt, at },
-    { kind: 'EchoesHex', weekStart: sampleWeek, score: Math.max(0, Number(inventory.EchoesHexConquestCacheScoreMission) || 0), tokens: (inventory.EchoesHexConquestBonusTokensGiven || []).map(Number), syncedAt, at },
-  ];
+  // 持久化 kind 沿用历史值（EntratiLab / EchoesHex），旧状态文件继续可读。
+  return [RESEARCH_TRACKS.DEEP, RESEARCH_TRACKS.TEMPORAL].map((track) => {
+    const research = view.weekly.research(track);
+    const base = { kind: research?.sampleKind || null, weekStart: sampleWeek, score: research?.score ?? 0 };
+    // 令牌字段只在有该字段的赛季轨道出现（与旧记录形状一致）。
+    if (research?.tokens) return { ...base, tokens: [...research.tokens], syncedAt, at };
+    return { ...base, syncedAt, at };
+  });
 }
 
 // 把本轮科研分数样本并进状态文件：同 (kind, weekStart) 只留最新一条，cap 80；失败静默
@@ -966,19 +972,19 @@ function helpText() {
 // 卡上编号 = TASKS 数组序号，与「完成 N」命令一致
 const taskNumber = (id) => TASKS.findIndex((task) => task.id === id) + 1;
 
-// 无尽回廊进度轨道：EndlessXP.PendingRewards 十档 → {xp, nameZh, count, reached, claimed}
-// Expiry 过期 = 上周陈旧数据（与 evaluateAutoCheck 同一判据），返回 null 隐藏轨道
-function circuitTrack(inventory, category, names, now = Date.now()) {
-  const entry = (inventory?.EndlessXP || []).find((item) => item.Category === category);
-  if (!entry || !(msOf(entry.Expiry) > now)) return null;
-  const earn = Number(entry.Earn) || 0;
-  const claim = Number(entry.Claim) || 0;
-  const nodes = (entry.PendingRewards || [])
+// 无尽回廊进度轨道：语义视图给出十档目标（xp/奖励）与本周经验
+// 过期 = 上周陈旧数据（与 evaluateAutoCheck 同一判据），返回 null 隐藏轨道
+function circuitTrack(input, track, names, now = Date.now()) {
+  const entry = buildAccountView(input).weekly.circuit(track, now);
+  if (!entry || entry.expired) return null;
+  const earn = entry.earned;
+  const claim = entry.claimed;
+  const nodes = entry.pendingRewards
     .map((reward) => {
-      const xp = Number(reward.RequiredTotalXp) || 0;
-      const items = (reward.Rewards || []).map((item) => {
-        const zh = storeItemZh(item.StoreItem, names) || '游戏内奖励（名称待词典同步）';
-        const count = Number(item.ItemCount) || 1;
+      const xp = reward.requiredTotalXp;
+      const items = reward.rewards.map((item) => {
+        const zh = storeItemZh(item.storeItem, names) || '游戏内奖励（名称待词典同步）';
+        const count = item.count ?? 1;
         return count > 1 ? `${zh} ×${count}` : zh;
       });
       return { xp, name: items.join(' + ') || '奖励', reached: earn >= xp, claimed: claim >= xp };
@@ -987,7 +993,7 @@ function circuitTrack(inventory, category, names, now = Date.now()) {
     .sort((a, b) => a.xp - b.xp);
   if (!nodes.length) return null;
   const goal = nodes[nodes.length - 1].xp;
-  return { earn: Math.min(earn, goal), goal, ratio: Math.max(0, Math.min(1, earn / goal)), nodes, choices: entry.Choices || [] };
+  return { earn: Math.min(earn, goal), goal, ratio: Math.max(0, Math.min(1, earn / goal)), nodes, choices: [...entry.choices] };
 }
 
 // 轮换商店板块（泰辛/瓦奇娅/已购计数）已整体移入独立「商店」模板（vendor-shop.mjs，2026-08-05）
@@ -1090,7 +1096,9 @@ export function localizeArchimedeaModifier(mod, oracleMap = new Map(), fallbackM
 function buildMegaData(record, worldState, skipped = new Set(), autoResult = null, autoIds = [], names = null, calMap = null, officialDays = null, seasonRequired = null, nwPredict = null, oracleConquestMap = null, officialTextMap = null, worldStateMeta = {}, oracleConquestTails = null, calendarStateZh = null, learnedCalendarUpgrades = null) {
   const done = new Set(record.completed);
   const autoProgress = autoResult?.progress || {};
-  const inventory = autoResult?.inventory || null;
+  // R15 第四片：卡面进度统一读语义视图（无快照时视图为空，各项自然降级）。
+  const view = autoResult?.view || buildAccountView(null);
+  const inventoryAvailable = view.hasInventory;
   // 卡片可见时间一律显式上海时区
   const snapshotZh = autoResult?.syncedAt
     ? new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(autoResult.syncedAt))
@@ -1131,9 +1139,9 @@ function buildMegaData(record, worldState, skipped = new Set(), autoResult = nul
   const eliteChallenges = challenges.filter((challenge) => challenge.isElite);
   const dailyChallenges = challenges.filter((challenge) => challenge.isDaily);
   const standing = staticData.nightwaveStanding;
-  // 逐条完成态：ChallengeProgress × requiredCount（与 evaluateAutoCheck 同判据）；快照/映射缺失时 done=null 不标
-  const nwProgressByKey = new Map(((inventory?.ChallengeProgress) || []).map((item) => [String(item.Name || '').toLowerCase(), Number(item.Progress) || 0]));
-  const nwTrackable = Boolean(inventory && seasonRequired && Object.keys(seasonRequired).length);
+  // 逐条完成态：挑战进度 × requiredCount（与 evaluateAutoCheck 同判据）；快照/映射缺失时 done=null 不标
+  const nwProgressByKey = view.weekly.challengeProgress();
+  const nwTrackable = Boolean(inventoryAvailable && seasonRequired && Object.keys(seasonRequired).length);
   const challengeRow = (challenge, elite) => {
     const key = String(challenge.id).replace(/^\d+/u, '');
     const required = Number(seasonRequired?.[key]) || 0;
@@ -1147,10 +1155,10 @@ function buildMegaData(record, worldState, skipped = new Set(), autoResult = nul
       required: nwTrackable && required > 0 ? required : null,
     };
   };
-  // 赛季总进度：快照 Affiliations 里当前电波 syndicate（worldstate tag 去空格=快照 Tag，防历代残留条目）
+  // 赛季总进度：语义视图按 worldstate tag（去空格）取当前电波集团，防历代残留条目
   const nwTag = String(worldState?.nightwave?.tag || '').replace(/\s+/gu, '');
-  const nwAffil = nwTag ? ((inventory?.Affiliations) || []).find((item) => String(item.Tag) === nwTag) : null;
-  const nwSeason = nwAffil ? { standing: Number(nwAffil.Standing) || 0, title: Number(nwAffil.Title) || 0 } : null;
+  const nwAffil = nwTag ? view.standing.affiliation(nwTag) : null;
+  const nwSeason = nwAffil ? { standing: nwAffil.standing, title: nwAffil.title } : null;
 
   const days = Array.isArray(worldState?.calendar?.days) ? worldState.calendar.days : [];
   const officialSafe = Array.isArray(officialDays) && officialDays.length === days.length ? officialDays : null;
@@ -1167,7 +1175,7 @@ function buildMegaData(record, worldState, skipped = new Set(), autoResult = nul
     }));
   // v4：日历整宽混排——大奖/挑战/增益按日期顺序各占一行（大奖不再单列在前）
   // v5：接快照进度——行态 done/current/future（按原始数组下标对齐 LastCompletedDayIdx），挑战行附计数
-  const calInfo = calendarSeasonProgress(inventory, worldState);
+  const calInfo = calendarSeasonProgress(view, worldState);
   // 本赛季已选增益逐日对号：Upgrades 全年追加式，末 N 条=本赛季已完成的 N 个三选一日、顺序=日期序
   const doneOverrideCount = calInfo ? days.filter((day, idx) => idx <= calInfo.lastIdx && (day.events || []).some((event) => event.type === 'Override')).length : 0;
   const seasonPicks = doneOverrideCount > 0 ? calInfo.upgrades.slice(-doneOverrideCount) : [];
@@ -1243,7 +1251,7 @@ function buildMegaData(record, worldState, skipped = new Set(), autoResult = nul
   const frames = worldState?.duviriCycle?.choices?.find((choice) => choice.category === 'normal')?.choices || [];
   const weaponKeys = worldState?.duviriCycle?.choices?.find((choice) => choice.category === 'hard')?.choices || [];
   // 已拥有战甲集合（uniqueName）：回廊战甲 chips 的「已有」标
-  const suitSet = new Set((inventory?.Suits || []).map((suit) => suit.ItemType));
+  const suitSet = view.inventory.itemTypes(INVENTORY_SCOPES.WARFRAMES);
 
   return {
     weekStart: record.weekStart,
@@ -1282,11 +1290,11 @@ function buildMegaData(record, worldState, skipped = new Set(), autoResult = nul
       weapons: weaponKeys.map((key) => ({ key, name: officialTextZh(key, officialTextMap) || staticData.incarnonZh[key] || '灵化武器（名称待词典同步）' })),
       normal: {
         number: taskNumber('circuit-normal'), done: done.has('circuit-normal'), skipped: skipped.has('circuit-normal'),
-        progress: autoProgress['circuit-normal'] || '', track: circuitTrack(inventory, 'EXC_NORMAL', names),
+        progress: autoProgress['circuit-normal'] || '', track: circuitTrack(view, CIRCUIT_TRACKS.NORMAL, names),
       },
       steel: {
         number: taskNumber('circuit-steel'), done: done.has('circuit-steel'), skipped: skipped.has('circuit-steel'),
-        progress: autoProgress['circuit-steel'] || '', track: circuitTrack(inventory, 'EXC_HARD', names),
+        progress: autoProgress['circuit-steel'] || '', track: circuitTrack(view, CIRCUIT_TRACKS.STEEL, names),
       },
     },
     nightwave: {
@@ -1362,9 +1370,9 @@ function predictNightwaveText(samples, tag, standing, activationMs, expiryMs, no
 async function sampleAndPredict(statePath, worldState, autoResult) {
   try {
     const nwTag = String(worldState?.nightwave?.tag || '').replace(/\s+/gu, '');
-    const affil = nwTag ? ((autoResult?.inventory?.Affiliations) || []).find((item) => String(item.Tag) === nwTag) : null;
+    const affil = nwTag ? (autoResult?.view || buildAccountView(null)).standing.affiliation(nwTag) : null;
     if (!affil) return null;
-    const standing = Number(affil.Standing) || 0;
+    const standing = affil.standing;
     const sampleAt = Number.isFinite(Number(autoResult?.syncedAt)) ? Number(autoResult.syncedAt) : new Date(autoResult?.syncedAt || Date.now()).getTime();
     let samples = [];
     if (statePath) {
