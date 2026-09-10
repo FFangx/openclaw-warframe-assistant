@@ -1,20 +1,20 @@
 #!/usr/bin/env node
 
-// R15 第二片：AlecaFrame lastData → 版本化、白名单的 AccountSnapshot v1。
+// R15 第二、三片：AlecaFrame lastData → 版本化、白名单的 AccountSnapshot v1。
 //
 // 只做三件事，全部是纯函数（不联网、不落盘、不读凭据、不碰 deltas.dat）：
 //   1. 兼容旧/新两种 AlecaFrame 信封形状，抽出库存对象；
-//   2. 按顶层白名单投影：未消费的原始顶层字段（令牌、账号标识、未来新增字段）
-//      不进入适配后的快照，原始 envelope 整体不外传；
+//   2. 按顶层及嵌套字段白名单投影：未消费字段（令牌、账号标识、实例 oid、宠物详情、
+//      未来新增字段）不进入适配后的快照，原始 envelope 与条目对象均不外传；
 //   3. 为每个保留字段挂上可证明的元数据：来源、asOf/同步时间及依据、
 //      周期归属与依据、边界时间、可信度与新鲜度。
 //
 // 另提供 diffAccountSnapshots：库存数量变化 + 今天真正被消费的周常标量/记录字段
 // 的统一 delta。它是纯函数，事件数量有上限，事件里只有白名单投影，没有原始快照。
 //
-// 边界说明：白名单只作用于顶层。根因是库存条目内部字段（ItemType/ItemCount/
-// UpgradeFingerprint/PendingRewards 等）正被现有消费方直接读取，二次投影会改变
-// 用户可见输出；条目级投影留给后续 R15/R16 切片，不在本片扩大。
+// R15 第三片：白名单不再只作用于顶层。条目与嵌套对象同样经过显式投影——每个保留字段
+// 都有固定的键规格，只复制现有消费方真正读取的键；条目内的实例 oid、宠物详情、未知及
+// 未来新增键一律不进入适配后的快照。投影只重建容器，不保留源对象引用。
 
 import { createHash } from 'node:crypto';
 
@@ -214,14 +214,258 @@ function maxExpiryOf(entries) {
   return times.length ? new Date(Math.max(...times)).toISOString() : null;
 }
 
-// 顶层白名单投影。非对象库存原样透传（数组/标量没有顶层字段可泄露，也保持旧行为）。
+// —— R15 第三片：条目与嵌套字段的显式投影 ——
+//
+// 顶层白名单只决定「哪些组进入快照」；组内条目仍会携带 AlecaFrame 的内部字段
+// （实例 oid、宠物详情、奖励背包）与未来新增键。因此每个保留字段都必须登记一个显式
+// 投影规格，按「现有消费方真正读取的键」逐字段重建；没有登记的字段在模块加载时直接
+// 抛错，不存在整对象透传的兜底分支。
+//
+// 三条不变量：
+//   1. 输出的数组/对象全部新建，绝不与源快照共享引用；只复用不可变原始值。
+//   2. 只复制规格里列出的键，深层未知键与敏感 sentinel 完全消失。
+//   3. 消费方用 `Number(x) || 0` / `safeNumber` / `?.` / `|| []` 处理的键，投影后保持
+//      「缺键」而不是补 0，避免把「无法证明」伪装成真实数值。
+const OMIT_FIELD = Symbol('account-snapshot.omit');
+
+// 文本：消费方普遍先 String() 再比较，字符串原样保留，有限数字/布尔按同口径字符串化；
+// 对象、函数、Symbol 的语义无法证明，整键丢弃。
+function projectTextValue(value) {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : OMIT_FIELD;
+  if (typeof value === 'boolean') return String(value);
+  return OMIT_FIELD;
+}
+
+// 数值：只有能证明为有限数字的才保留；null/undefined/NaN/Infinity/对象一律丢弃整键，
+// 让消费方自己的 `Number(x) || 0`、`safeNumber`、`?.` 兜底决定「无有效数据」的表现。
+function projectNumericValue(value) {
+  if (value == null) return OMIT_FIELD;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : OMIT_FIELD;
+}
+
+// 数量：消费方按「键是否存在」区分「按数量计」与「按 1 件计」（掉落计数、库存查询），
+// 因此存在就给有限数字（非有限按 0，与消费方 Number(x) || 0 同口径），缺失才保持缺键。
+function projectCountValue(value) {
+  if (value == null) return OMIT_FIELD;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+// 布尔：现有消费方一律用 `=== true` 判定，保持严格等价，不做真值提升。
+function projectBooleanValue(value) {
+  return value === true;
+}
+
+// 日期标记：只保留既有消费方能解析的形状（epoch 数字、可解析字符串、{$date: …}、
+// {$numberLong: …}）；其余形状返回 null，由调用方丢弃整键，避免把 Mongo 包装对象的
+// 兄弟键（账号/设备/实例字段）带出来。
+function projectDateValue(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string') return value;
+  if (!isPlainObject(value)) return null;
+  const has = (target, key) => Object.prototype.hasOwnProperty.call(target, key);
+  if (has(value, '$date')) {
+    const inner = value.$date;
+    if (typeof inner === 'number' && Number.isFinite(inner)) return { $date: inner };
+    if (typeof inner === 'string') return { $date: inner };
+    if (isPlainObject(inner) && has(inner, '$numberLong')) {
+      const long = inner.$numberLong;
+      if (typeof long === 'string') return { $date: { $numberLong: long } };
+      if (typeof long === 'number' && Number.isFinite(long)) return { $date: { $numberLong: String(long) } };
+    }
+    return null;
+  }
+  if (has(value, '$numberLong')) {
+    const long = value.$numberLong;
+    if (typeof long === 'string') return { $numberLong: long };
+    if (typeof long === 'number' && Number.isFinite(long)) return { $numberLong: String(long) };
+  }
+  return null;
+}
+
+function projectDateKey(value) {
+  const projected = projectDateValue(value);
+  return projected === null ? OMIT_FIELD : projected;
+}
+
+// 条目 oid：消费方只读 `$oid` 或直接当字符串比较；包装对象的其余键不保留。
+function projectOidValue(value) {
+  if (typeof value === 'string') return value;
+  if (!isPlainObject(value)) return OMIT_FIELD;
+  const oid = value.$oid;
+  if (typeof oid === 'string') return { $oid: oid };
+  if (typeof oid === 'number' && Number.isFinite(oid)) return { $oid: String(oid) };
+  return OMIT_FIELD;
+}
+
+// 文本列表（周常 Choices / 日历 ActivatedChallenges / YearProgress.Upgrades）：消费方只做
+// String(x).toLowerCase() 或 map(String)，因此元素一律投影成字符串（无法证明时为 null），
+// 数组长度保持，不放入任何对象内容。
+function projectTextList(value) {
+  return (Array.isArray(value) ? value : []).map((element) => {
+    const projected = projectTextValue(element);
+    return projected === OMIT_FIELD ? null : projected;
+  });
+}
+
+// 通用条目投影：只复制规格里列出的自有键；缺键保持缺键，值为 OMIT 时整键丢弃。
+function projectEntry(entry, spec) {
+  const out = {};
+  if (!isPlainObject(entry)) return out;
+  for (const [key, project] of spec) {
+    if (!Object.prototype.hasOwnProperty.call(entry, key)) continue;
+    const value = project(entry[key]);
+    if (value === OMIT_FIELD) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+function projectList(value, entrySpec) {
+  return (Array.isArray(value) ? value : []).map((entry) => projectEntry(entry, entrySpec));
+}
+
+// 库存/装备条目：现有消费方只读 ItemType 与 ItemCount（库存查询、掉落计数、估值、
+// 父成品持有判定）。ItemCount 的存在性本身有语义（缺失按 1 计），所以缺键保持缺键。
+const ITEM_ENTRY_SPEC = Object.freeze([['ItemType', projectTextValue], ['ItemCount', projectCountValue]]);
+// Upgrades 每条固定计 1，ItemCount 无人读取；只有指纹 JSON 参与等级/紫卡判定。
+const UPGRADE_ENTRY_SPEC = Object.freeze([['ItemType', projectTextValue], ['UpgradeFingerprint', projectTextValue]]);
+// 集团：声望与等级（赏金/电波卡）+ 周序号与完成标记（卡尔周任务核销）。
+const WEEKLY_MISSION_ENTRY_SPEC = Object.freeze([['WeekCount', projectNumericValue], ['CompletedMission', projectBooleanValue]]);
+const AFFILIATION_ENTRY_SPEC = Object.freeze([
+  ['Tag', projectTextValue],
+  ['Standing', projectNumericValue],
+  ['Title', projectNumericValue],
+  ['WeeklyMissions', (value) => projectList(value, WEEKLY_MISSION_ENTRY_SPEC)],
+]);
+// 无尽回廊：轨道进度条读 Expiry/Earn/Claim/PendingRewards（档位 + 奖励）与本周已选武器。
+const ENDLESS_XP_REWARD_ENTRY_SPEC = Object.freeze([['StoreItem', projectTextValue], ['ItemCount', projectCountValue]]);
+const ENDLESS_XP_NODE_ENTRY_SPEC = Object.freeze([
+  ['RequiredTotalXp', projectNumericValue],
+  ['Rewards', (value) => projectList(value, ENDLESS_XP_REWARD_ENTRY_SPEC)],
+]);
+const ENDLESS_XP_ENTRY_SPEC = Object.freeze([
+  ['Category', projectTextValue],
+  ['Expiry', projectDateKey],
+  ['Earn', projectNumericValue],
+  ['Claim', projectNumericValue],
+  ['Choices', projectTextList],
+  ['PendingRewards', (value) => projectList(value, ENDLESS_XP_NODE_ENTRY_SPEC)],
+]);
+// 沉沦之地：难度档 + 已领层数 + 档位目标。
+const DESCENT_REWARD_ENTRY_SPEC = Object.freeze([
+  ['Category', projectTextValue],
+  ['Expiry', projectDateKey],
+  ['FloorClaimed', projectNumericValue],
+  ['PendingRewards', (value) => projectList(value, Object.freeze([['FloorCheckpoint', projectNumericValue]]))],
+]);
+// 执刑官猎杀：只保留 SortieId（与本周 archonHunt.id 对账）；StoreItem/Manifest 无消费方。
+const SORTIE_REWARD_ENTRY_SPEC = Object.freeze([['SortieId', projectOidValue]]);
+// 午夜电波：挑战键 + 进度（完成判定对 requiredCount）。
+const CHALLENGE_PROGRESS_ENTRY_SPEC = Object.freeze([['Name', projectTextValue], ['Progress', projectNumericValue]]);
+// 1999 日历：赛季类型/最后完成节点/激活挑战 + 轮次 + 全年增益（逐日对号）。
+const CALENDAR_SEASON_ENTRY_SPEC = Object.freeze([
+  ['SeasonType', projectTextValue],
+  ['LastCompletedDayIdx', projectNumericValue],
+  ['ActivatedChallenges', projectTextList],
+]);
+const CALENDAR_PROGRESS_ENTRY_SPEC = Object.freeze([
+  ['Iteration', projectNumericValue],
+  ['SeasonProgress', (value) => projectEntry(value, CALENDAR_SEASON_ENTRY_SPEC)],
+  ['YearProgress', (value) => projectEntry(value, Object.freeze([['Upgrades', projectTextList]]))],
+]);
+// 商店购买记录：VendorType + PurchaseHistory（Expiry/ItemId/NumPurchased，已购三档判定）。
+const VENDOR_PURCHASE_ENTRY_SPEC = Object.freeze([
+  ['Expiry', projectDateKey],
+  ['ItemId', projectTextValue],
+  ['NumPurchased', projectNumericValue],
+]);
+const VENDOR_PURCHASES_ENTRY_SPEC = Object.freeze([
+  ['VendorType', projectTextValue],
+  ['PurchaseHistory', (value) => projectList(value, VENDOR_PURCHASE_ENTRY_SPEC)],
+]);
+// 同步标记：asOf 只可能来自 $oid/oid，其余包装键不进入快照。
+const SYNC_MARKER_ENTRY_SPEC = Object.freeze([['$oid', projectTextValue], ['oid', projectTextValue]]);
+// 科研奖励令牌：消费方 map(Number)，元素一律投影为有限数字。
+const projectTokenList = (value) => (Array.isArray(value) ? value : []).map((element) => numberOf(element));
+
+// 只有 ItemType/ItemCount 的通用库存组（数量类 + 装备类）。
+const ITEM_LIST_FIELDS = Object.freeze([
+  'MiscItems', 'Recipes', 'Consumables', 'FusionTreasures', 'FlavourItems', 'SpecialItems', 'DataKnives',
+  'RawUpgrades',
+  'LongGuns', 'Pistols', 'Melee', 'Suits', 'Sentinels', 'SentinelWeapons',
+  'SpaceGuns', 'SpaceMelee', 'SpaceSuits', 'OperatorAmps', 'OperatorSuits',
+  'CrewShipWeapons', 'DrifterMelee', 'Horses', 'Motorcycles', 'KubrowPets',
+]);
+
+// 账号标量与日声望余量：消费方统一 Number()/safeNumber()，非有限数字整键丢弃，
+// 使「无有效数据」保持为缺键（赏金卡据此隐藏余量列，而不是显示 0）。
+const NUMERIC_SCALAR_FIELDS = Object.freeze([
+  'PlayerLevel', 'TradesRemaining', 'RegularCredits', 'FusionPoints',
+  'PremiumCredits', 'PremiumCreditsFree',
+  'DailyAffiliationCetus', 'DailyAffiliationSolaris', 'DailyAffiliationEntrati',
+  'DailyAffiliationZariman', 'DailyAffiliationCavia', 'DailyAffiliationHex',
+  'EntratiVaultCountLastPeriod',
+  'EntratiLabConquestUnlocked', 'EntratiLabConquestCacheScoreMission',
+  'EchoesHexConquestUnlocked', 'EchoesHexConquestCacheScoreMission',
+]);
+
+// 字段 → 投影。每个 ACCOUNT_SNAPSHOT_ALLOWLIST 字段都必须在此登记。
+const ACCOUNT_SNAPSHOT_FIELD_PROJECTORS = new Map([
+  ...ITEM_LIST_FIELDS.map((field) => [field, (value) => projectList(value, ITEM_ENTRY_SPEC)]),
+  ['Upgrades', (value) => projectList(value, UPGRADE_ENTRY_SPEC)],
+  ...NUMERIC_SCALAR_FIELDS.map((field) => [field, projectNumericValue]),
+  ['ActiveAvatarImageType', projectTextValue],
+  ['Affiliations', (value) => projectList(value, AFFILIATION_ENTRY_SPEC)],
+  ['EndlessXP', (value) => projectList(value, ENDLESS_XP_ENTRY_SPEC)],
+  ['DescentRewards', (value) => projectList(value, DESCENT_REWARD_ENTRY_SPEC)],
+  ['EntratiVaultCountResetDate', projectDateKey],
+  ['LastLiteSortieReward', (value) => projectList(value, SORTIE_REWARD_ENTRY_SPEC)],
+  ['ChallengeProgress', (value) => projectList(value, CHALLENGE_PROGRESS_ENTRY_SPEC)],
+  ['CalendarProgress', (value) => projectEntry(value, CALENDAR_PROGRESS_ENTRY_SPEC)],
+  ['EchoesHexConquestBonusTokensGiven', projectTokenList],
+  ['RecentVendorPurchases', (value) => projectList(value, VENDOR_PURCHASES_ENTRY_SPEC)],
+  ['LastInventorySync', (value) => projectEntry(value, SYNC_MARKER_ENTRY_SPEC)],
+]);
+
+// 供测试锁定「白名单 100% 有显式投影」的只读视图。
+export const ACCOUNT_SNAPSHOT_PROJECTED_FIELDS = Object.freeze([...ACCOUNT_SNAPSHOT_FIELD_PROJECTORS.keys()]);
+
+// 构建期合同：白名单字段必须全部登记投影，禁止任何整对象透传的兜底分支。
+for (const field of ACCOUNT_SNAPSHOT_ALLOWLIST) {
+  if (!ACCOUNT_SNAPSHOT_FIELD_PROJECTORS.has(field)) {
+    throw new Error(`account snapshot projection missing for allowlisted field: ${field}`);
+  }
+}
+
+// 顶层 + 条目级投影：输出的所有容器都是新建对象，源快照不会被写入，也不会被引用。
 function projectInventory(inventory) {
-  if (!isPlainObject(inventory)) return { inventory, coverage: null };
+  if (!isPlainObject(inventory)) {
+    // 旧信封若声明了非对象库存（数组/标量），消费方本来也只看到空库存；
+    // 这里返回空投影而不是透传原值，避免任意 JSON 直接进入业务层。
+    return {
+      inventory: {},
+      coverage: {
+        inventoryTopLevelFields: 0,
+        retainedTopLevelFields: 0,
+        omittedTopLevelFields: 0,
+        droppedByProjectionFields: 0,
+      },
+    };
+  }
   const projected = {};
   const retained = [];
+  let droppedByProjection = 0;
   for (const field of ACCOUNT_SNAPSHOT_ALLOWLIST) {
     if (!Object.prototype.hasOwnProperty.call(inventory, field)) continue;
-    projected[field] = inventory[field];
+    const value = ACCOUNT_SNAPSHOT_FIELD_PROJECTORS.get(field)(inventory[field]);
+    if (value === OMIT_FIELD) {
+      droppedByProjection += 1;
+      continue;
+    }
+    projected[field] = value;
     retained.push(field);
   }
   const rawFields = Object.keys(inventory);
@@ -231,6 +475,8 @@ function projectInventory(inventory) {
       inventoryTopLevelFields: rawFields.length,
       retainedTopLevelFields: retained.length,
       omittedTopLevelFields: rawFields.filter((field) => !ALLOWLIST_SET.has(field)).length,
+      // 白名单命中但值无法证明语义、被条目级投影丢弃的顶层字段数
+      droppedByProjectionFields: droppedByProjection,
     },
   };
 }
@@ -267,9 +513,11 @@ export function adaptAccountSnapshot(envelope, options = {}) {
   const { shape, inventory: extracted } = extractSnapshotInventory(envelope);
   if (!extracted) throw new Error(options.missingInventoryMessage || MISSING_INVENTORY_MESSAGE);
   const fileMtime = isoOf(options.fileMtime);
+  // asOf 推导读原始信封：适配器本身就是边界，元数据不外传；业务可见的库存一律用投影结果。
   const sync = readSyncMarker(extracted, fileMtime);
   const { inventory, coverage } = projectInventory(extracted);
-  const siblingReset = bsonDateIso(extracted?.EntratiVaultCountResetDate);
+  // 周期边界只从投影后的字段推导，保证元数据与业务真正看到的数据同源。
+  const siblingReset = bsonDateIso(inventory.EntratiVaultCountResetDate);
   const fields = buildFieldMetadata(inventory, {
     asOf: sync.asOf,
     asOfBasis: sync.basis,

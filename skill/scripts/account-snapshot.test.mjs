@@ -5,16 +5,17 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  ACCOUNT_SNAPSHOT_ALLOWLIST, ACCOUNT_SNAPSHOT_SCHEMA_VERSION, ACCOUNT_SNAPSHOT_SOURCE,
-  MAX_DELTA_EVENTS, adaptAccountSnapshot, diffAccountSnapshots,
+  ACCOUNT_SNAPSHOT_ALLOWLIST, ACCOUNT_SNAPSHOT_PROJECTED_FIELDS, ACCOUNT_SNAPSHOT_SCHEMA_VERSION,
+  ACCOUNT_SNAPSHOT_SOURCE, MAX_DELTA_EVENTS, adaptAccountSnapshot, diffAccountSnapshots,
 } from './account-snapshot.mjs';
 import { readSnapshot, weeklyEvidence } from './alecaframe.mjs';
 
-// R15 第二片合同（全部为合成数据，不读真实 AlecaFrame 文件、不联网、不落盘 delta）：
-//   1. 旧/新信封形状与白名单剥离
-//   2. asOf/同步时间与字段元数据（来源/周期/可信度/新鲜度）
-//   3. 统一 delta 的稳定身份、顺序、增/减/改/无变化与上限
-//   4. 适配器接入 lastData 读路径后，周常证据面板仍是原 11 项
+// R15 第三片合同（全部为合成数据，不读真实 AlecaFrame 文件、不联网、不落盘 delta）：
+//   1. 旧/新信封形状与顶层白名单剥离
+//   2. 条目级/嵌套字段显式投影：多层未知键与敏感 sentinel 从适配后快照完全消失，无原对象引用
+//   3. asOf/同步时间与字段元数据（来源/周期/可信度/新鲜度）
+//   4. 统一 delta 的稳定身份、顺序、增/减/改/无变化与上限，且不泄露条目内容
+//   5. 现有消费方（掉落计数/周常核销/赏金声望/商店已购/父成品持有）在适配前后行为一致
 
 const NOW = Date.parse('2026-09-10T12:00:00.000Z');
 const FILE_MTIME = '2026-09-09T20:00:00.000Z';
@@ -141,11 +142,327 @@ test('旧版信封的外层未消费字段也不外传', () => {
   assert.equal(JSON.stringify(adapted).includes('SENTINEL-'), false);
 });
 
-test('白名单只作用于顶层：条目内部字段原样保留（本片边界）', () => {
-  // 现有消费方直接读条目字段（ItemType/ItemCount/UpgradeFingerprint…），
-  // 二次投影会改变用户输出；条目级投影留给后续切片，这里固定该边界。
-  const adapted = adapt({ MiscItems: [{ ItemType: ITEM_A, ItemCount: 4, InstanceId: 'INSTANCE-1' }] });
-  assert.deepEqual(adapted.inventory.MiscItems[0], { ItemType: ITEM_A, ItemCount: 4, InstanceId: 'INSTANCE-1' });
+// —— 1b. 条目级/嵌套字段显式投影（R15 第三片）——
+//
+// 条目内部的未知键、实例 oid、宠物详情、令牌与未来新增字段都必须在任意深度消失；
+// 同时现有消费方真正读取的键必须逐项保留（键名与嵌套层级都不能少）。
+
+// 注入到每一层合成对象的未知/敏感键：任何一项出现在适配后快照里都算失败。
+const JUNK = Object.freeze({
+  InstanceId: 'SENT-INSTANCE',
+  OwnerId: 'SENT-OWNER',
+  WarframeMarketToken: 'SENT-TOKEN',
+  FutureUnknownField: { deep: { deeper: 'SENT-FUTURE' } },
+});
+const withJunk = (entry) => ({ ...entry, ...JUNK });
+
+// [字段, ItemType, ItemCount]（ItemCount=null 表示源条目没有该键，投影后也必须缺键）
+const ITEM_GROUP_CASES = Object.freeze([
+  ['MiscItems', ITEM_A, 3],
+  ['Recipes', '/Lotus/Types/Recipes/Weapons/GunBarrelBlueprint', 2],
+  ['Consumables', '/Lotus/Types/Items/Consumables/HealthRestore', 8],
+  ['FusionTreasures', '/Lotus/Types/Items/FusionTreasures/FusionTreasure', 4],
+  ['FlavourItems', '/Lotus/Types/Items/MiscItems/FlavourItem', 1],
+  ['SpecialItems', '/Lotus/Types/Items/SpecialItems/SpecialItem', 1],
+  ['DataKnives', '/Lotus/Types/Items/DataKnives/DataKnife', 1],
+  ['RawUpgrades', '/Lotus/Upgrades/Mods/Raw/RawMod', 5],
+  // 装备类只被读 ItemType（父成品持有 / 已拥有索引 / 周报战甲收集）
+  ['LongGuns', '/Lotus/Weapons/Tenno/LongGuns/GunPrime', 1],
+  ['Pistols', '/Lotus/Weapons/Tenno/Pistol/PistolPrime', null],
+  ['Melee', '/Lotus/Weapons/Tenno/Melee/MeleePrime', null],
+  ['Suits', '/Lotus/Powersuits/Wukong/WukongPrime', null],
+  ['Sentinels', '/Lotus/Types/Sentinels/Sentinel/SentinelPrime', null],
+  ['SentinelWeapons', '/Lotus/Weapons/Sentinel/SentinelWeaponPrime', null],
+  ['SpaceGuns', '/Lotus/Weapons/Tenno/Archwing/Primary/ArchGun', null],
+  ['SpaceMelee', '/Lotus/Weapons/Tenno/Archwing/Melee/ArchMelee', null],
+  ['SpaceSuits', '/Lotus/Powersuits/Archwing/ArchSuit', null],
+  ['OperatorAmps', '/Lotus/Weapons/Operator/Amps/Amp', null],
+  ['OperatorSuits', '/Lotus/Powersuits/Operator/OperatorSuit', null],
+  ['CrewShipWeapons', '/Lotus/Weapons/Railjack/CrewShipWeapon', null],
+  ['DrifterMelee', '/Lotus/Weapons/Tenno/Melee/DrifterMelee', null],
+  ['Horses', '/Lotus/Types/Vehicles/Horse/Horse', null],
+  ['Motorcycles', '/Lotus/Types/Vehicles/Motorcycle/Motorcycle', null],
+  ['KubrowPets', '/Lotus/Types/Game/KubrowPet/KubrowPet', null],
+]);
+
+const UPGRADE_ITEM = '/Lotus/Upgrades/Mods/ItemG';
+const SORTIE_ID = 'SORTIE-A';
+const VENDOR_ITEM_ID = '64a00000000000000000000a';
+const GLYPH = '/Lotus/Upgrades/Glyphs/TestGlyph';
+const WEEK_COUNT = Math.floor((NOW - Date.UTC(2014, 1, 10)) / 604_800_000);
+
+// 覆盖全部 53 个白名单字段的合成信封：每个对象层都注入 JUNK，顶层再放未消费字段。
+function fullEnvelope() {
+  const expiry = bsonDate(isoDay(NOW, 3));
+  const reset = bsonDate(isoDay(NOW, 2));
+  const envelope = {
+    LastInventorySync: withJunk({ $oid: SYNC_OID }),
+    Upgrades: [withJunk({ ItemType: UPGRADE_ITEM, UpgradeFingerprint: '{"lvl":3}', ItemCount: 9 })],
+    PlayerLevel: 30,
+    TradesRemaining: 12,
+    RegularCredits: 1_000_000,
+    FusionPoints: 55_000,
+    PremiumCredits: 100,
+    PremiumCreditsFree: 25,
+    ActiveAvatarImageType: GLYPH,
+    Affiliations: [withJunk({
+      Tag: 'KahlSyndicate',
+      Standing: 12_000,
+      Title: 2,
+      WeeklyMissions: [withJunk({ WeekCount: WEEK_COUNT, CompletedMission: true, Challenge: 'SENT-CHALLENGE' })],
+    })],
+    DailyAffiliationCetus: 5_000,
+    DailyAffiliationSolaris: 4_000,
+    DailyAffiliationEntrati: 3_000,
+    DailyAffiliationZariman: 2_000,
+    DailyAffiliationCavia: 1_000,
+    DailyAffiliationHex: 500,
+    EndlessXP: [withJunk({
+      Category: 'EXC_NORMAL',
+      Expiry: expiry,
+      Earn: 100,
+      Claim: 50,
+      Choices: ['Mesa'],
+      PendingRewards: [withJunk({
+        RequiredTotalXp: 1_000,
+        Rewards: [withJunk({ StoreItem: '/Lotus/StoreItems/TestReward', ItemCount: 2 })],
+      })],
+    })],
+    DescentRewards: [withJunk({
+      Category: 'DM_COH_NORMAL',
+      Expiry: expiry,
+      FloorClaimed: 9,
+      PendingRewards: [withJunk({ FloorCheckpoint: 21 })],
+    })],
+    EntratiVaultCountLastPeriod: 4,
+    EntratiVaultCountResetDate: reset,
+    LastLiteSortieReward: [withJunk({
+      SortieId: { $oid: SORTIE_ID, DeviceId: 'SENT-SORTIE' },
+      StoreItem: '/Lotus/Powersuits/Test',
+      Manifest: { Secret: 'SENT-MANIFEST' },
+    })],
+    ChallengeProgress: [withJunk({ Name: 'SeasonWeeklyHardCompleteConquest', Progress: 1 })],
+    CalendarProgress: withJunk({
+      Iteration: 4,
+      SeasonProgress: withJunk({ SeasonType: 'CST_WINTER', LastCompletedDayIdx: 1, ActivatedChallenges: ['A'] }),
+      YearProgress: withJunk({ Upgrades: ['U1'] }),
+    }),
+    EntratiLabConquestUnlocked: 1,
+    EntratiLabConquestCacheScoreMission: 34,
+    EchoesHexConquestUnlocked: 1,
+    EchoesHexConquestCacheScoreMission: 34,
+    EchoesHexConquestBonusTokensGiven: [1, 2],
+    RecentVendorPurchases: [withJunk({
+      VendorType: 'Teshin',
+      PurchaseHistory: [withJunk({ Expiry: expiry, ItemId: VENDOR_ITEM_ID, NumPurchased: 2 })],
+    })],
+    // 顶层未消费字段（令牌/账号标识/未来新增）也必须消失
+    WarframeMarketToken: 'SENT-TOP-TOKEN',
+    AccountId: 'SENT-TOP-ACCOUNT',
+    FutureTopLevelField: { deep: 'SENT-TOP-FUTURE' },
+  };
+  for (const [field, itemType, itemCount] of ITEM_GROUP_CASES) {
+    envelope[field] = [withJunk(itemCount == null ? { ItemType: itemType } : { ItemType: itemType, ItemCount: itemCount })];
+  }
+  return envelope;
+}
+
+// 与 fullEnvelope 对应的期望投影：逐字段、逐层列出唯一允许保留的键。
+function fullExpectation() {
+  const expiry = bsonDate(isoDay(NOW, 3));
+  const reset = bsonDate(isoDay(NOW, 2));
+  const expected = {
+    LastInventorySync: { $oid: SYNC_OID },
+    Upgrades: [{ ItemType: UPGRADE_ITEM, UpgradeFingerprint: '{"lvl":3}' }],
+    PlayerLevel: 30,
+    TradesRemaining: 12,
+    RegularCredits: 1_000_000,
+    FusionPoints: 55_000,
+    PremiumCredits: 100,
+    PremiumCreditsFree: 25,
+    ActiveAvatarImageType: GLYPH,
+    Affiliations: [{
+      Tag: 'KahlSyndicate',
+      Standing: 12_000,
+      Title: 2,
+      WeeklyMissions: [{ WeekCount: WEEK_COUNT, CompletedMission: true }],
+    }],
+    DailyAffiliationCetus: 5_000,
+    DailyAffiliationSolaris: 4_000,
+    DailyAffiliationEntrati: 3_000,
+    DailyAffiliationZariman: 2_000,
+    DailyAffiliationCavia: 1_000,
+    DailyAffiliationHex: 500,
+    EndlessXP: [{
+      Category: 'EXC_NORMAL',
+      Expiry: expiry,
+      Earn: 100,
+      Claim: 50,
+      Choices: ['Mesa'],
+      PendingRewards: [{ RequiredTotalXp: 1_000, Rewards: [{ StoreItem: '/Lotus/StoreItems/TestReward', ItemCount: 2 }] }],
+    }],
+    DescentRewards: [{
+      Category: 'DM_COH_NORMAL',
+      Expiry: expiry,
+      FloorClaimed: 9,
+      PendingRewards: [{ FloorCheckpoint: 21 }],
+    }],
+    EntratiVaultCountLastPeriod: 4,
+    EntratiVaultCountResetDate: reset,
+    LastLiteSortieReward: [{ SortieId: { $oid: SORTIE_ID } }],
+    ChallengeProgress: [{ Name: 'SeasonWeeklyHardCompleteConquest', Progress: 1 }],
+    CalendarProgress: {
+      Iteration: 4,
+      SeasonProgress: { SeasonType: 'CST_WINTER', LastCompletedDayIdx: 1, ActivatedChallenges: ['A'] },
+      YearProgress: { Upgrades: ['U1'] },
+    },
+    EntratiLabConquestUnlocked: 1,
+    EntratiLabConquestCacheScoreMission: 34,
+    EchoesHexConquestUnlocked: 1,
+    EchoesHexConquestCacheScoreMission: 34,
+    EchoesHexConquestBonusTokensGiven: [1, 2],
+    RecentVendorPurchases: [{
+      VendorType: 'Teshin',
+      PurchaseHistory: [{ Expiry: expiry, ItemId: VENDOR_ITEM_ID, NumPurchased: 2 }],
+    }],
+  };
+  for (const [field, itemType, itemCount] of ITEM_GROUP_CASES) {
+    expected[field] = [itemCount == null ? { ItemType: itemType } : { ItemType: itemType, ItemCount: itemCount }];
+  }
+  return expected;
+}
+
+test('条目级投影逐字段保留消费键：全部白名单字段的键树与期望完全一致', () => {
+  const adapted = adapt(fullEnvelope());
+  // 键顺序=白名单顺序（兼容既有消费方对稳定形状的依赖）
+  assert.deepEqual(Object.keys(adapted.inventory), [...ACCOUNT_SNAPSHOT_ALLOWLIST]);
+  assert.deepEqual(adapted.inventory, fullExpectation());
+  assert.equal(adapted.coverage.retainedTopLevelFields, ACCOUNT_SNAPSHOT_ALLOWLIST.length);
+  assert.equal(adapted.coverage.droppedByProjectionFields, 0);
+  // 深层未知/敏感键完全消失
+  const serialized = JSON.stringify(adapted);
+  for (const sentinel of [
+    'SENT-TOP-TOKEN', 'SENT-TOP-ACCOUNT', 'SENT-TOP-FUTURE',
+    'SENT-INSTANCE', 'SENT-OWNER', 'SENT-TOKEN', 'SENT-FUTURE',
+    'SENT-CHALLENGE', 'SENT-SORTIE', 'SENT-MANIFEST',
+  ]) assert.equal(serialized.includes(sentinel), false, sentinel);
+  // 每个白名单字段都必须有显式投影函数（不存在整对象透传的兜底分支）
+  assert.equal(ACCOUNT_SNAPSHOT_PROJECTED_FIELDS.length, ACCOUNT_SNAPSHOT_ALLOWLIST.length);
+  assert.deepEqual([...ACCOUNT_SNAPSHOT_PROJECTED_FIELDS].sort(), [...ACCOUNT_SNAPSHOT_ALLOWLIST].sort());
+});
+
+test('投影保持「缺键即缺键」，不把无法证明的值补成 0 或空对象', () => {
+  const adapted = adapt({
+    MiscItems: [
+      { ItemType: ITEM_A },
+      { ItemType: ITEM_B, ItemCount: null },
+      { ItemType: ITEM_C, ItemCount: 'not-a-number' },
+      { ItemType: '/Lotus/Types/Items/MiscItems/ItemD', ItemCount: 0 },
+    ],
+    DailyAffiliationCetus: 'garbage',
+    PlayerLevel: { nested: 'SENT-LEVEL' },
+    ActiveAvatarImageType: { nested: 'SENT-GLYPH' },
+    EchoesHexConquestBonusTokensGiven: 'not-an-array',
+    ChallengeProgress: 'not-an-array',
+    CalendarProgress: null,
+  });
+  // ItemCount 的存在性有语义（缺失按 1 件计），缺失保持缺键，存在则与消费方 Number(x)||0 同口径
+  assert.deepEqual(adapted.inventory.MiscItems, [
+    { ItemType: ITEM_A },
+    { ItemType: ITEM_B },
+    { ItemType: ITEM_C, ItemCount: 0 },
+    { ItemType: '/Lotus/Types/Items/MiscItems/ItemD', ItemCount: 0 },
+  ]);
+  assert.equal('ItemCount' in adapted.inventory.MiscItems[0], false);
+  // 非有限数字整键丢弃：赏金卡按「无有效数据」隐藏余量列，而不是显示 0
+  assert.equal('DailyAffiliationCetus' in adapted.inventory, false);
+  assert.equal('PlayerLevel' in adapted.inventory, false);
+  assert.equal('ActiveAvatarImageType' in adapted.inventory, false);
+  // 非数组容器按空列表处理，与消费方的 `|| []` 口径一致
+  assert.deepEqual(adapted.inventory.EchoesHexConquestBonusTokensGiven, []);
+  assert.deepEqual(adapted.inventory.ChallengeProgress, []);
+  assert.deepEqual(adapted.inventory.CalendarProgress, {});
+  assert.equal(adapted.coverage.droppedByProjectionFields, 3);
+  assert.equal(JSON.stringify(adapted).includes('SENT-'), false);
+});
+
+test('奖励令牌按数值语义投影：对象噪声不进入快照也不产生伪 delta', () => {
+  const before = adapt(weeklyEnvelope({ baseNow: NOW, tokens: [1, 2] }));
+  assert.deepEqual(before.inventory.EchoesHexConquestBonusTokensGiven, [1, 2]);
+  const reordered = adapt(weeklyEnvelope({ baseNow: NOW, tokens: [2, 1] }));
+  assert.deepEqual(reordered.inventory.EchoesHexConquestBonusTokensGiven, [2, 1]);
+  // 列表摘要忽略顺序：仅换序不算变化
+  assert.equal(
+    diffAccountSnapshots(before, reordered).events
+      .some((event) => event.field === 'EchoesHexConquestBonusTokensGiven'),
+    false,
+  );
+  const noisy = adapt(weeklyEnvelope({
+    baseNow: NOW,
+    tokens: [{ Reward: 'SENT-TOKEN', Count: 1 }, { Reward: 'B', Count: 2 }],
+  }));
+  assert.deepEqual(noisy.inventory.EchoesHexConquestBonusTokensGiven, [0, 0]);
+  assert.equal(JSON.stringify(noisy).includes('SENT-TOKEN'), false);
+  const noisyDelta = diffAccountSnapshots(before, noisy);
+  assert.equal(JSON.stringify(noisyDelta).includes('SENT-TOKEN'), false);
+});
+
+test('适配后快照不保留源对象引用，深度改动源快照不影响结果', () => {
+  const envelope = fullEnvelope();
+  const adapted = adapt(envelope);
+  const frozen = JSON.stringify(adapted);
+  // 输出容器全部新建（顶层、条目、嵌套对象/数组、日期包装）
+  assert.notEqual(adapted.inventory, envelope);
+  assert.notEqual(adapted.inventory.MiscItems, envelope.MiscItems);
+  assert.notEqual(adapted.inventory.MiscItems[0], envelope.MiscItems[0]);
+  assert.notEqual(adapted.inventory.Upgrades[0], envelope.Upgrades[0]);
+  assert.notEqual(adapted.inventory.Affiliations, envelope.Affiliations);
+  assert.notEqual(adapted.inventory.Affiliations[0], envelope.Affiliations[0]);
+  assert.notEqual(adapted.inventory.Affiliations[0].WeeklyMissions, envelope.Affiliations[0].WeeklyMissions);
+  assert.notEqual(adapted.inventory.Affiliations[0].WeeklyMissions[0], envelope.Affiliations[0].WeeklyMissions[0]);
+  assert.notEqual(adapted.inventory.EndlessXP[0].Expiry, envelope.EndlessXP[0].Expiry);
+  assert.notEqual(adapted.inventory.EndlessXP[0].Choices, envelope.EndlessXP[0].Choices);
+  assert.notEqual(adapted.inventory.EndlessXP[0].PendingRewards, envelope.EndlessXP[0].PendingRewards);
+  assert.notEqual(adapted.inventory.EndlessXP[0].PendingRewards[0].Rewards[0], envelope.EndlessXP[0].PendingRewards[0].Rewards[0]);
+  assert.notEqual(adapted.inventory.CalendarProgress, envelope.CalendarProgress);
+  assert.notEqual(adapted.inventory.CalendarProgress.SeasonProgress, envelope.CalendarProgress.SeasonProgress);
+  assert.notEqual(adapted.inventory.CalendarProgress.YearProgress.Upgrades, envelope.CalendarProgress.YearProgress.Upgrades);
+  assert.notEqual(adapted.inventory.RecentVendorPurchases[0].PurchaseHistory[0], envelope.RecentVendorPurchases[0].PurchaseHistory[0]);
+  assert.notEqual(adapted.inventory.LastInventorySync, envelope.LastInventorySync);
+  // 深度改动源快照（改值 / 加键 / 换元素 / 换数组）后适配结果逐字节不变
+  envelope.MiscItems[0].ItemCount = 999;
+  envelope.MiscItems[0].InjectedAfterAdapt = 'SENT-AFTER';
+  envelope.MiscItems.push({ ItemType: ITEM_E, ItemCount: 5 });
+  envelope.Affiliations[0].Standing = 1;
+  envelope.Affiliations[0].WeeklyMissions[0].CompletedMission = false;
+  envelope.EndlessXP[0].Earn = 0;
+  envelope.EndlessXP[0].Choices.push('Excalibur');
+  envelope.EndlessXP[0].PendingRewards[0].Rewards = [{ StoreItem: '/Lotus/Other' }];
+  envelope.CalendarProgress.SeasonProgress.ActivatedChallenges.push('Z');
+  envelope.CalendarProgress.Iteration = 99;
+  envelope.RecentVendorPurchases = [];
+  envelope.LastInventorySync.$oid = '000000000000000000000000';
+  assert.equal(JSON.stringify(adapted), frozen);
+  assert.equal(adapted.inventory.MiscItems.length, 1);
+  assert.equal(adapted.inventory.MiscItems[0].ItemCount, 3);
+  assert.equal(adapted.inventory.Affiliations[0].WeeklyMissions[0].CompletedMission, true);
+});
+
+test('旧版信封与新版信封经过同一条条目级投影', () => {
+  const inventory = {
+    LastInventorySync: { $oid: SYNC_OID },
+    MiscItems: [withJunk({ ItemType: ITEM_A, ItemCount: 3 })],
+    PlayerLevel: 30,
+  };
+  const legacyText = adapt({ InventoryJson: JSON.stringify(inventory) });
+  const legacyObject = adapt({ InventoryJSON: inventory });
+  const direct = adapt({ ...inventory });
+  assert.deepEqual(legacyText.inventory, direct.inventory);
+  assert.deepEqual(legacyObject.inventory, direct.inventory);
+  assert.deepEqual(legacyText.inventory.MiscItems, [{ ItemType: ITEM_A, ItemCount: 3 }]);
+  for (const adapted of [legacyText, legacyObject, direct]) {
+    assert.equal(JSON.stringify(adapted).includes('SENT-'), false);
+  }
 });
 
 // —— 2. 同步时间与字段元数据 ——
@@ -361,37 +678,54 @@ test('周常 delta：标量与记录字段各自稳定成事件', () => {
   ]) assert.equal(byId.has(id), false, id);
 });
 
-test('列表摘要能识别对象内容变化，且忽略对象键序与列表顺序', () => {
-  const before = adapt(weeklyEnvelope({
-    baseNow: NOW,
-    tokens: [{ Reward: 'A', Count: 1 }, { Reward: 'B', Count: 2 }],
-  }));
-  const reordered = adapt(weeklyEnvelope({
-    baseNow: NOW,
-    tokens: [{ Count: 2, Reward: 'B' }, { Count: 1, Reward: 'A' }],
-  }));
+test('列表摘要识别内容变化（条数与摘要都变），且不携带列表元素', () => {
+  // 元素级投影把令牌收敛为有限数字，因此这里验证的是内容变化本身：
+  // 同长度不同内容必须产生事件且摘要不同，事件里仍只有 count/digest。
+  const before = adapt(weeklyEnvelope({ baseNow: NOW, tokens: [1, 2] }));
+  const same = adapt(weeklyEnvelope({ baseNow: NOW, tokens: [2, 1] }));
   assert.equal(
-    diffAccountSnapshots(before, reordered).events.some((event) => event.field === 'EchoesHexConquestBonusTokensGiven'),
+    diffAccountSnapshots(before, same).events.some((event) => event.field === 'EchoesHexConquestBonusTokensGiven'),
     false,
   );
 
-  const changed = adapt(weeklyEnvelope({
-    baseNow: NOW,
-    tokens: [{ Reward: 'A', Count: 1 }, { Reward: 'B', Count: 3 }],
-  }));
+  const changed = adapt(weeklyEnvelope({ baseNow: NOW, tokens: [1, 3] }));
   const event = diffAccountSnapshots(before, changed).events
     .find((candidate) => candidate.field === 'EchoesHexConquestBonusTokensGiven');
   assert.ok(event);
   assert.equal(event.from.count, 2);
   assert.equal(event.to.count, 2);
   assert.notEqual(event.from.digest, event.to.digest);
+  assert.deepEqual(Object.keys(event.from), ['count', 'digest']);
+  assert.deepEqual(Object.keys(event.to), ['count', 'digest']);
   assert.equal(JSON.stringify(event).includes('Reward'), false);
+
+  const grown = adapt(weeklyEnvelope({ baseNow: NOW, tokens: [1, 2, 3] }));
+  const grownEvent = diffAccountSnapshots(before, grown).events
+    .find((candidate) => candidate.field === 'EchoesHexConquestBonusTokensGiven');
+  assert.deepEqual([grownEvent.from.count, grownEvent.to.count], [2, 3]);
+  assert.notEqual(grownEvent.from.digest, grownEvent.to.digest);
 });
 
 test('delta 事件不含原始快照或无关字段，且有稳定上限', () => {
   const secret = { WarframeMarketToken: 'SENTINEL-TOKEN', FutureUnknownField: 'SENTINEL-FUTURE' };
-  const before = adapt({ LastInventorySync: { $oid: SYNC_OID }, MiscItems: [{ ItemType: ITEM_A, ItemCount: 1 }], ...secret });
-  const after = adapt({ LastInventorySync: { $oid: SYNC_OID }, MiscItems: [{ ItemType: ITEM_A, ItemCount: 2 }], ...secret });
+  // 条目级/多层 sentinel：delta 只输出既有脱敏投影，不能因嵌套投影把条目内容带出来
+  const nested = {
+    MiscItems: [{ ItemType: ITEM_A, ItemCount: 1, InstanceId: 'SENTINEL-INSTANCE' }],
+    Upgrades: [{ ItemType: ITEM_F, UpgradeFingerprint: '{"lvl":0}', OwnerId: 'SENTINEL-OWNER' }],
+    EndlessXP: [{
+      Category: 'EXC_NORMAL',
+      Earn: 100,
+      Extra: 'SENTINEL-XP',
+      PendingRewards: [{ RequiredTotalXp: 1_000, Secret: 'SENTINEL-NODE' }],
+    }],
+  };
+  const before = adapt({ LastInventorySync: { $oid: SYNC_OID }, ...nested, ...secret });
+  const after = adapt({
+    LastInventorySync: { $oid: SYNC_OID },
+    ...nested,
+    MiscItems: [{ ItemType: ITEM_A, ItemCount: 2, InstanceId: 'SENTINEL-INSTANCE' }],
+    ...secret,
+  });
   const delta = diffAccountSnapshots(before, after);
   assert.equal(delta.events.length, 1);
   const event = delta.events[0];
@@ -400,7 +734,9 @@ test('delta 事件不含原始快照或无关字段，且有稳定上限', () =>
     'source', 'asOf', 'fromAsOf', 'cycle',
   ]);
   const serialized = JSON.stringify(delta);
-  assert.equal(serialized.includes('SENTINEL-'), false);
+  for (const sentinel of ['SENTINEL-TOKEN', 'SENTINEL-FUTURE', 'SENTINEL-INSTANCE', 'SENTINEL-OWNER', 'SENTINEL-XP', 'SENTINEL-NODE']) {
+    assert.equal(serialized.includes(sentinel), false, sentinel);
+  }
   assert.equal(serialized.includes('UpgradeFingerprint'), false);
   assert.deepEqual(Object.keys(delta.from), ['schemaVersion', 'source', 'asOf', 'asOfBasis']);
 
@@ -430,14 +766,49 @@ test('readSnapshot 走版本化适配器，且消费方输出与适配前一致'
   try {
     const envelope = weeklyEnvelope();
     envelope.WarframeMarketToken = 'SENTINEL-TOKEN';
+    envelope.AccountId = 'SENTINEL-ACCOUNT';
+    // 条目级/多层注入未知字段：消费方输出必须逐字节不变，但快照里不得留痕
+    envelope.MiscItems = [withJunk({ ItemType: ITEM_A, ItemCount: 2 })];
+    envelope.Affiliations = [withJunk({
+      Tag: 'KahlSyndicate',
+      Standing: 12_000,
+      Title: 2,
+      WeeklyMissions: [withJunk({
+        WeekCount: Math.floor((Date.now() - Date.UTC(2014, 1, 10)) / 604_800_000),
+        CompletedMission: true,
+      })],
+    })];
+    envelope.EndlessXP = [withJunk({
+      Category: 'EXC_NORMAL',
+      Expiry: bsonDate(isoDay(Date.now(), 3)),
+      Earn: 100,
+      Claim: 20,
+      Choices: ['Mesa'],
+      PendingRewards: [withJunk({
+        RequiredTotalXp: 1_000,
+        Rewards: [withJunk({ StoreItem: '/Lotus/StoreItems/TestReward', ItemCount: 2 })],
+      })],
+    })];
+    envelope.CalendarProgress = withJunk({
+      Iteration: 4,
+      SeasonProgress: withJunk({ SeasonType: 'CST_WINTER', LastCompletedDayIdx: 1, ActivatedChallenges: ['A'] }),
+      YearProgress: withJunk({ Upgrades: ['U1'] }),
+    });
     await writeFile(path.join(dir, 'lastData.dat'), JSON.stringify(envelope), 'utf8');
     const snapshot = await readSnapshot(dir);
     assert.equal(snapshot.schemaVersion, 1);
     assert.equal(snapshot.alecaDir, dir);
     assert.equal(snapshot.envelope, undefined);
     assert.equal(snapshot.syncedAt, SYNC_AS_OF);
-    assert.equal(JSON.stringify(snapshot).includes('SENTINEL-TOKEN'), false);
     assert.equal(snapshot.fields.EntratiLabConquestCacheScoreMission.cycleBasis, 'sibling-reset');
+    const serialized = JSON.stringify(snapshot);
+    for (const sentinel of [
+      'SENTINEL-TOKEN', 'SENTINEL-ACCOUNT', 'SENT-INSTANCE', 'SENT-OWNER',
+      'SENT-TOKEN', 'SENT-FUTURE',
+    ]) assert.equal(serialized.includes(sentinel), false, sentinel);
+    // 条目级投影确实生效（同一份数据里，只保留消费键）
+    assert.deepEqual(snapshot.inventory.MiscItems, [{ ItemType: ITEM_A, ItemCount: 2 }]);
+    assert.equal(snapshot.inventory.EndlessXP[0].PendingRewards[0].Rewards[0].OwnerId, undefined);
 
     const adaptedPanel = await weeklyEvidence(snapshot);
     assert.equal(adaptedPanel.data.rows.length, 11);
@@ -479,6 +850,92 @@ test('商店购买记录保留在快照中，只标注源数据声明的边界',
   assert.equal(adapted.fields.RecentVendorPurchases.cycleBasis, 'declared-expiry');
   assert.equal(adapted.fields.RecentVendorPurchases.boundaryAt, isoDay(NOW, 4));
   assert.equal(adapted.fields.RecentVendorPurchases.freshness, 'within-declared-cycle');
+});
+
+// 消费方行为合同：同一份合成数据分别喂「原始库存对象」与「适配后快照」，受影响模块的
+// 纯函数输出必须一致——证明条目级投影没有删掉任何被真正读取的键。
+test('受影响消费方在适配前后输出一致（掉落/周常核销/赏金声望/商店已购/父成品持有）', async () => {
+  const [{ countInventory }, { annotateParentOwnership }, { attachBountyStanding }, { vendorPurchases }, { evaluateAutoCheck }] = await Promise.all([
+    import('./drops.mjs'),
+    import('./alecaframe.mjs'),
+    import('./bounties.mjs'),
+    import('./vendor-shop.mjs'),
+    import('./weekly.mjs'),
+  ]);
+  const expiry = bsonDate(isoDay(NOW, 4));
+  const weekCount = Math.floor((NOW - Date.UTC(2014, 1, 10)) / 604_800_000);
+  const raw = {
+    LastInventorySync: withJunk({ $oid: SYNC_OID }),
+    // 第三条没有 ItemCount：掉落计数必须仍按 1 件计
+    MiscItems: [withJunk({ ItemType: ITEM_A, ItemCount: 1 }), withJunk({ ItemType: ITEM_B, ItemCount: 4 }), withJunk({ ItemType: ITEM_C })],
+    Recipes: [withJunk({ ItemType: '/Lotus/Types/Recipes/Weapons/GunBarrelBlueprint', ItemCount: 2 })],
+    FusionTreasures: [withJunk({ ItemType: '/Lotus/Types/Items/FusionTreasures/FusionTreasure', ItemCount: 3 })],
+    RawUpgrades: [withJunk({ ItemType: '/Lotus/Upgrades/Mods/Raw/RawMod', ItemCount: 5 })],
+    Upgrades: [
+      withJunk({ ItemType: ITEM_F, UpgradeFingerprint: '{"lvl":2}' }),
+      withJunk({ ItemType: ITEM_F, UpgradeFingerprint: '{"lvl":0}' }),
+    ],
+    Suits: [withJunk({ ItemType: '/Lotus/Powersuits/Wukong/WukongPrime' })],
+    Affiliations: [
+      withJunk({
+        Tag: 'CetusSyndicate',
+        Standing: 44_000,
+        Title: 5,
+        WeeklyMissions: [withJunk({ WeekCount: weekCount, CompletedMission: false })],
+      }),
+      withJunk({
+        Tag: 'KahlSyndicate',
+        Standing: 12_000,
+        Title: 2,
+        WeeklyMissions: [withJunk({ WeekCount: weekCount, CompletedMission: true })],
+      }),
+    ],
+    DailyAffiliationCetus: 12_345,
+    EntratiVaultCountResetDate: bsonDate(isoDay(NOW, 2)),
+    EntratiVaultCountLastPeriod: 4,
+    LastLiteSortieReward: [withJunk({ SortieId: { $oid: 'SORTIE-A' }, StoreItem: '/Lotus/x', Manifest: {} })],
+    ChallengeProgress: [withJunk({ Name: 'SeasonWeeklyHardCompleteConquest', Progress: 1 })],
+    CalendarProgress: withJunk({
+      Iteration: 4,
+      SeasonProgress: withJunk({ SeasonType: 'CST_WINTER', LastCompletedDayIdx: 1, ActivatedChallenges: ['A'] }),
+    }),
+    EndlessXP: [withJunk({
+      Category: 'EXC_NORMAL',
+      Expiry: expiry,
+      Earn: 100,
+      Claim: 20,
+      Choices: ['Mesa'],
+      PendingRewards: [withJunk({ RequiredTotalXp: 1_000 })],
+    })],
+    DescentRewards: [withJunk({ Category: 'DM_COH_NORMAL', Expiry: expiry, FloorClaimed: 9, PendingRewards: [withJunk({ FloorCheckpoint: 21 })] })],
+    EntratiLabConquestUnlocked: 1,
+    EntratiLabConquestCacheScoreMission: 34,
+    RecentVendorPurchases: [withJunk({
+      VendorType: 'Teshin',
+      PurchaseHistory: [withJunk({ Expiry: expiry, ItemId: VENDOR_ITEM_ID, NumPurchased: 2 })],
+    })],
+    RegularCredits: 1_000_000,
+  };
+  const adapted = adapt(raw).inventory;
+  assert.equal(JSON.stringify(adapted).includes('SENT-'), false);
+
+  // drops：库存数量基线（含 Upgrades 每条计 1）
+  assert.deepEqual(countInventory(adapted), countInventory(raw));
+  // alecaframe：父成品持有判定（装备栏 ItemType）
+  const entries = [{ uniqueName: ITEM_A, parentUniqueName: '/Lotus/Powersuits/Wukong/WukongPrime' }];
+  assert.deepEqual(annotateParentOwnership(entries, adapted), annotateParentOwnership(entries, raw));
+  assert.equal(annotateParentOwnership(entries, adapted)[0].parentOwned, true);
+  // bounties：赏金卡声望列（总声望 + 等级 + 今日余量），每次用新的卡数据对象
+  const bountyData = () => ({ places: [{ key: 'cetus' }], boards: [] });
+  assert.deepEqual(attachBountyStanding(bountyData(), adapted), attachBountyStanding(bountyData(), raw));
+  // vendor-shop：商店已购三档判定的输入（VendorType/Expiry/ItemId/NumPurchased）
+  assert.deepEqual(vendorPurchases(adapted, 'Teshin'), vendorPurchases(raw, 'Teshin'));
+  assert.equal(vendorPurchases(adapted, 'Teshin').length, 1);
+  // weekly：周常自动核销判定（卡尔 WeekCount/完成标记、科研分数、衰退室、回廊轨道）
+  const autoArgs = [null, NOW, null, new Date(NOW).toISOString(), {}];
+  const adaptedAuto = evaluateAutoCheck(adapted, ...autoArgs);
+  assert.deepEqual(adaptedAuto, evaluateAutoCheck(raw, ...autoArgs));
+  assert.equal(adaptedAuto.auto.kahl, true);
 });
 
 const CONSUMER_SOURCE_FILES = [
