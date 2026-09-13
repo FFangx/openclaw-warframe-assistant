@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { ARCHIMEDEA_UNRESOLVED_DESC_ZH, archimedeaResearchProgress, calendarChallengeLine, calendarRewardZh, calendarUpgradeEntry, calendarUpgradeZh, evaluateAutoCheck, hasCompleteArchimedeas, hasCurrentWeeklyRotation, hasUnresolvedArchimedeaToken, localizeArchimedeaFaction, localizeArchimedeaModifier, nextReset, nightwaveChallengeZh, remindWeekly, sanitizeArchimedeaDescription, weekStart } from './weekly.mjs';
+import { defaultDeltaLedgerPath } from './account-delta-ledger.mjs';
 import { calendarSection, labsSection } from './weekly-mega-card.mjs';
 
 const calendarDays = [
@@ -692,6 +693,68 @@ test('收尾提醒：对账 fetcher 抛异常也不吞掉提醒（仍保守列�
     assert.match(result.output, /周常收尾提醒/);
     assert.match(result.output, /执刑官猎杀/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// —— R15 第五片：weekly 与 drops 共享同一个本地 delta 账本 ——
+
+function sharedLedgerFixtures() {
+  const dir = mkdtempSync(join(tmpdir(), 'wf-weekly-ledger-'));
+  const target = 'qqbot:c2c:test-owner';
+  const statePath = join(dir, 'warframe-weekly.json');
+  const ledgerPath = join(dir, 'ledger.json');
+  const alecaDir = join(dir, 'aleca');
+  mkdirSync(alecaDir, { recursive: true });
+  writeFileSync(statePath, JSON.stringify({ version: 1, records: [{ target, ownerId: 'test-owner', ownerName: 'owner', weekStart: weekStart(), completed: [], dismissed: [] }], prefs: [], nightwaveSamples: [], conquestSamples: [] }));
+  writeFileSync(ledgerPath, JSON.stringify({ subscriptions: [{ target, ownerId: 'test-owner', ownerName: 'owner', enabled: true, type: 'weekly' }] }));
+  // 快照：衰退室本周已打满 5 次（重置时刻在未来）——核销事实来自快照本身，不靠 delta 猜
+  const nowMs = Date.now();
+  const resetAt = Date.parse(nextReset(new Date(nowMs)));
+  const oid = `${Math.floor(nowMs / 1000).toString(16).padStart(8, '0')}${'0'.repeat(16)}`;
+  const writeGameSnapshot = (count) => writeFileSync(join(alecaDir, 'lastData.dat'), JSON.stringify({
+    LastInventorySync: { $oid: oid },
+    MiscItems: [{ ItemType: '/Lotus/Types/Items/MiscItems/OrokinCell', ItemCount: count }],
+    EntratiVaultCountResetDate: { $date: { $numberLong: String(resetAt) } },
+    EntratiVaultCountLastPeriod: 5,
+  }), 'utf8');
+  return { dir, target, statePath, ledgerPath, alecaDir, writeGameSnapshot };
+}
+
+test('weekly 消费共享 delta 账本：独立游标、成功后才确认，核销事实仍来自快照+世界状态', async () => {
+  const { dir, target, statePath, ledgerPath, alecaDir, writeGameSnapshot } = sharedLedgerFixtures();
+  const previous = process.env.ALECAFRAME_DATA_DIR;
+  process.env.ALECAFRAME_DATA_DIR = alecaDir;
+  const deltaPath = defaultDeltaLedgerPath(statePath);
+  try {
+    writeGameSnapshot(1);
+    const first = await remindWeekly(statePath, ledgerPath, target, { fetchWorldState: async () => ({ value: null, error: 'simulated failure' }) });
+    const afterFirst = JSON.parse(readFileSync(deltaPath, 'utf8'));
+    assert.equal(afterFirst.kind, 'account-delta-ledger');
+    assert.equal(afterFirst.consumers.weekly.cursor, afterFirst.nextSeq - 1);
+    assert.deepEqual(afterFirst.consumers.drops, { cursor: 0, ackedAt: null }); // 注册但不推进别人的游标
+    assert.equal(afterFirst.events.length, 0); // 首次只建基线不造事件
+
+    // 核销事实来自当前视图 + 世界状态：本周 5/5 搜索脉冲 → 提醒里不再列衰退室
+    assert.match(first.output, /周常收尾提醒/u);
+    assert.equal(first.output.includes('衰退室'), false);
+
+    // 快照变化 → 账本产生事件；weekly 处理成功后自己的游标越过事件
+    writeGameSnapshot(6);
+    const second = await remindWeekly(statePath, ledgerPath, target, { fetchWorldState: async () => ({ value: null, error: 'simulated failure' }) });
+    const afterSecond = JSON.parse(readFileSync(deltaPath, 'utf8'));
+    assert.ok(afterSecond.events.length >= 1);
+    assert.equal(afterSecond.consumers.weekly.cursor, afterSecond.nextSeq - 1);
+    assert.equal(afterSecond.consumers.drops.cursor, 0); // drops 的未读事件不会被 weekly 吞掉
+    assert.equal(afterSecond.baseline.payload.inventory.MiscItems[0].ItemCount, 6);
+    // 只落最小 delta 基线：账号同步 oid 不入库
+    assert.equal(JSON.stringify(afterSecond).includes('LastInventorySync'), false);
+    // QQ 文本绝不带账本事件 id / 事件载荷 / 物品路径
+    assert.equal(second.output.includes('acct-delta'), false);
+    assert.equal(second.output.includes('/Lotus/'), false);
+  } finally {
+    if (previous == null) delete process.env.ALECAFRAME_DATA_DIR;
+    else process.env.ALECAFRAME_DATA_DIR = previous;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // —— 1999 日历卡：增益行同时显示中文名与效果说明，长效果换行不截断，高度安全估算 ——

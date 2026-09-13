@@ -135,6 +135,14 @@ const RIVEN_SOURCE_COLLECTION_IDS = Object.freeze([INVENTORY_COLLECTIONS.RAW_UPG
 // 供合同测试核对「语义集合 ↔ 原始组名」映射完整性的只读视图。
 export const ACCOUNT_VIEW_COLLECTION_SOURCES = Object.freeze(Object.fromEntries(COLLECTION_SOURCES));
 
+// 语义作用域 → 该作用域覆盖的原始库存组名。delta 账本的事件按原始组名标注，
+// 业务需要按作用域过滤时必须走这里，避免在业务模块里重抄一份组名清单。
+export function inventoryScopeSources(scope) {
+  const collections = SCOPE_COLLECTIONS.get(scope === undefined ? INVENTORY_SCOPES.ALL : scope);
+  if (!collections) return Object.freeze([]);
+  return Object.freeze(collections.map((id) => COLLECTION_SOURCE_BY_ID.get(id)).filter(Boolean));
+}
+
 // 同步标记：asOf 推导依据本身（account-snapshot 读它，视图只透传导出的时间）。
 const SYNC_MARKER_SOURCE = 'LastInventorySync';
 

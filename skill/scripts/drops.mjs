@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 
-// 掉落监测：只读 AlecaFrame 本机快照，diff 出两次同步之间的新增物品，
+// 掉落监测：只读 AlecaFrame 本机快照，消费助手本地 delta 账本里「新增物品」事件，
 // 按订阅条件过滤后推送 QQ 图片卡。管理命令走 subscriptions.mjs 的账本
-// （type: 'drops'），本文件只负责 monitor 与基线状态。
+// （type: 'drops'），本文件只负责 monitor 与自己的消费游标/闸门状态。
 //
 // 设计要点（不要回退）：
-// - 每分钟 cron 唤醒时先 stat lastData.dat 的 mtime，与基线一致就输出 NO_REPLY，
-//   不解密、不联网、不调模型。
-// - 增量不依赖 deltas.dat 的重置语义（它何时清零由 AlecaFrame 决定），
-//   而是自己保存上一次快照的「路径→数量」全量基线做 diff，MOD/赋能一并覆盖。
+// - 每分钟 cron 唤醒时先 stat lastData.dat 的 mtime，与闸门基线一致且账本里没有
+//   本消费者未确认事件的，直接输出 NO_REPLY，不解密、不联网、不调模型。
+// - 增量不再由本模块自己 diff：delta 由 account-delta-ledger 统一生成一次，
+//   drops 与 weekly 从同一份事件流、按同一个 eventId 各自消费（R15 第五片）。
 // - 首次运行只建立基线不推送，避免把整个仓库当成新掉落。
-// - 玩家 OID、物品实例 ID、原始 JSON 不进输出。
+// - 玩家 OID、物品实例 ID、原始 JSON 不进输出；delta 事件与基线不进模型上下文/QQ。
 
 import { createDecipheriv } from 'node:crypto';
 import { mkdir, open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
@@ -21,7 +21,9 @@ import { pathToFileURL } from 'node:url';
 // R15 第二片：与 alecaframe 共用同一个版本化白名单适配器，业务不再直接读原始信封。
 import { adaptAccountSnapshot } from './account-snapshot.mjs';
 // R15 第四片：库存读取只走语义账号视图。
-import { INVENTORY_SCOPES, buildAccountView } from './account-view.mjs';
+import { INVENTORY_SCOPES, buildAccountView, inventoryScopeSources } from './account-view.mjs';
+// R15 第五片：本地 delta 账本（唯一 delta 定义 + 每消费者游标）。
+import { DELTA_LEDGER_CONSUMERS, createDeltaLedger, defaultDeltaLedgerPath } from './account-delta-ledger.mjs';
 import { getMarketPriceIndex, stripDataUriReplacer } from './wfdata.mjs';
 import { promisify } from 'node:util';
 import { buildDropsAlertCard, renderWarframeCard } from './warframe-cards.mjs';
@@ -103,11 +105,15 @@ async function readSnapshot(alecaDir) {
 }
 
 // 把快照压成「物品路径 → 总数量」：数量口径（未声明数量按 1 件、已装升级每条计 1）
-// 由 account-view 的掉落监测作用域定义，这里只做容器转换。
+// 由 account-view 的掉落监测作用域定义。delta 事件已按同一作用域生成，这里只用于
+// 首次基线的诊断计数，不再参与增量判定。
 function countInventory(input) {
   const view = buildAccountView(input);
   return Object.fromEntries(view.inventory.quantityTotals(INVENTORY_SCOPES.DROP_MONITOR));
 }
+
+// 掉落监测关心的数量事件组：直接取语义作用域的组清单，不在本模块重抄原始字段名。
+const DROP_MONITOR_FIELDS = new Set(inventoryScopeSources(INVENTORY_SCOPES.DROP_MONITOR));
 
 // ---------- 本地目录：路径 → 名称/分类/稀有度 ----------
 
@@ -387,25 +393,25 @@ async function attachPrices(drops, options = {}) {
   }
 }
 
-// ---------- 基线状态 ----------
-// version 2：欠账队列（pendingDelivery）已迁入统一通知 Outbox（notification-outbox.mjs），
-// 本文件只保留监测基线；旧 v1 文件仍可读，旧欠账走兼容迁移不丢债。
+// ---------- 本地闸门状态 ----------
+// version 3：delta 基线与事件流已迁入助手本地 delta 账本（account-delta-ledger.mjs），
+// 本文件只保留「零成本闸门」所需的 mtime / 同步时间与旧欠账迁移；旧 v1/v2 文件仍可读
+// （读入即归一，写回不再复活 baseline/pendingDelivery 字段），旧欠账走兼容迁移不丢债。
 
-const STATE_VERSION = 2;
+const STATE_VERSION = 3;
 
 function emptyState() {
-  return { version: STATE_VERSION, updatedAt: null, baseline: null, lastMtimeMs: 0, lastSyncedAt: null };
+  return { version: STATE_VERSION, updatedAt: null, lastMtimeMs: 0, lastSyncedAt: null };
 }
 
 async function readState(statePath) {
   try {
     const parsed = JSON.parse(await readFile(statePath, 'utf8'));
     const state = { ...emptyState(), ...parsed };
-    // 旧 v1 文件：没有或已清空的欠账字段视为已收敛（读入即归一，写回不再复活旧字段）
-    if (!Array.isArray(state.pendingDelivery) || state.pendingDelivery.length === 0) {
-      delete state.pendingDelivery;
-      state.version = STATE_VERSION;
-    }
+    // v1/v2 遗留字段：baseline 已由 delta 账本接管，欠账队列已迁入统一通知 Outbox
+    delete state.baseline;
+    if (!Array.isArray(state.pendingDelivery) || state.pendingDelivery.length === 0) delete state.pendingDelivery;
+    state.version = STATE_VERSION;
     return state;
   } catch (error) {
     if (error?.code === 'ENOENT') return emptyState();
@@ -526,9 +532,11 @@ async function migrateLegacyDebt(state, outbox, target, dryRun, now) {
 // ---------- monitor 主流程 ----------
 
 // options: { statePath, ledgerPath, target, cardDir, alecaDir, dryRun,
-//            outboxPath?, mailer?, attachOptions?, skipIcons?, now? }
-// 后四项为测试/诊断注入（mailer 默认走 openclaw CLI；attachOptions 传
-// slugs/quoteFetcher/priceIndex；skipIcons 让测试不联网；now 控制 TTL 时钟）。
+//            outboxPath?, mailer?, attachOptions?, skipIcons?, now?,
+//            deltaStatePath?, deltaLedger?, deltaLock? }
+// 后几项为测试/诊断注入（mailer 默认走 openclaw CLI；attachOptions 传
+// slugs/quoteFetcher/priceIndex；skipIcons 让测试不联网；now 同时作为 TTL 与
+// 账本时钟；deltaStatePath 覆盖账本路径，deltaLedger/deltaLock 直接注入替身）。
 async function monitorDrops(options = {}) {
   const {
     statePath, ledgerPath, target, cardDir, alecaDir, dryRun = false,
@@ -538,6 +546,12 @@ async function monitorDrops(options = {}) {
     skipIcons = false,
     now,
   } = options;
+  const deltaLedger = options.deltaLedger || createDeltaLedger({
+    statePath: options.deltaStatePath || defaultDeltaLedgerPath(statePath),
+    now,
+    lock: options.deltaLock,
+    lockStaleMs: options.deltaLockStaleMs,
+  });
   return withLock(statePath, async () => {
     const outbox = createOutbox({ filePath: outboxPath, now });
     const effectiveMailer = mailer || createCliMailer(target);
@@ -553,12 +567,19 @@ async function monitorDrops(options = {}) {
     }
     const snapshotFile = path.join(alecaDir, 'lastData.dat');
 
-    // 零成本闸门：mtime 没变就直接休眠，不解密不联网
+    // 零成本闸门：mtime 没变 **且本消费者没有未确认事件** 才休眠（不解密不联网）。
+    // 只读窥视不加锁：rename 原子，最坏读到上一版一致状态。
     let mtimeMs;
     try { mtimeMs = (await stat(snapshotFile)).mtimeMs; } catch {
       return { output: 'NO_REPLY\n', data: { ok: true, reason: 'snapshot_missing' } };
     }
-    if (!dryRun && state.baseline && mtimeMs === state.lastMtimeMs) {
+    const peek = await deltaLedger.peek(DELTA_LEDGER_CONSUMERS.DROPS);
+    if (!dryRun && !peek.ok) {
+      // 账本损坏/超前 schema：不清空、不重建、不猜增量；已有欠账上面已补投
+      return { output: 'NO_REPLY\n', data: { ok: false, reason: 'delta_ledger_unavailable', degraded: peek.degraded, detail: peek.detail ?? null } };
+    }
+    const ledgerSettled = peek.ok && peek.initialized && peek.pending === 0 && !peek.gap;
+    if (!dryRun && ledgerSettled && state.lastSyncedAt && mtimeMs === state.lastMtimeMs) {
       return { output: 'NO_REPLY\n', data: { ok: true, reason: 'unchanged' } };
     }
 
@@ -568,26 +589,45 @@ async function monitorDrops(options = {}) {
     catch (error) {
       return { output: 'NO_REPLY\n', data: { ok: false, reason: 'snapshot_read_failed', error: String(error?.message || error) } };
     }
-    const counts = countInventory(snapshot);
 
-    // 首次运行：只建基线，不推送
-    if (!state.baseline) {
-      await writeState(statePath, { ...state, baseline: counts, lastMtimeMs: snapshot.fileMtimeMs, lastSyncedAt: snapshot.syncedAt });
-      return { output: 'NO_REPLY\n', data: { ok: true, reason: 'baseline_created', tracked: Object.keys(counts).length } };
+    // 快照入库：首次只建基线不造事件；重复快照幂等；损坏/超前 schema 不落盘
+    const ingest = await deltaLedger.ingest(snapshot);
+    if (!ingest.ok) {
+      return { output: 'NO_REPLY\n', data: { ok: false, reason: 'delta_ledger_unavailable', degraded: ingest.degraded, detail: ingest.detail ?? null } };
+    }
+    // 消费与 weekly 同一份事件流的同一批 eventId（本消费者游标独立）
+    const batch = await deltaLedger.read(DELTA_LEDGER_CONSUMERS.DROPS);
+    if (!batch.ok) {
+      return { output: 'NO_REPLY\n', data: { ok: false, reason: 'delta_ledger_unavailable', degraded: batch.degraded, detail: batch.detail ?? null } };
     }
 
-    // diff：只关心新增（数量上升）；消耗/出售导致的下降不打扰
+    const nextGate = { lastMtimeMs: snapshot.fileMtimeMs, lastSyncedAt: snapshot.syncedAt };
+    const ledgerMeta = { ledgerEvents: batch.events.length, ledgerGap: Boolean(batch.gap) };
+
+    // 首次运行（账本无基线 / 本消费者首次接入）：只建基线，不推送
+    if (ingest.baselineCreated || batch.initialized || batch.empty) {
+      await deltaLedger.ack(DELTA_LEDGER_CONSUMERS.DROPS, batch.uptoSeq);
+      await writeState(statePath, { ...state, ...nextGate });
+      return {
+        output: 'NO_REPLY\n',
+        data: { ok: true, reason: 'baseline_created', tracked: Object.keys(countInventory(snapshot)).length },
+      };
+    }
+
+    // 事件 → 掉落条目：只认本作用域的数量上升（消耗/出售导致的下降不打扰）
     const gainedEntries = [];
-    for (const [type, count] of Object.entries(counts)) {
-      const before = Number(state.baseline[type]) || 0;
-      if (count > before) gainedEntries.push([type, count - before]);
+    for (const event of batch.events) {
+      if (event.kind !== 'inventory-quantity' || !DROP_MONITOR_FIELDS.has(event.field)) continue;
+      const gained = Number(event.delta);
+      if (!(gained > 0) || !event.entity) continue;
+      gainedEntries.push([event.entity, gained]);
     }
 
     const previousSyncedAt = state.lastSyncedAt;
-    const nextBaseline = { baseline: counts, lastMtimeMs: snapshot.fileMtimeMs, lastSyncedAt: snapshot.syncedAt };
     if (!gainedEntries.length) {
-      await writeState(statePath, { ...state, ...nextBaseline });
-      return { output: 'NO_REPLY\n', data: { ok: true, reason: 'no_gains' } };
+      await deltaLedger.ack(DELTA_LEDGER_CONSUMERS.DROPS, batch.uptoSeq);
+      await writeState(statePath, { ...state, ...nextGate });
+      return { output: 'NO_REPLY\n', data: { ok: true, reason: 'no_gains', ...ledgerMeta } };
     }
 
     const catalog = await loadCatalog(alecaDir);
@@ -603,12 +643,14 @@ async function monitorDrops(options = {}) {
       }
     }
     if (dryRun) {
-      await writeState(statePath, { ...state, ...nextBaseline });
-      return { output: `${JSON.stringify({ ok: true, gained: drops, matched }, null, 2)}\n`, data: { ok: true, matched } };
+      await deltaLedger.ack(DELTA_LEDGER_CONSUMERS.DROPS, batch.uptoSeq);
+      await writeState(statePath, { ...state, ...nextGate });
+      return { output: `${JSON.stringify({ ok: true, gained: drops, matched }, null, 2)}\n`, data: { ok: true, matched, ...ledgerMeta } };
     }
     if (!matched.length) {
-      await writeState(statePath, { ...state, ...nextBaseline });
-      return { output: 'NO_REPLY\n', data: { ok: true, reason: 'no_match', gained: drops.length } };
+      await deltaLedger.ack(DELTA_LEDGER_CONSUMERS.DROPS, batch.uptoSeq);
+      await writeState(statePath, { ...state, ...nextGate });
+      return { output: 'NO_REPLY\n', data: { ok: true, reason: 'no_match', gained: drops.length, ...ledgerMeta } };
     }
 
     // 排序：Prime → 赋能 → 稀有MOD → 其他；补市价后渲染
@@ -670,23 +712,25 @@ async function monitorDrops(options = {}) {
       lines.push('数据来自本机账号快照；估值优先采用可靠今日成交中位，样本不足回退 90 日成交中位。');
       message = lines.join('\n');
     }
-    // 先入 Outbox 再写基线再投递：即使 cron 在发送期间被强杀，下一轮仍能从
-    // Outbox 补投（pending 恢复）；同一同步事件（businessKey 含 syncedAt）不会重复入队。
+    // 先入 Outbox 再确认游标再写闸门状态再投递：即使 cron 在发送期间被强杀，下一轮
+    // 仍能从 Outbox 补投（pending 恢复）；同一同步事件（businessKey 含 syncedAt）不会
+    // 重复入队。游标只在入队成功后推进，失败则下一轮重放同一批事件（业务键去重兜底）。
     const enqueued = await outbox.enqueue({
       businessKey: dropsBusinessKey(target, snapshot.syncedAt),
       target,
       parts: partsForMessage(message),
     });
-    await writeState(statePath, { ...state, ...nextBaseline });
+    await deltaLedger.ack(DELTA_LEDGER_CONSUMERS.DROPS, batch.uptoSeq);
+    await writeState(statePath, { ...state, ...nextGate });
     // 自发并确认；输出恒为 NO_REPLY，不再走 announce。
-    // 去重命中但记录仍 pending（上次入队后基线写失败被恢复）时同样立即补投。
+    // 去重命中但记录仍 pending（上次入队后游标/闸门写失败被恢复）时同样立即补投。
     if (enqueued.created || enqueued.entry?.status === 'pending') {
       const summary = await outbox.deliverPending({ target, mailer: effectiveMailer, ids: [enqueued.entry.id] });
       if (summary.deliveredIds.includes(enqueued.entry.id)) {
-        return { output: 'NO_REPLY\n', data: { ok: true, matched, delivered: 'direct' } };
+        return { output: 'NO_REPLY\n', data: { ok: true, matched, delivered: 'direct', ...ledgerMeta } };
       }
     }
-    return { output: 'NO_REPLY\n', data: { ok: true, matched, delivered: 'queued' } };
+    return { output: 'NO_REPLY\n', data: { ok: true, matched, delivered: 'queued', ...ledgerMeta } };
   });
 }
 
@@ -710,19 +754,20 @@ async function main() {
       cardDir: args['card-dir'] ? path.resolve(String(args['card-dir'])) : null,
       alecaDir: args['aleca-dir'] ? path.resolve(String(args['aleca-dir'])) : defaultAlecaDir(),
       outboxPath: args['outbox-path'] ? path.resolve(String(args['outbox-path'])) : undefined,
+      deltaStatePath: args['delta-ledger-path'] ? path.resolve(String(args['delta-ledger-path'])) : undefined,
       dryRun: String(args['dry-run']).toLowerCase() === 'true',
     });
     process.stdout.write(result.output);
     return;
   }
-  outputJson({ ok: false, error: '用法：drops.mjs monitor --state <path> --ledger <path> --target <qq-target> [--card-dir <dir>] [--outbox-path <path>] [--dry-run true]' });
+  outputJson({ ok: false, error: '用法：drops.mjs monitor --state <path> --ledger <path> --target <qq-target> [--card-dir <dir>] [--outbox-path <path>] [--delta-ledger-path <path>] [--dry-run true]' });
   process.exitCode = 1;
 }
 
 export {
   monitorDrops, dropMatches, countInventory, loadCatalog, describeDrop, defaultAlecaDir,
   marketSlugMap, findMarketEntry, marketDisplayImagePath, marketDisplayImageUrl, attachPrices,
-  withLock, defaultOutboxPath,
+  withLock, defaultOutboxPath, defaultDeltaLedgerPath,
 };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

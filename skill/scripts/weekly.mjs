@@ -11,6 +11,9 @@ import {
   CIRCUIT_TRACKS, DESCENT_TRACKS, INVENTORY_SCOPES, RESEARCH_TRACKS, buildAccountView,
   researchSampleKind, resolveResearchTrack,
 } from './account-view.mjs';
+// R15 第五片：与 drops 共用同一个本地 delta 账本；事件只作触发/审计，核销事实仍来自
+// 当前 AccountView + 公共世界状态（绝不凭 delta 猜完成）。
+import { DELTA_LEDGER_CONSUMERS, createDeltaLedger, defaultDeltaLedgerPath } from './account-delta-ledger.mjs';
 import { getBountyZhMaps, getChallengeZhMap, getCalendarChallengeMap, getCalendarStateZhMap, getLangTable, getOfficialTextMap, getOracleConquestMap, getOracleConquestTailMap, getSeasonChallengeRequired, readAlecaJson, staleCachedJson, stripDataUriReplacer } from './wfdata.mjs';
 import { loadWorldState } from './worldstate-source.mjs';
 import { getLearnedCalendarUpgradeEntries, queuePendingCalendarUpgrade } from './calendar-upgrade-fallback.mjs';
@@ -698,10 +701,40 @@ function chosenFlags(officialEvents, count, pickPath) {
   });
 }
 
-// 读真实快照的包装；任何异常静默降级为「无自动数据」，手动打卡不受影响
-async function autoCheckFromSnapshot(worldState, conquestSamples = []) {
+// 读真实快照的包装；任何异常静默降级为「无自动数据」，手动打卡不受影响。
+// R15 第五片：同一个快照同时并入本地 delta 账本，并按 weekly 自己的游标消费同一批
+// eventId（与 drops 共享，互不吞并）。事件只作触发/审计，auto/evidence 仍 100% 来自
+// buildAccountView + worldstate；处理成功后才 ack，失败不推进游标。
+// 返回的 ledger 审计只含计数与降级枚举，绝不带事件载荷/基线（不进模型上下文/QQ）。
+function weeklyLedgerAudit(ingest, batch, ack) {
+  if (!ingest && !batch && !ack) return null;
+  const ackRequired = Boolean(batch?.ok);
+  return {
+    ok: Boolean(ingest?.ok && batch?.ok && (!ackRequired || ack?.ok)),
+    degraded: ingest?.ok === false ? ingest.degraded
+      : (batch?.ok === false ? batch.degraded : (ackRequired && !ack?.ok ? (ack?.degraded || 'ack_failed') : null)),
+    baseline: ingest?.ok ? (ingest.baselineCreated ? 'created' : (ingest.unchanged ? 'unchanged' : 'updated')) : null,
+    appended: ingest?.ok ? ingest.appended : null,
+    events: batch?.ok ? batch.events.length : null,
+    gap: batch?.ok ? Boolean(batch.gap) : null,
+    acked: ackRequired ? Boolean(ack?.ok) : null,
+  };
+}
+
+async function autoCheckFromSnapshot(worldState, conquestSamples = [], options = {}) {
   try {
     const snapshot = await readSnapshot();
+    const ledger = options.deltaLedger || (options.deltaStatePath
+      ? createDeltaLedger({ statePath: options.deltaStatePath, now: options.clock })
+      : null);
+    let ingest = null;
+    let batch = null;
+    let ack = null;
+    if (ledger) {
+      // 入库与消费都是 best-effort：账本损坏/超前 schema 时只降级审计，不影响核销与手动打卡
+      ingest = await ledger.ingest(snapshot).catch(() => null);
+      if (ingest?.ok) batch = await ledger.read(DELTA_LEDGER_CONSUMERS.WEEKLY).catch(() => null);
+    }
     const view = buildAccountView(snapshot);
     // 电波完成量映射：网络失败返空对象，电波项自然跳过（宁不核销）
     const challengeRequired = worldState ? await getSeasonChallengeRequired() : null;
@@ -709,7 +742,10 @@ async function autoCheckFromSnapshot(worldState, conquestSamples = []) {
     const result = evaluateAutoCheck(view, worldState, now, challengeRequired, view.syncedAt, { conquestSamples });
     // 本轮科研分数样本：供以后各周判断「分数是否真的变过」
     const observations = collectConquestObservations(view, view.syncedAt, now);
-    return { ...result, syncedAt: view.syncedAt, view, observations };
+    // 至此本轮处理成功：推进 weekly 游标（只动自己的，不影响 drops）
+    if (batch?.ok) ack = await ledger.ack(DELTA_LEDGER_CONSUMERS.WEEKLY, batch.uptoSeq)
+      .catch(() => ({ ok: false, degraded: 'ack_failed' }));
+    return { ...result, syncedAt: view.syncedAt, view, observations, ledger: weeklyLedgerAudit(ingest, batch, ack) };
   } catch {
     return null;
   }
@@ -1394,7 +1430,9 @@ async function renderResult(record, cardDir, actionText = '', skipped = new Set(
   const { value: worldState, error: worldStateError, stale: worldStateStale } = await fetchWorldState();
   // 先合并快照自动核销再渲染：手动记录与自动判定取并集，撤销过的项不再自动打上
   const state = statePath ? await readState(statePath).catch(() => emptyState()) : emptyState();
-  const autoResult = await autoCheckFromSnapshot(worldState, state.conquestSamples);
+  const autoResult = await autoCheckFromSnapshot(worldState, state.conquestSamples, {
+    deltaStatePath: statePath ? defaultDeltaLedgerPath(statePath) : null,
+  });
   const { record: effective, autoIds } = mergeAutoRecord(record, autoResult);
   const [names, calMap, officialDays, seasonRequired, oracleConquestMap, officialTextMap, oracleConquestTails, calendarStateZh] = await Promise.all([loadNameTables(), getCalendarChallengeMap(), loadOfficialCalendarDays(), getSeasonChallengeRequired(), getOracleConquestMap(), getOfficialTextMap(), getOracleConquestTailMap(), getCalendarStateZhMap(), primeChallengeZh()]);
   const learnedCalendarUpgrades = await loadCalendarUpgradeLearned();
@@ -1419,6 +1457,8 @@ async function renderResult(record, cardDir, actionText = '', skipped = new Set(
     autoEvidence: Object.fromEntries(autoIds
       .filter((id) => autoResult?.evidence?.[id])
       .map((id) => [id, autoResult.evidence[id]])),
+    // delta 账本消费审计：只有计数/水位/降级枚举，无事件载荷与基线内容
+    ...(autoResult?.ledger ? { deltaLedger: autoResult.ledger } : {}),
     weekStart: record.weekStart,
     nextReset: nextReset(),
   };
@@ -1492,7 +1532,9 @@ async function renderWeeklyDetailCardFor(weeklyStatePath, context, worldState, c
   const state = await readState(weeklyStatePath);
   const record = currentRecord(state, context);
   const skipped = currentSkipped(state, context);
-  const autoResult = await autoCheckFromSnapshot(effectiveWorldState, state.conquestSamples);
+  const autoResult = await autoCheckFromSnapshot(effectiveWorldState, state.conquestSamples, {
+    deltaStatePath: defaultDeltaLedgerPath(weeklyStatePath),
+  });
   const { record: effective, autoIds } = mergeAutoRecord(record, autoResult);
   const [names, calMap, officialDays, seasonRequired, oracleConquestMap, officialTextMap, oracleConquestTails, calendarStateZh] = await Promise.all([loadNameTables(), getCalendarChallengeMap(), loadOfficialCalendarDays(), getSeasonChallengeRequired(), getOracleConquestMap(), getOfficialTextMap(), getOracleConquestTailMap(), getCalendarStateZhMap(), primeChallengeZh()]);
   const learnedCalendarUpgrades = await loadCalendarUpgradeLearned();
@@ -1523,7 +1565,9 @@ async function remindWeekly(weeklyStatePath, ledgerPath, target, options = {}) {
   const fetchWorld = options.fetchWorldState || fetchWorldState;
   let fetched = null;
   try { fetched = await fetchWorld(); } catch { fetched = null; }
-  const autoResult = await autoCheckFromSnapshot(fetched?.value || null, state.conquestSamples);
+  const autoResult = await autoCheckFromSnapshot(fetched?.value || null, state.conquestSamples, {
+    deltaStatePath: options.deltaStatePath || defaultDeltaLedgerPath(weeklyStatePath),
+  });
   await recordConquestObservations(weeklyStatePath, autoResult?.observations);
   const lines = [];
   for (const sub of subs) {

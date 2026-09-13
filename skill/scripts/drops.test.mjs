@@ -5,9 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  attachPrices, defaultOutboxPath, describeDrop, marketDisplayImagePath, monitorDrops, withLock,
+  attachPrices, defaultDeltaLedgerPath, defaultOutboxPath, describeDrop, marketDisplayImagePath,
+  monitorDrops, withLock,
 } from './drops.mjs';
 import { targetKeyOf } from './notification-outbox.mjs';
+import { DELTA_LEDGER_CONSUMERS, createDeltaLedger } from './account-delta-ledger.mjs';
 import { buildDropsAlertCard } from './warframe-cards.mjs';
 
 const TARGET = 'qqbot:c2c:tester';
@@ -52,6 +54,10 @@ function monitorOptions(dir, overrides = {}) {
     ...overrides,
   };
 }
+
+// R15 第五片：基线/事件/游标都在助手本地 delta 账本里，与 drops 状态文件同目录
+const deltaLedgerPathOf = (dir) => defaultDeltaLedgerPath(path.join(dir, 'drops.json'));
+const readDeltaLedger = async (dir) => JSON.parse(await readFile(deltaLedgerPathOf(dir), 'utf8'));
 
 test('掉落监测会自动回收被超时进程遗留的陈旧锁', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'warframe-drops-lock-'));
@@ -338,11 +344,19 @@ testOffline('掉落新情报：先入统一 Outbox 再投递，业务键=同步�
   assert.equal(entry.parts[0].attempts, 1);
   assert.ok(entry.createdAt && entry.expiresAt && entry.deliveredAt);
   assert.equal(store.tombstones[entry.businessKey], entry.deliveredAt);
-  // 状态文件：版本升 2，旧欠账字段不再出现
+  // 状态文件：版本升 3，旧基线/欠账字段不再出现（基线与事件流已迁入 delta 账本）
   const dropsState = JSON.parse(await readFile(monitorOptions(dir).statePath, 'utf8'));
-  assert.equal(dropsState.version, 2);
+  assert.equal(dropsState.version, 3);
   assert.equal(dropsState.pendingDelivery, undefined);
-  assert.ok(dropsState.baseline[ITEM]);
+  assert.equal(dropsState.baseline, undefined);
+  // delta 账本：最小脱敏基线 + 两个随基线固定注册的独立消费者游标
+  const ledgerStore = await readDeltaLedger(dir);
+  assert.equal(ledgerStore.kind, 'account-delta-ledger');
+  assert.equal(ledgerStore.schemaVersion, 1);
+  assert.deepEqual(ledgerStore.baseline.payload.inventory.MiscItems, [{ ItemType: ITEM, ItemCount: 6 }]);
+  assert.deepEqual(Object.keys(ledgerStore.baseline.payload.inventory), ['MiscItems']);
+  assert.ok(ledgerStore.consumers.drops.cursor >= 1);
+  assert.deepEqual(ledgerStore.consumers.weekly, { cursor: 0, ackedAt: null });
 });
 
 testOffline('投递失败留在 Outbox 欠账，快照未变的下轮仍补投且不重发已成功 part', async () => {
@@ -379,21 +393,23 @@ testOffline('投递失败留在 Outbox 欠账，快照未变的下轮仍补投�
   assert.equal(store.entries[0].parts[0].attempts, 2);
 });
 
-testOffline('入队后基线写失败的恢复（同业务键重复）：不重复入队、不重复投递', async () => {
+testOffline('入队后基线/游标写失败的恢复（同业务键重复）：不重复入队、不重复投递', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'warframe-drops-outbox-dedupe-'));
   const t1 = Date.now() - 120_000;
   const t2 = Date.now();
   await fixture(dir, { count: 3, mtimeMs: t1 });
   await monitorDrops(monitorOptions(dir));
-  const baselineAfterFirst = JSON.parse(await readFile(monitorOptions(dir).statePath, 'utf8'));
+  const ledgerAfterFirst = JSON.parse(await readFile(deltaLedgerPathOf(dir), 'utf8'));
+  const stateAfterFirst = JSON.parse(await readFile(monitorOptions(dir).statePath, 'utf8'));
 
   await writeSnapshot(path.join(dir, 'aleca'), 6, t2);
   await monitorDrops(monitorOptions(dir, {
     mailer: async () => ({ ok: false, category: 'network' }),
   }));
 
-  // 模拟崩溃窗口：Outbox 已入队（pending），但状态文件仍停留在旧基线（基线写丢失）
-  await writeFile(monitorOptions(dir).statePath, JSON.stringify(baselineAfterFirst), 'utf8');
+  // 模拟崩溃窗口：Outbox 已入队（pending），但 delta 账本的基线/游标与闸门状态都没写成功
+  await writeFile(deltaLedgerPathOf(dir), JSON.stringify(ledgerAfterFirst), 'utf8');
+  await writeFile(monitorOptions(dir).statePath, JSON.stringify(stateAfterFirst), 'utf8');
 
   const calls = [];
   await monitorDrops(monitorOptions(dir, {
@@ -404,13 +420,13 @@ testOffline('入队后基线写失败的恢复（同业务键重复）：不重�
   assert.equal(store.entries[0].status, 'delivered');
   assert.equal(store.entries[0].parts[0].attempts, 2); // 断网 1 次 + 恢复 1 次
   assert.equal(calls.length, 1); // 恢复轮只补投一次
-  // 基线最终收敛到最新
-  const state = JSON.parse(await readFile(monitorOptions(dir).statePath, 'utf8'));
-  assert.equal(state.baseline[ITEM], 6);
+  // 账本最终收敛到最新基线，且本消费者游标已越过该事件
+  const ledgerStore = await readDeltaLedger(dir);
+  assert.deepEqual(ledgerStore.baseline.payload.inventory.MiscItems, [{ ItemType: ITEM, ItemCount: 6 }]);
+  assert.equal(ledgerStore.consumers.drops.cursor, ledgerStore.nextSeq - 1);
 });
 
-testOffline('旧 pendingDelivery 兼容迁移：不丢欠账、TTL 48h 保持、超期丢弃、状态收敛 v2', async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'warframe-drops-outbox-migrate-'));
+testOffline('旧 pendingDelivery 兼容迁移：不丢欠账、TTL 48h 保持、超期丢弃、状态收敛 v3', async () => {  const dir = await mkdtemp(path.join(os.tmpdir(), 'warframe-drops-outbox-migrate-'));
   const t1 = Date.now() - 120_000;
   await fixture(dir, { count: 3, mtimeMs: t1 });
   const snapshotPath = path.join(dir, 'aleca', 'lastData.dat');
@@ -444,8 +460,9 @@ testOffline('旧 pendingDelivery 兼容迁移：不丢欠账、TTL 48h 保持、
   // TTL 保持：按原 queuedAt 起算 48h，不因迁移重置
   assert.equal(entry.expiresAt, new Date(Date.parse(legacyQueue[0].queuedAt) + 48 * 60 * 60 * 1000).toISOString());
   const dropsState = JSON.parse(await readFile(monitorOptions(dir).statePath, 'utf8'));
-  assert.equal(dropsState.version, 2);
+  assert.equal(dropsState.version, 3);
   assert.equal(dropsState.pendingDelivery, undefined);
+  assert.equal(dropsState.baseline, undefined);
 
   // 幂等：再次运行同一旧文件（若写回丢失）不会产生重复记录
   const secondCalls = [];
@@ -460,4 +477,93 @@ testOffline('旧 pendingDelivery 兼容迁移：不丢欠账、TTL 48h 保持、
   const storeAfterSecond = JSON.parse(await readFile(outboxPath, 'utf8'));
   assert.equal(storeAfterSecond.entries.length, 1);
   assert.equal(secondCalls.length, 0); // 去重命中：不再补投
+});
+
+// ---------- R15 第五片：drops 与 weekly 共享同一个 delta 账本 ----------
+
+testOffline('drops 与 weekly 消费同一账本：drops 确认后 weekly 仍看到同一批 eventId，审计面不带载荷', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'warframe-drops-ledger-shared-'));
+  const t1 = Date.now() - 120_000;
+  const t2 = Date.now();
+  await fixture(dir, { count: 3, mtimeMs: t1 });
+  const ledgerPath = deltaLedgerPathOf(dir);
+  const weeklyLedger = createDeltaLedger({ statePath: ledgerPath });
+
+  const first = await monitorDrops(monitorOptions(dir));
+  assert.equal(first.data.reason, 'baseline_created');
+  // weekly 在变化之前接入（水位起步）：之后的变化它必须能看到
+  assert.deepEqual((await weeklyLedger.read(DELTA_LEDGER_CONSUMERS.WEEKLY)).eventIds, []);
+
+  await writeSnapshot(path.join(dir, 'aleca'), 6, t2);
+  const calls = [];
+  const second = await monitorDrops(monitorOptions(dir, {
+    mailer: async (part) => { calls.push(part); return { ok: true }; },
+  }));
+  assert.equal(second.data.delivered, 'direct');
+  assert.equal(second.data.ledgerEvents, 1);
+  assert.equal(second.data.ledgerGap, false);
+
+  // 审计面只有计数：不得带 eventId / 事件载荷 / 基线
+  const audit = JSON.stringify(second.data);
+  assert.equal(audit.includes('acct-delta'), false);
+  assert.equal(audit.includes('baseline'), false);
+
+  // drops 已推进自己的游标，weekly 的游标独立且仍能读到同一批 eventId
+  const store = await readDeltaLedger(dir);
+  assert.equal(store.consumers.drops.cursor, store.nextSeq - 1);
+  assert.equal(store.consumers.weekly.cursor, 0);
+  const eventIds = store.events.map((event) => event.eventId);
+  assert.deepEqual(eventIds, ['acct-delta-v1-1']);
+  const weeklyBatch = await weeklyLedger.read(DELTA_LEDGER_CONSUMERS.WEEKLY);
+  assert.deepEqual(weeklyBatch.eventIds, eventIds);
+  assert.deepEqual(weeklyBatch.events.map((event) => event.entity), [ITEM]);
+  await weeklyLedger.ack(DELTA_LEDGER_CONSUMERS.WEEKLY, weeklyBatch.uptoSeq);
+  assert.deepEqual((await weeklyLedger.read(DELTA_LEDGER_CONSUMERS.WEEKLY)).eventIds, []);
+  assert.equal((await readDeltaLedger(dir)).consumers.drops.cursor, store.consumers.drops.cursor);
+});
+
+testOffline('delta 账本损坏：诚实降级不推送、不覆盖原文件，欠账仍补投；修复后不重复通知', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'warframe-drops-ledger-corrupt-'));
+  const t1 = Date.now() - 180_000;
+  const t2 = Date.now() - 60_000;
+  const t3 = Date.now();
+  await fixture(dir, { count: 3, mtimeMs: t1 });
+  await monitorDrops(monitorOptions(dir));
+  const healthyLedger = await readFile(deltaLedgerPathOf(dir), 'utf8');
+
+  // 一次投递失败：欠账留在 Outbox（pending）
+  await writeSnapshot(path.join(dir, 'aleca'), 6, t2);
+  const failed = await monitorDrops(monitorOptions(dir, { mailer: async () => ({ ok: false, category: 'timeout' }) }));
+  assert.equal(failed.data.delivered, 'queued');
+
+  // 账本损坏：不推送新掉落、不改写文件，但既有欠账照旧补投
+  await writeFile(deltaLedgerPathOf(dir), '{ broken json', 'utf8');
+  await writeSnapshot(path.join(dir, 'aleca'), 9, t3);
+  const calls = [];
+  const degraded = await monitorDrops(monitorOptions(dir, {
+    mailer: async (part) => { calls.push(part); return { ok: true }; },
+  }));
+  assert.equal(degraded.output, 'NO_REPLY\n');
+  assert.equal(degraded.data.ok, false);
+  assert.equal(degraded.data.reason, 'delta_ledger_unavailable');
+  assert.equal(degraded.data.degraded, 'corrupt');
+  assert.equal(calls.length, 1); // 只有欠账那一条
+  assert.equal(await readFile(deltaLedgerPathOf(dir), 'utf8'), '{ broken json');
+  const outboxPath = defaultOutboxPath(monitorOptions(dir).statePath);
+  let store = JSON.parse(await readFile(outboxPath, 'utf8'));
+  assert.equal(store.entries.length, 1);
+  assert.equal(store.entries[0].status, 'delivered');
+
+  // 修复账本后恢复消费：未确认事件重放，但同一业务键不重复通知
+  await writeFile(deltaLedgerPathOf(dir), healthyLedger, 'utf8');
+  const recoveredCalls = [];
+  const recovered = await monitorDrops(monitorOptions(dir, {
+    mailer: async (part) => { recoveredCalls.push(part); return { ok: true }; },
+  }));
+  assert.equal(recovered.output, 'NO_REPLY\n');
+  assert.equal(recovered.data.ok, true);
+  assert.equal(recoveredCalls.length, 0);
+  store = JSON.parse(await readFile(outboxPath, 'utf8'));
+  assert.equal(store.entries.length, 1);
+  assert.equal((await readDeltaLedger(dir)).baseline.payload.inventory.MiscItems[0].ItemCount, 9);
 });

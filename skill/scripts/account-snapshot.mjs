@@ -15,6 +15,10 @@
 // R15 第三片：白名单不再只作用于顶层。条目与嵌套对象同样经过显式投影——每个保留字段
 // 都有固定的键规格，只复制现有消费方真正读取的键；条目内的实例 oid、宠物详情、未知及
 // 未来新增键一律不进入适配后的快照。投影只重建容器，不保留源对象引用。
+//
+// R15 第五片：projectDeltaBaseline 把适配后的快照再压一层，得到「生成 delta 所需的最小
+// 脱敏基线」（ACCOUNT_DELTA_BASELINE_FIELDS）。它仍是合法 AccountSnapshot，可直接喂给
+// diffAccountSnapshots，因此本地 delta 账本只持久化这一个基线，delta 定义全局唯一。
 
 import { createHash } from 'node:crypto';
 
@@ -92,6 +96,9 @@ const CYCLE_SPECS = new Map([
 
 // 数量 delta 覆盖的组：与 drops.countInventory 的计数口径一致（Upgrades 每条计 1）。
 const QUANTITY_GROUPS = Object.freeze(['MiscItems', 'Recipes', 'Consumables', 'FusionTreasures', 'RawUpgrades', 'Upgrades']);
+
+// 只读视图：数量 delta 的组清单，供合同测试锁死「账本数量事件 ↔ 掉落监测计数口径」不漂移。
+export const ACCOUNT_DELTA_QUANTITY_FIELDS = QUANTITY_GROUPS;
 
 function isPlainObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -742,6 +749,87 @@ function weeklyRecordEvents(fromInventory, toInventory, spec, boundary, out) {
       cycle,
     });
   }
+}
+
+// 记录型 delta 字段的顶层来源：diff 内部读的是整个顶层数组/对象，
+// 因此基线投影必须按顶层字段保留（'Affiliations.WeeklyMissions' → 'Affiliations'）。
+const DELTA_RECORD_TOP_LEVEL_FIELDS = Object.freeze(['EndlessXP', 'DescentRewards', 'ChallengeProgress', 'Affiliations', 'CalendarProgress']);
+
+// delta 基线字段 = 「生成全部 delta 事件所需的最小字段集合」。
+// 只有这些字段会进本地 delta 账本：装备栏、估值用组、日声望余量、商店购买记录、
+// LastInventorySync（账号同步 oid）等与 delta 无关的字段一律不持久化。
+export const ACCOUNT_DELTA_BASELINE_FIELDS = Object.freeze([...new Set([
+  ...QUANTITY_GROUPS,
+  ...WEEKLY_SCALAR_DELTAS.map((spec) => spec.field),
+  ...DELTA_RECORD_TOP_LEVEL_FIELDS,
+])]);
+
+// delta 基线比业务快照再窄一层：只保留 diff 实际读取的嵌套键。
+// 尤其不保存升级指纹、集团声望/等级、回廊领取值/奖励内容与选择列表。
+const DELTA_AFFILIATION_ENTRY_SPEC = Object.freeze([
+  ['Tag', projectTextValue],
+  ['WeeklyMissions', (value) => projectList(value, WEEKLY_MISSION_ENTRY_SPEC)],
+]);
+const DELTA_ENDLESS_XP_ENTRY_SPEC = Object.freeze([
+  ['Category', projectTextValue],
+  ['Expiry', projectDateKey],
+  ['Earn', projectNumericValue],
+  ['PendingRewards', (value) => projectList(value, Object.freeze([['RequiredTotalXp', projectNumericValue]]))],
+]);
+const DELTA_BASELINE_PROJECTORS = new Map([
+  ...QUANTITY_GROUPS.map((field) => [field, (value) => projectList(
+    value,
+    field === 'Upgrades' ? Object.freeze([['ItemType', projectTextValue]]) : ITEM_ENTRY_SPEC,
+  )]),
+  ['EntratiLabConquestCacheScoreMission', projectNumericValue],
+  ['EntratiLabConquestUnlocked', projectNumericValue],
+  ['EchoesHexConquestCacheScoreMission', projectNumericValue],
+  ['EchoesHexConquestUnlocked', projectNumericValue],
+  ['EntratiVaultCountLastPeriod', projectNumericValue],
+  ['EntratiVaultCountResetDate', projectDateKey],
+  ['LastLiteSortieReward', (value) => projectList(value, SORTIE_REWARD_ENTRY_SPEC)],
+  ['EchoesHexConquestBonusTokensGiven', projectTokenList],
+  ['EndlessXP', (value) => projectList(value, DELTA_ENDLESS_XP_ENTRY_SPEC)],
+  ['DescentRewards', (value) => projectList(value, DESCENT_REWARD_ENTRY_SPEC)],
+  ['ChallengeProgress', (value) => projectList(value, CHALLENGE_PROGRESS_ENTRY_SPEC)],
+  ['Affiliations', (value) => projectList(value, DELTA_AFFILIATION_ENTRY_SPEC)],
+  ['CalendarProgress', (value) => projectEntry(value, CALENDAR_PROGRESS_ENTRY_SPEC)],
+]);
+
+// 构建期合同：基线字段必须都是白名单字段，否则基线会带出未投影的原始数据。
+for (const field of ACCOUNT_DELTA_BASELINE_FIELDS) {
+  if (!ALLOWLIST_SET.has(field)) {
+    throw new Error(`account delta baseline field is not allowlisted: ${field}`);
+  }
+  if (!DELTA_BASELINE_PROJECTORS.has(field)) {
+    throw new Error(`account delta baseline field has no nested projector: ${field}`);
+  }
+}
+
+/**
+ * 纯函数：把已适配的 AccountSnapshot v1 压成「生成 delta 所需的最小脱敏基线」。
+ * 输出仍是合法的 AccountSnapshot（schemaVersion/source/asOf/inventory 齐全），
+ * 因此 diffAccountSnapshots 可以直接消费，delta 定义全局只有一份。
+ * 所有容器重新投影，不与业务快照共享引用。
+ * @param {object} snapshot 已适配的 AccountSnapshot v1
+ */
+export function projectDeltaBaseline(snapshot) {
+  const value = assertAccountSnapshot(snapshot, 'snapshot');
+  const source = isPlainObject(value.inventory) ? value.inventory : {};
+  const inventory = {};
+  for (const field of ACCOUNT_DELTA_BASELINE_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(source, field)) continue;
+    const projected = DELTA_BASELINE_PROJECTORS.get(field)(source[field]);
+    if (projected === OMIT_FIELD) continue;
+    inventory[field] = projected;
+  }
+  return {
+    schemaVersion: ACCOUNT_SNAPSHOT_SCHEMA_VERSION,
+    source: ACCOUNT_SNAPSHOT_SOURCE,
+    asOf: value.asOf ?? null,
+    asOfBasis: value.asOfBasis ?? null,
+    inventory,
+  };
 }
 
 /**

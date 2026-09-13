@@ -48,7 +48,8 @@ openclaw.json → `plugins.config.warframe-fast-commands.wishlist`，全部可�
 
 - `state/warframe-subscriptions.json`——订阅账本+去重记录
 - `state/warframe-weekly.json`——周常打卡与电波采样
-- `state/warframe-drops.json`——掉落监测基线（v2；旧版欠账字段已迁入 Outbox）
+- `state/warframe-drops.json`——掉落监测的 mtime 闸门与同步时间（v3；基线与旧欠账字段已分别迁入 delta 账本与 Outbox）
+- `state/warframe-account-delta-ledger.json`——助手本地 delta 账本（R15 第五片，schemaVersion 1）：账号快照的**最小脱敏基线**（只含生成 delta 所需的库存数量组与周常字段，不含完整快照/账号 oid/令牌/路径）、有界 delta 事件（条数 512 / 总体积 256 KiB / 保留 7 天三重上限，裁剪记入 `lostSeq` 供消费者识别断档）与 `drops`/`weekly` 各自的消费游标；drops 与 weekly 从同一份事件、按同一 eventId 各自独立确认。原子写 + 同进程串行 + 跨进程文件锁（含陈旧锁回收）；文件损坏或 schema 超前时只读不动、只降级不上报假增量，需人工检查后处理。绝不使用 AlecaFrame 的 `deltas.dat`
 - `state/warframe-delivery-outbox.json`——通知 Outbox 四个切片：当前接入掉落提醒、世界状态订阅通知（裂缝/仲裁/警报/活动/商人/突击/侵袭/赏金/商店/商品/轮换的 deliver 路径）、weekly 主动周报（主周报无损原图 + 可选好货卡，逐 part 持久化 transport）与愿望单主动命中通知（REST 校准 deliver + Gateway 实时命中双源同键去重、10 分钟业务 TTL、`redactOnTerminal` 终态擦除敏感 payload），保存待投递/已投递通知、欠账补投、脱敏投递审计与幂等键墓碑（逾期与墓碑有界自动清理）
 - `state/warframe-arbitration-cache.json` / `warframe-incursions-cache.json`——排期缓存（删了会自动重建）
 - `state/warframe-wishlist-metrics.json`——愿望单实时监控脱敏审计指标（R4）：断线时长、订单发现延迟、QQ 投递延迟、保护/扫描计数与 Market 可用性；只存时长/计数/类别，不含 target/订单/卖家等标识；自动维护，别手删
