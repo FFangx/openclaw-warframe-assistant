@@ -540,17 +540,47 @@ async function queryMarket(rawQuery, platform = DEFAULT_PLATFORM, crossplay = DE
   // 90 天真实成交统计（网站图表同源）：中位价/日均成交量/当前卖价偏离；按查询等级过滤，失败静默降级
   let stats90 = null;
   let trendSeries = [];
+  let trendStats = null;
   try {
     const statsResponse = await getJson(`${MARKET_BASE}/v1/items/${resolved.match.slug}/statistics`, headers);
-    const closed = statsResponse?.payload?.statistics_closed?.['90days'] || [];
-    let rows = closed.filter((row) => (selectedRank != null ? row.mod_rank === selectedRank : row.mod_rank == null));
-    if (!rows.length) rows = closed.filter((row) => (row.mod_rank ?? 0) === (selectedRank ?? 0));
+    const closed = statsResponse?.payload?.statistics_closed || {};
+    const rowsForRank = (source) => {
+      let selected = (Array.isArray(source) ? source : []).filter((row) => (selectedRank != null ? row.mod_rank === selectedRank : row.mod_rank == null));
+      if (!selected.length) selected = (Array.isArray(source) ? source : []).filter((row) => (row.mod_rank ?? 0) === (selectedRank ?? 0));
+      return selected;
+    };
+    const rows = rowsForRank(closed['90days']);
+    const recentRows = rowsForRank(closed['48hours']);
     trendSeries = rows.map((row) => ({
       at: row.datetime || row.created_at || row.date || null,
+      average: Number(row.avg_price ?? row.average ?? row.median),
       median: Number(row.median),
       volume: Number(row.volume) || 0,
-    })).filter((row) => row.at && Number.isFinite(row.median))
+    })).filter((row) => row.at && Number.isFinite(row.average) && Number.isFinite(row.median))
       .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+    const summarizePeriod = (periodRows) => {
+      const valid = periodRows.map((row) => ({
+        average: Number(row.avg_price ?? row.average ?? row.median),
+        median: Number(row.median),
+        volume: Number(row.volume) || 0,
+      })).filter((row) => Number.isFinite(row.average) && Number.isFinite(row.median) && row.volume > 0);
+      const volume = valid.reduce((sum, row) => sum + row.volume, 0);
+      if (!valid.length || volume <= 0) return null;
+      const turnover = valid.reduce((sum, row) => sum + row.average * row.volume, 0);
+      const ordered = [...valid].sort((a, b) => a.median - b.median);
+      let cumulative = 0;
+      let median = ordered.at(-1).median;
+      for (const row of ordered) {
+        cumulative += row.volume;
+        if (cumulative >= volume / 2) { median = row.median; break; }
+      }
+      return {
+        volume,
+        average: Math.round((turnover / volume) * 10) / 10,
+        median: Math.round(median * 10) / 10,
+      };
+    };
+    trendStats = { recent48: summarizePeriod(recentRows), days90: summarizePeriod(rows) };
     if (rows.length >= 3) {
       const medians = rows.map((row) => Number(row.median)).filter(Number.isFinite).sort((a, b) => a - b);
       const median = medians[Math.floor(medians.length / 2)];
@@ -632,6 +662,7 @@ async function queryMarket(rawQuery, platform = DEFAULT_PLATFORM, crossplay = DE
     buy,
     stats90,
     trendSeries,
+    trendStats,
     setParts,
     viewMode,
     marketQuery,
@@ -1340,43 +1371,66 @@ function buildMarketCard(data) {
 function buildMarketTrendCard(data) {
   const item = data.item || {};
   const points = (Array.isArray(data.trendSeries) ? data.trendSeries : []).slice(-90);
-  const width = 600;
-  const height = 414;
-  const svgHeight = 286;
-  const left = 54;
-  const right = 24;
-  const top = 18;
-  const bottom = 45;
+  const width = 800;
+  const height = 566;
+  const svgHeight = 340;
+  const left = 62;
+  const right = 26;
+  const top = 36;
+  const bottom = 44;
   const chartW = width - left - right;
   const chartH = svgHeight - top - bottom;
-  const values = points.map((point) => Number(point.median)).filter(Number.isFinite);
+  const values = points.flatMap((point) => [Number(point.average), Number(point.median)]).filter(Number.isFinite);
   const rawMin = values.length ? Math.min(...values) : 0;
   const rawMax = values.length ? Math.max(...values) : 1;
-  const pad = Math.max(1, (rawMax - rawMin) * 0.12);
-  const min = Math.max(0, rawMin - pad);
-  const max = rawMax + pad;
-  const span = Math.max(1, max - min);
-  const xy = points.map((point, index) => ({
+  const rawSpan = Math.max(1, rawMax - rawMin);
+  const magnitude = 10 ** Math.floor(Math.log10(rawSpan / 5));
+  const normalized = rawSpan / 5 / magnitude;
+  const step = (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10) * magnitude;
+  const min = Math.max(0, Math.floor((rawMin - step * 0.45) / step) * step);
+  const max = Math.ceil((rawMax + step * 0.45) / step) * step;
+  const span = Math.max(step, max - min);
+  const plot = (field) => points.map((point, index) => ({
     x: left + (points.length <= 1 ? chartW / 2 : (index / (points.length - 1)) * chartW),
-    y: top + chartH - ((Number(point.median) - min) / span) * chartH,
+    y: top + chartH - ((Number(point[field]) - min) / span) * chartH,
+    value: Number(point[field]),
+    at: point.at,
   }));
-  const polyline = xy.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(' ');
-  const area = xy.length ? `${left},${top + chartH} ${polyline} ${left + chartW},${top + chartH}` : '';
-  const grid = [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
-    const y = top + chartH * ratio;
-    const price = Math.round((max - span * ratio) * 10) / 10;
-    return `<line x1="${left}" y1="${y}" x2="${left + chartW}" y2="${y}" stroke="#414650" stroke-width="1"/><text x="${left - 9}" y="${y + 4}" fill="#9aa3ad" font-size="11" text-anchor="end">${escapeHtml(price)}</text>`;
+  const averagePoints = plot('average');
+  const medianPoints = plot('median');
+  const line = (series) => series.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(' ');
+  const yTicks = Array.from({ length: Math.round(span / step) + 1 }, (_, index) => min + index * step).filter((_, index, all) => all.length <= 7 || index % 2 === 0);
+  const grid = yTicks.map((price) => {
+    const y = top + chartH - ((price - min) / span) * chartH;
+    return `<line x1="${left}" y1="${y}" x2="${left + chartW}" y2="${y}" stroke="#424750" stroke-width="1" stroke-dasharray="3 3"/><text x="${left - 10}" y="${y + 4}" fill="#9aa3ad" font-size="12" text-anchor="end">${escapeHtml(Math.round(price * 10) / 10)}</text>`;
   }).join('');
-  const firstDate = points[0]?.at ? new Date(points[0].at).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }) : '—';
-  const lastDate = points.at(-1)?.at ? new Date(points.at(-1).at).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }) : '—';
-  const latest = points.at(-1)?.median;
-  const totalVolume = points.reduce((sum, point) => sum + (Number(point.volume) || 0), 0);
+  const tickIndexes = [...new Set(Array.from({ length: Math.min(7, points.length) }, (_, index) => Math.round(index * (points.length - 1) / Math.max(1, Math.min(7, points.length) - 1))))];
+  const dateTicks = tickIndexes.map((index) => {
+    const point = medianPoints[index];
+    const date = point?.at ? new Date(point.at).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replaceAll('/', '-') : '—';
+    return `<line x1="${point.x}" y1="${top}" x2="${point.x}" y2="${top + chartH}" stroke="#353a43" stroke-width="1" stroke-dasharray="3 3"/><text x="${point.x}" y="${top + chartH + 27}" fill="#9aa3ad" font-size="12" text-anchor="middle">${escapeHtml(date)}</text>`;
+  }).join('');
+  const callout = (point, color, above = true) => {
+    if (!point) return '';
+    const label = String(Math.round(point.value * 10) / 10);
+    const boxW = Math.max(34, label.length * 8 + 12);
+    const x = Math.min(left + chartW - boxW / 2, Math.max(left + boxW / 2, point.x));
+    const y = above ? Math.max(3, point.y - 28) : Math.min(svgHeight - 24, point.y + 12);
+    return `<g><rect x="${x - boxW / 2}" y="${y}" width="${boxW}" height="20" rx="3" fill="#25282e" stroke="${color}"/><text x="${x}" y="${y + 14}" fill="${color}" font-size="11" font-weight="700" text-anchor="middle">${escapeHtml(label)}</text></g>`;
+  };
+  const averageHigh = averagePoints.reduce((best, point) => !best || point.value > best.value ? point : best, null);
+  const averageLow = averagePoints.reduce((best, point) => !best || point.value < best.value ? point : best, null);
   const chart = points.length >= 2
-    ? `<svg width="600" height="${svgHeight}" viewBox="0 0 600 ${svgHeight}" style="display:block"><defs><linearGradient id="trend-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#63d8b1" stop-opacity=".34"/><stop offset="1" stop-color="#63d8b1" stop-opacity="0"/></linearGradient></defs>${grid}<polygon points="${area}" fill="url(#trend-fill)"/><polyline points="${polyline}" fill="none" stroke="#73e0b9" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><circle cx="${xy.at(-1).x}" cy="${xy.at(-1).y}" r="5" fill="#ff87b4" stroke="#25282e" stroke-width="2"/><text x="${left}" y="${top + chartH + 28}" fill="#9aa3ad" font-size="11">${escapeHtml(firstDate)}</text><text x="${left + chartW}" y="${top + chartH + 28}" fill="#9aa3ad" font-size="11" text-anchor="end">${escapeHtml(lastDate)}</text></svg>`
-    : `<div style="height:286px;display:grid;place-items:center;color:#9aa3ad">近 90 天成交样本不足，暂时无法绘制走势</div>`;
-  const content = `<div class="card"><div class="head" style="height:94px"><div class="eyebrow">星际战甲市场 · 近 90 天成交走势</div><div class="title" style="font-size:25px">${escapeHtml(item.zhName || item.name || '未知物品')}</div><div class="chips"><div class="chip"><small>最新中位</small>${latest == null ? '—' : currency('plat', latest, { size: 12, color: '#ff87b4', weight: 800 })}</div><div class="chip"><small>区间成交</small>${escapeHtml(totalVolume)} 笔</div></div></div>${chart}<div class="foot"><span>每日成交中位价 · 非挂单报价</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
-  const seriesKey = points.map((point) => `${point.at}:${point.median}:${point.volume}`).join('|');
-  return { html: cardDocument(content, height), width, height, key: `market-trend-v3-${item.slug}-${createHash('sha1').update(seriesKey).digest('hex').slice(0, 10)}` };
+    ? `<svg width="${width}" height="${svgHeight}" viewBox="0 0 ${width} ${svgHeight}" style="display:block">${grid}${dateTicks}<polyline points="${line(medianPoints)}" fill="none" stroke="#61e0b5" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/><polyline points="${line(averagePoints)}" fill="none" stroke="#ff87b4" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>${callout(averageHigh, '#ff87b4', true)}${averageLow !== averageHigh ? callout(averageLow, '#ff87b4', false) : ''}${callout(medianPoints.at(-1), '#61e0b5', true)}<circle cx="${averagePoints.at(-1).x}" cy="${averagePoints.at(-1).y}" r="4.5" fill="#ff87b4" stroke="#25282e" stroke-width="2"/><circle cx="${medianPoints.at(-1).x}" cy="${medianPoints.at(-1).y}" r="4.5" fill="#61e0b5" stroke="#25282e" stroke-width="2"/></svg>`
+    : `<div style="height:${svgHeight}px;display:grid;place-items:center;color:#9aa3ad">近 90 天成交样本不足，暂时无法绘制走势</div>`;
+  const stat = (label, value, color = '#f3f4f6', platinum = false) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><span style="color:#a7aab1">${label}</span><strong style="color:${color};font-variant-numeric:tabular-nums">${value == null ? '—' : platinum ? currency('plat', value, { size: 12, color, weight: 800 }) : escapeHtml(Number(value).toLocaleString('zh-CN'))}</strong></div>`;
+  const summary = (title, period) => `<section style="width:168px;padding:13px 14px;border:1px solid #5a5360;border-radius:8px;background:#34343c"><div style="margin-bottom:8px;color:#f3d188;font-size:15px;font-weight:750">${title}</div><div style="display:grid;gap:7px;font-size:12.5px">${stat('成交量', period?.volume)}${stat('平均价', period?.average, '#ff87b4', true)}${stat('中位价', period?.median, '#61e0b5', true)}</div></section>`;
+  const description = String(item.description || 'Warframe.Market 可交易物品').replace(/\s+/gu, ' ').trim();
+  const icon = item.iconDataUri ? `<img src="${item.iconDataUri}" style="width:86px;height:86px;object-fit:contain;flex:0 0 auto">` : '';
+  const stats = data.trendStats || {};
+  const seriesKey = points.map((point) => `${point.at}:${point.average}:${point.median}:${point.volume}`).join('|');
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><style>*{box-sizing:border-box}html,body{margin:0;width:${width}px;height:${height}px;overflow:hidden;background:#17191d}body{font-family:"Microsoft YaHei UI","Microsoft YaHei",Arial,sans-serif;color:#f3f4f6}.trend-card{width:${width}px;height:${height}px;background:linear-gradient(145deg,#28262e 0%,#1e2227 48%,#25232b 100%);border:1px solid #3d3944;overflow:hidden}.top{height:146px;padding:15px 20px;display:flex;gap:16px;align-items:stretch;background:linear-gradient(110deg,rgba(38,45,48,.98),rgba(30,34,39,.86));border-bottom:1px solid #8f642d}.item{min-width:0;flex:1;display:flex;gap:14px;align-items:center;padding:10px 14px}.item h1{margin:0 0 6px;font-size:22px;line-height:1.15;color:#f3f4f6}.item p{margin:0;color:#a7aab1;font-size:13px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.summary{display:flex;gap:12px;align-items:stretch}.chart-head{height:48px;padding:10px 20px 0;display:flex;align-items:center;justify-content:space-between}.chart-head h2{margin:0;font-size:17px;font-weight:750;color:#95d6ac}.legend{display:flex;gap:18px;color:#a7aab1;font-size:12px}.legend span{display:flex;align-items:center;gap:6px}.legend i{display:block;width:20px;height:3px;border-radius:2px}.foot{height:30px;padding:6px 12px;border-top:1px solid #3e3b43;color:#a9adb4;font-size:11px;display:flex;justify-content:space-between}</style></head><body><div class="trend-card"><div class="top"><div class="item">${icon}<div style="min-width:0"><h1>${escapeHtml(item.zhName || item.name || '未知物品')}</h1><p>${escapeHtml(description)}</p></div></div><div class="summary">${summary('48 小时', stats.recent48)}${summary('90 天', stats.days90)}</div></div><div class="chart-head"><h2>90 天 Warframe.Market 成交走势</h2><div class="legend"><span><i style="background:#ff87b4"></i>平均价</span><span><i style="background:#61e0b5"></i>中位价</span></div></div>${chart}<div class="foot"><span>每日真实成交统计 · 非挂单报价</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div></body></html>`;
+  return { html, width, height, key: `market-trend-v6-${item.slug}-${createHash('sha1').update(seriesKey).digest('hex').slice(0, 10)}` };
 }
 
 function buildRelicCard(data) {

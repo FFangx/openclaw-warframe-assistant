@@ -17,6 +17,8 @@ import { createGatewayWishlistMailer } from './wishlist-gateway-mailer.mjs';
 import { createWishlistGateway } from './wishlist-gateway.mjs';
 import { createWishlistMetrics } from './wishlist-metrics.mjs';
 import { sendMarketKeyboard } from './qq-market-keyboard.mjs';
+import { getMarketCardPreference, parseMarketCardPreferenceCommand, setMarketCardPreference } from './qq-market-card-preferences.mjs';
+import { marketTrendInteractions, QQ_MARKET_INTERACTION_BRIDGE } from './qq-market-trend-interactions.mjs';
 
 const execFileAsync = promisify(execFile);
 const pluginDir = path.dirname(fileURLToPath(import.meta.url));
@@ -891,15 +893,45 @@ async function sendDirectQQReply(api: any, event: any, ctx: any, reply: any): Pr
     };
 
     let result: any;
+    let needsSeparateMarketKeyboard = false;
     if (reply.mediaUrl) {
       if (!adapter.sendMedia) throw new Error('QQ outbound adapter cannot send media');
       adapterReady = true;
       const followup = /^\/w\s+/iu.test(String(reply.text || '').trim()) ? String(reply.text).trim() : '';
-      result = await adapter.sendMedia({
-        ...common,
-        text: followup,
-        mediaUrl: reply.mediaUrl,
-      });
+      const isPrivateMarketQuote = !event.isGroup && reply?.raw?.data?.kind === 'market' && reply.raw.data.viewMode !== 'trend';
+      let combinedMarketCardEnabled = false;
+      if (isPrivateMarketQuote) {
+        try {
+          combinedMarketCardEnabled = await getMarketCardPreference({
+            accountId: ctx.accountId,
+            senderId: event.senderId || ctx.senderId,
+          });
+        } catch {
+          api.logger.warn?.('Warframe market card preference read failed; using compatible delivery');
+        }
+      }
+      if (isPrivateMarketQuote && combinedMarketCardEnabled) {
+        try {
+          const combined = await sendMarketKeyboard({
+            data: reply.raw.data,
+            cfg: api.config,
+            accountId: ctx.accountId,
+            target,
+            replyToId: event.replyToId || ctx.replyToId,
+            mediaUrl: reply.mediaUrl,
+            content: followup,
+          });
+          if (!combined.sent) throw new Error('combined market reply was not applicable');
+          result = { messageId: combined.messageId };
+        } catch {
+          api.logger.warn?.('Warframe combined market reply failed; falling back to compatible delivery');
+          needsSeparateMarketKeyboard = true;
+          result = await adapter.sendMedia({ ...common, text: followup, mediaUrl: reply.mediaUrl });
+        }
+      } else {
+        needsSeparateMarketKeyboard = isPrivateMarketQuote;
+        result = await adapter.sendMedia({ ...common, text: followup, mediaUrl: reply.mediaUrl });
+      }
     } else {
       if (!adapter.sendText) throw new Error('QQ outbound adapter cannot send text');
       adapterReady = true;
@@ -913,7 +945,7 @@ async function sendDirectQQReply(api: any, event: any, ctx: any, reply: any): Pr
       deliveryRecorded = true;
       throw new Error(`QQ delivery failed: ${String(result.error)}`);
     }
-    if (!event.isGroup && reply?.raw?.data?.kind === 'market' && reply.raw.data.viewMode !== 'trend') {
+    if (needsSeparateMarketKeyboard) {
       try {
         await sendMarketKeyboard({
           data: reply.raw.data,
@@ -934,6 +966,66 @@ async function sendDirectQQReply(api: any, event: any, ctx: any, reply: any): Pr
     }
     throw error;
   }
+}
+
+async function marketCardPreferenceReply(api: any, event: any, ctx: any, command: any): Promise<any> {
+  if (Boolean(event.isGroup || agentContextIsGroup(ctx))) {
+    return { text: 'wm 卡片设置仅支持 QQ 私聊。', isError: true };
+  }
+  const identity = { accountId: ctx.accountId, senderId: event.senderId || ctx.senderId };
+  let enabled: boolean;
+  if (command.enabled === null) enabled = await getMarketCardPreference(identity);
+  else enabled = await setMarketCardPreference({ ...identity, enabled: command.enabled });
+  return {
+    text: enabled
+      ? 'wm 单条选项卡已开启。之后私聊查价会把图片、1号卖家和选项按钮合并在一条消息里。发送“wm卡片 关”可恢复。'
+      : 'wm 单条选项卡已关闭。之后私聊查价会继续使用兼容的分开发送。发送“wm卡片 开”可启用。',
+  };
+}
+
+function installMarketTrendInteractionBridge(api: any): () => void {
+  const bridge = ({ accountId, event, acknowledge }: any): boolean => {
+    const senderId = String(event?.user_openid || '').trim().toLowerCase();
+    const buttonData = event?.data?.resolved?.button_data;
+    const identity = { accountId, senderId };
+    const resolved = marketTrendInteractions.acquire(buttonData, identity);
+    if (!resolved.matched) return false;
+    void Promise.resolve(acknowledge(0)).catch(() => {
+      api.logger.warn?.('Warframe market trend interaction ACK failed');
+    });
+    void (async () => {
+      const ctx = { accountId, senderId, conversationId: senderId };
+      const ingressEvent = {
+        channel: 'qqbot', content: resolved.ok ? `wm ${resolved.query} 走势` : '',
+        conversationId: senderId, senderId, isGroup: false,
+      };
+      if (!resolved.ok) {
+        await sendDirectQQReply(api, ingressEvent, ctx, {
+          text: resolved.reason === 'actor-mismatch'
+            ? '这个走势按钮不属于当前玩家。'
+            : resolved.reason === 'busy'
+              ? '走势图正在生成，请稍候。'
+              : '这个走势按钮已失效，请重新查价。',
+          isError: true,
+        });
+        return;
+      }
+      try {
+        const reply = await handleFastCommand(api, ingressEvent, 'qq-market-interaction');
+        if (!reply) throw new Error('trend interaction produced no reply');
+        await sendDirectQQReply(api, ingressEvent, ctx, reply);
+      } finally {
+        marketTrendInteractions.release(buttonData, identity);
+      }
+    })().catch((error) => {
+      api.logger.error(`Warframe market trend interaction failed: ${String(error)}`);
+    });
+    return true;
+  };
+  (globalThis as any)[QQ_MARKET_INTERACTION_BRIDGE] = bridge;
+  return () => {
+    if ((globalThis as any)[QQ_MARKET_INTERACTION_BRIDGE] === bridge) delete (globalThis as any)[QQ_MARKET_INTERACTION_BRIDGE];
+  };
 }
 
 async function runWishlistIngressUseCase(api: any, event: any, ctx: any, source: string): Promise<any> {
@@ -1314,11 +1406,13 @@ export default definePluginEntry({
   name: 'Warframe Fast Commands',
   description: 'Read-only Warframe market, relic, fissure, local account snapshot and persistent subscription commands for QQ.',
   register(api) {
+    const removeMarketTrendInteractionBridge = installMarketTrendInteractionBridge(api);
     api.registerTool((ctx) => createWarframeTool(api, ctx), { name: 'warframe_assistant' });
     api.on('gateway_start', async () => {
       await startWishlistGateway(api);
     });
     api.on('gateway_stop', async () => {
+      removeMarketTrendInteractionBridge();
       await stopWishlistGateway();
     });
     // 对时效/订阅故障问句做每轮确定性约束。只注入“必须走哪类工具”，
@@ -1353,8 +1447,9 @@ export default definePluginEntry({
     api.on('before_dispatch', async (event, ctx) => {
       const content = String(event.content || event.body || '');
       if (!isQQChannel(event.channel)) return;
+      const marketCardCommand = parseMarketCardPreferenceCommand(content);
       // 非严格命令不在 ingress 猜意图，完整放行给模型调用 warframe_assistant。
-      if (!isShortcut(content) && !isSubscriptionCommand(content)) return;
+      if (!marketCardCommand && !isShortcut(content) && !isSubscriptionCommand(content)) return;
       api.logger.info(`Warframe before_dispatch matched: ${content.trim()}`);
       try {
         const ingressEvent = {
@@ -1367,6 +1462,12 @@ export default definePluginEntry({
           isGroup: Boolean(event.isGroup || agentContextIsGroup(ctx)),
           messageId: event.replyToId || ctx.replyToId,
         };
+        if (marketCardCommand) {
+          const reply = await marketCardPreferenceReply(api, ingressEvent, ctx, marketCardCommand);
+          await sendDirectQQReply(api, event, ctx, reply);
+          api.logger.info('Warframe market card preference updated before model');
+          return { handled: true };
+        }
         if (isWishlistCommand(content)) {
           await runWishlistIngressUseCase(api, ingressEvent, ctx, 'before_dispatch');
           api.logger.info(`Warframe wishlist delivered before model: ${content.trim()}`);
@@ -1388,6 +1489,18 @@ export default definePluginEntry({
     }, { priority: 2000, timeoutMs: 50_000 });
 
     api.on('inbound_claim', async (event) => {
+      const marketCardCommand = isQQChannel(event.channel)
+        ? parseMarketCardPreferenceCommand(event.content)
+        : null;
+      if (marketCardCommand) {
+        try {
+          const reply = await marketCardPreferenceReply(api, event, event, marketCardCommand);
+          return { handled: true, reply };
+        } catch (error) {
+          api.logger.error(`Warframe market card preference failed closed: ${String(error)}`);
+          return { handled: true, reply: { text: 'wm 卡片设置暂时无法更新，请稍后重试。', isError: true } };
+        }
+      }
       if (isQQChannel(event.channel) && isWishlistCommand(event.content)) {
         try {
           await runWishlistIngressUseCase(api, event, event, 'inbound_claim');
@@ -1412,7 +1525,8 @@ export default definePluginEntry({
     api.on('before_agent_reply', async (event, ctx) => {
       const channel = ctx.messageProvider || ctx.channel;
       const content = String(event.cleanedBody || '');
-      if (!isShortcut(content) && !isSubscriptionCommand(content)) return;
+      const marketCardCommand = isQQChannel(channel) ? parseMarketCardPreferenceCommand(content) : null;
+      if (!marketCardCommand && !isShortcut(content) && !isSubscriptionCommand(content)) return;
       api.logger.info(
         `Warframe before_agent_reply matched: channel=${String(channel || 'unknown')} command=${content.trim()}`,
       );
@@ -1425,6 +1539,15 @@ export default definePluginEntry({
         senderUsername: ctx.channelContext?.sender?.username,
         isGroup: agentContextIsGroup(ctx),
       };
+      if (marketCardCommand) {
+        try {
+          const reply = await marketCardPreferenceReply(api, ingressEvent, ctx, marketCardCommand);
+          return { handled: true, reply, reason: 'warframe-market-card-preference' };
+        } catch (error) {
+          api.logger.error(`Warframe market card preference before_agent_reply failed closed: ${String(error)}`);
+          return { handled: true, reply: { text: 'wm 卡片设置暂时无法更新，请稍后重试。', isError: true }, reason: 'warframe-market-card-preference-error' };
+        }
+      }
       if (isWishlistCommand(content)) {
         try {
           await runWishlistIngressUseCase(api, ingressEvent, ctx, 'before_agent_reply');

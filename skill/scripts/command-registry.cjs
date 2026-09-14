@@ -49,6 +49,28 @@ const COMMAND_REGISTRY = freeze([
     ],
   }),
   command({
+    commandId: 'market-card-preference',
+    canonicalSyntax: 'wm卡片 <开|关|状态>',
+    aliases: ['wm卡片'],
+    argumentSchema: { type: 'enum', required: false, values: ['开', '关', '状态'] },
+    privacyScope: 'userPrivate',
+    fastPath: true,
+    modelCallable: false,
+    executor: 'extension.marketCardPreference',
+    helpSectionId: 'market',
+    helpTitle: '私聊单条选项卡',
+    helpSummary: '按玩家开启或关闭图片、卖家和按钮合并显示',
+    helpExamples: [
+      { command: 'wm卡片 开', description: '私聊查价改为单条选项卡' },
+      { command: 'wm卡片 关', description: '恢复兼容的分开发送' },
+      { command: 'wm卡片 状态', description: '查看当前设置' },
+    ],
+    nextActions: ['wm <物品>'],
+    matchers: [
+      { routes: ['shortcut-gate'], kind: 'regex', pattern: '^wm\\s*卡片(?:\\s+(?:开|关|状态))?$', flags: 'iu' },
+    ],
+  }),
+  command({
     commandId: 'market',
     canonicalSyntax: 'wm <物品> [满级|N级]',
     aliases: ['wm'],

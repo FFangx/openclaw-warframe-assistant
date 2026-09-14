@@ -44,11 +44,17 @@ test('wm main flow retries a transient detail timeout and returns current orders
       return json({ data: detail });
     }
     if (value.includes('/v2/orders/item/synthetic_arcane/top')) return json({ data: orders });
-    if (value.includes('/v1/items/synthetic_arcane/statistics')) return json({ payload: { statistics_closed: { '90days': [
-      { datetime: '2026-09-11T00:00:00.000Z', median: 11, volume: 2, mod_rank: 5 },
-      { datetime: '2026-09-12T00:00:00.000Z', median: 12, volume: 3, mod_rank: 5 },
-      { datetime: '2026-09-13T00:00:00.000Z', median: 13, volume: 4, mod_rank: 5 },
-    ] } } });
+    if (value.includes('/v1/items/synthetic_arcane/statistics')) return json({ payload: { statistics_closed: {
+      '48hours': [
+        { datetime: '2026-09-13T01:00:00.000Z', avg_price: 12, median: 11, volume: 2, mod_rank: 5 },
+        { datetime: '2026-09-13T02:00:00.000Z', avg_price: 14, median: 13, volume: 3, mod_rank: 5 },
+      ],
+      '90days': [
+        { datetime: '2026-09-11T00:00:00.000Z', avg_price: 11.5, median: 11, volume: 2, mod_rank: 5 },
+        { datetime: '2026-09-12T00:00:00.000Z', avg_price: 12.5, median: 12, volume: 3, mod_rank: 5 },
+        { datetime: '2026-09-13T00:00:00.000Z', avg_price: 13.5, median: 13, volume: 4, mod_rank: 5 },
+      ],
+    } } });
     throw new Error(`unexpected URL ${value}`);
   };
 
@@ -67,6 +73,9 @@ test('wm main flow retries a transient detail timeout and returns current orders
   assert.equal(trend.viewMode, 'trend');
   assert.equal(trend.marketQuery, '合成赋能 满级');
   assert.deepEqual(trend.trendSeries.map((point) => point.median), [11, 12, 13]);
+  assert.deepEqual(trend.trendSeries.map((point) => point.average), [11.5, 12.5, 13.5]);
+  assert.deepEqual(trend.trendStats.recent48, { volume: 5, average: 13.2, median: 13 });
+  assert.deepEqual(trend.trendStats.days90, { volume: 9, average: 12.7, median: 12 });
 });
 
 test('wm order failures open an endpoint circuit and expose a sanitized offline diagnostic', async () => {

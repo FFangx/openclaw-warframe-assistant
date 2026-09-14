@@ -2,18 +2,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { readdir, readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
+import { uploadEphemeralR2Image } from './ephemeral-r2-image.mjs';
+import { marketTrendInteractions } from './qq-market-trend-interactions.mjs';
 
 const QQBOT_PACKAGE_PREFIX = 'openclaw-qqbot-';
-
-function shortenLabel(value, max = 10) {
-  const chars = [...String(value || '')];
-  return chars.length <= max ? chars.join('') : `${chars.slice(0, Math.max(1, max - 1)).join('')}…`;
-}
 
 function commandButton(id, label, data, enter) {
   return {
     id,
-    render_data: { label: shortenLabel(label), visited_label: shortenLabel(label), style: 0 },
+    render_data: { label: String(label), visited_label: String(label), style: 1 },
     action: {
       type: 2,
       permission: { type: 2 },
@@ -24,7 +21,20 @@ function commandButton(id, label, data, enter) {
   };
 }
 
-export function buildMarketKeyboard(data) {
+function callbackButton(id, label, data) {
+  return {
+    id,
+    render_data: { label: String(label), visited_label: String(label), style: 1 },
+    action: {
+      type: 1,
+      permission: { type: 2 },
+      data: String(data),
+      unsupport_tips: '请升级 QQ 后重试',
+    },
+  };
+}
+
+export function buildMarketKeyboard(data, options = {}) {
   if (!data?.ok || data.kind !== 'market' || data.viewMode === 'trend') return null;
   const whispers = Array.isArray(data.contactTemplates) ? data.contactTemplates.filter(Boolean).slice(0, 5) : [];
   const sellerButtons = whispers.slice(1).map((whisper, index) => commandButton(
@@ -37,7 +47,10 @@ export function buildMarketKeyboard(data) {
   if (!query) return null;
   const rows = [];
   if (sellerButtons.length) rows.push({ buttons: sellerButtons });
-  rows.push({ buttons: [commandButton('wm-trend', `走势 ${data.item?.zhName || data.item?.name || ''}`, `wm ${query} 走势`, true)] });
+  const trendButton = options.trendCallbackData
+    ? callbackButton('wm-trend', `走势 ${data.item?.zhName || data.item?.name || ''}`, options.trendCallbackData)
+    : commandButton('wm-trend', `走势 ${data.item?.zhName || data.item?.name || ''}`, `wm ${query} 走势`, true);
+  rows.push({ buttons: [trendButton] });
   return { content: { rows } };
 }
 
@@ -73,10 +86,16 @@ async function loadNativeSender(openclawHome) {
 }
 
 export async function sendMarketKeyboard(options) {
-  const keyboard = buildMarketKeyboard(options.data);
-  if (!keyboard) return { sent: false, reason: 'not-applicable' };
   const match = String(options.target || '').match(/^qqbot:c2c:([^:]+)$/iu);
   if (!match) return { sent: false, reason: 'not-c2c' };
+  const query = String(options.data?.marketQuery || options.data?.item?.zhName || options.data?.item?.name || '').trim();
+  const trendCallbackData = marketTrendInteractions.register({
+    accountId: options.accountId,
+    senderId: match[1],
+    query,
+  });
+  const keyboard = buildMarketKeyboard(options.data, { trendCallbackData });
+  if (!keyboard) return { sent: false, reason: 'not-applicable' };
   const creds = qqbotConfig(options.cfg, options.accountId);
   const configuredHome = options.openclawHome || process.env.OPENCLAW_HOME || os.homedir();
   const stateDir = path.basename(configuredHome).toLowerCase() === '.openclaw'
@@ -84,9 +103,31 @@ export async function sendMarketKeyboard(options) {
     : path.join(configuredHome, '.openclaw');
   const sender = options.loadSender ? await options.loadSender() : await loadNativeSender(stateDir);
   const messageApi = sender.getMessageApi(creds.appId);
-  const result = await messageApi.sendMessage('c2c', match[1], '可选操作', creds, {
-    ...(options.replyToId ? { msgId: String(options.replyToId) } : {}),
-    inlineKeyboard: keyboard,
-  });
+  let result;
+  if (options.mediaUrl) {
+    if (typeof messageApi?.client?.request !== 'function' || typeof messageApi?.tokenManager?.getAccessToken !== 'function') {
+      throw new Error('QQBot native Markdown sender is unavailable');
+    }
+    const targetId = match[1];
+    const token = await messageApi.tokenManager.getAccessToken(creds.appId, creds.clientSecret);
+    const uploaded = options.uploadImage
+      ? await options.uploadImage(options.mediaUrl)
+      : await uploadEphemeralR2Image(options.mediaUrl);
+    if (!uploaded?.url) throw new Error('Warframe ephemeral image upload did not return a URL');
+    const markdown = `![Warframe Market](${uploaded.url})\n\n${String(options.content || '')}`.trim();
+    const body = {
+      msg_type: 2,
+      markdown: { content: markdown },
+      keyboard,
+      msg_seq: Math.floor(Math.random() * 65536),
+      ...(options.replyToId ? { msg_id: String(options.replyToId) } : {}),
+    };
+    result = await messageApi.client.request(token, 'POST', `/v2/users/${encodeURIComponent(targetId)}/messages`, body);
+  } else {
+    result = await messageApi.sendMessage('c2c', match[1], '可选操作', creds, {
+      ...(options.replyToId ? { msgId: String(options.replyToId) } : {}),
+      inlineKeyboard: keyboard,
+    });
+  }
   return { sent: true, messageId: result?.id || result?.message_id || '', version: sender.version || '' };
 }
