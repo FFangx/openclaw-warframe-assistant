@@ -445,8 +445,57 @@ export async function resolveCalendarCoverage(upgradePath) {
   return hit ? { via: 'community', ...hit } : null;
 }
 
+// 每日维护任务在读取 inbox 前主动扫描当前整季日历。过去只有用户实际打开「周常」卡时
+// 才会入队，若每日 AI 任务刚跑完，新增益会带着占位显示近 24 小时。扫描只读取公开
+// world state，不碰个人快照；已被静态/社区/学习词典完整覆盖的路径不会重复入队。
+export async function scanCurrentCalendarUpgrades(options = {}) {
+  const loadState = options.loadWorldState || (async () => {
+    const { loadWorldState } = await import('./worldstate-source.mjs');
+    return loadWorldState('pc');
+  });
+  const state = options.worldState || await loadState();
+  const days = Array.isArray(state?.calendar?.days) ? state.calendar.days : [];
+  if (!days.length) return { ok: false, error: '当前公开世界状态没有可扫描的 1999 日历' };
+
+  const coverageResolver = options.resolveCoverage || resolveCalendarCoverage;
+  const learnedEntries = options.learnedEntries || await getLearnedCalendarUpgradeEntries();
+  const candidates = new Map();
+  for (const day of days) {
+    for (const event of day?.events || []) {
+      if (event?.type !== 'Override') continue;
+      const rawTitle = normalizeEntryText(event?.upgrade?.title || '');
+      if (!rawTitle) continue;
+      const upgradePath = rawTitle.includes('/') ? rawTitle : `/Lotus/Upgrades/Calendar/${rawTitle}`;
+      const key = normalizeKey(upgradePath);
+      if (!candidates.has(key)) {
+        candidates.set(key, {
+          path: upgradePath,
+          englishName: rawTitle.includes('/') ? rawTitle.split('/').pop() : rawTitle,
+          englishDesc: normalizeEntryText(event?.upgrade?.description || ''),
+        });
+      }
+    }
+  }
+
+  let queued = 0;
+  let covered = 0;
+  for (const [key, candidate] of candidates) {
+    const trusted = await Promise.resolve().then(() => coverageResolver(candidate.path)).catch(() => null);
+    const learned = learnedEntries.get(key);
+    if ((trusted?.name && trusted?.desc) || (learned?.name && learned?.desc)) {
+      covered += 1;
+      continue;
+    }
+    await queuePendingCalendarUpgrade(candidate.path, candidate);
+    queued += 1;
+  }
+  await flushCalendarQueues();
+  return { ok: true, scanned: candidates.size, queued, covered };
+}
+
 async function runCli([command, ...rest]) {
   const args = parseCliArgs(rest);
+  if (command === 'scan') return scanCurrentCalendarUpgrades();
   if (command === 'inbox') {
     const items = await readPendingCalendarUpgrades();
     return { ok: true, count: items.length, items: items.map((item) => ({
@@ -469,7 +518,7 @@ async function runCli([command, ...rest]) {
     const removed = await removePendingCalendarUpgrade(args.path);
     return { ok: true, removed, path: normalizeKey(args.path), reason: String(args.reason || '') || null };
   }
-  return { ok: false, error: '用法：node calendar-upgrade-fallback.mjs <inbox|learn|dismiss> [--path X --name N --desc D --source S --provisional true --english-name EN --english-desc ED --evidence-url URL --reason R]' };
+  return { ok: false, error: '用法：node calendar-upgrade-fallback.mjs <scan|inbox|learn|dismiss> [--path X --name N --desc D --source S --provisional true --english-name EN --english-desc ED --evidence-url URL --reason R]' };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -14,7 +14,7 @@ process.env.WARFRAME_DATA_CACHE_DIR = cacheDir;
 const {
   CALENDAR_UPGRADE_SEEDS, clearPendingCalendarUpgrades, flushCalendarQueues,
   getLearnedCalendarUpgradeEntries, learnCalendarUpgradeVerified, queuePendingCalendarUpgrade,
-  readPendingCalendarUpgrades, removePendingCalendarUpgrade, resolveCalendarCoverage,
+  readPendingCalendarUpgrades, removePendingCalendarUpgrade, resolveCalendarCoverage, scanCurrentCalendarUpgrades,
 } = await import('./calendar-upgrade-fallback.mjs');
 
 const execFileAsync = promisify(execFile);
@@ -77,6 +77,35 @@ test('未知日历增益路径进 inbox：去重累计、非路径键不入队�
   assert.equal(second.removedFromInbox, false); // 已不在 inbox，静默幂等
   await clearPendingCalendarUpgrades();
   await flushCalendarQueues();
+});
+
+test('每日维护先主动扫描整季日历，未知项在用户打开周常前进入 inbox', async () => {
+  await clearPendingCalendarUpgrades();
+  const result = await scanCurrentCalendarUpgrades({
+    worldState: {
+      calendar: {
+        days: [
+          { events: [
+            { type: 'Override', upgrade: { title: 'ProactiveUnknown', description: 'Reviewed English effect.' } },
+            { type: 'Override', upgrade: { title: 'AlreadyCovered' } },
+          ] },
+          { events: [{ type: 'Override', upgrade: { title: 'ProactiveUnknown' } }] },
+        ],
+      },
+    },
+    resolveCoverage: async (upgradePath) => upgradePath.endsWith('/AlreadyCovered')
+      ? { via: 'community', name: '已收录增益', desc: '已收录效果。' }
+      : null,
+    learnedEntries: new Map(),
+  });
+  assert.deepEqual(result, { ok: true, scanned: 2, queued: 1, covered: 1 });
+  const pending = await readPendingCalendarUpgrades();
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].path, '/lotus/upgrades/calendar/proactiveunknown');
+  assert.equal(pending[0].englishName, 'ProactiveUnknown');
+  assert.equal(pending[0].englishDesc, 'Reviewed English effect.');
+  assert.equal(pending[0].count, 1, '整季重复出现的同一路径每次扫描只入队一次');
+  await clearPendingCalendarUpgrades();
 });
 
 test('learn 拒绝夹带英文的译名与英文为主的效果说明，dismiss 干净出队', async () => {

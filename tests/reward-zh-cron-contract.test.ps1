@@ -66,6 +66,7 @@ if ($null -ne $job) {
   Assert-Contains 'message: write failure keeps inbox for retry' $message '写入失败'
   # --- 1999 日历增益查证闭环（2026-08-27 扩展）---
   Assert-Contains 'message: calendar fallback script' $message 'calendar-upgrade-fallback.mjs'
+  Assert-Contains 'message: proactive calendar scan' $message 'calendar-upgrade-fallback.mjs scan'
   Assert-Contains 'message: calendar reads its own inbox first' $message 'calendar-upgrade-fallback.mjs inbox'
   Assert-Contains 'message: calendar learn writes name+effect+source' $message '--desc'
   Assert-Contains 'message: calendar learn uses full path key verbatim' $message '--path'
