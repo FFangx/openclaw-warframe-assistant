@@ -430,7 +430,10 @@ function pickOrders(orders, direction = 'sell') {
 }
 
 async function queryMarket(rawQuery, platform = DEFAULT_PLATFORM, crossplay = DEFAULT_CROSSPLAY) {
-  const rankQuery = parseMarketRankQuery(rawQuery);
+  const trendMatch = String(rawQuery || '').trim().match(/^(.+?)\s+走势$/u);
+  const marketQuery = String(trendMatch?.[1] || rawQuery || '').trim();
+  const viewMode = trendMatch ? 'trend' : 'quote';
+  const rankQuery = parseMarketRankQuery(marketQuery);
   // Excalibur 全系列不可交易（Prime 创始人独占，Umbra 剧情获取），不直判会被模糊匹配撞到 Caliban
   if (/excalibur/iu.test(expandItemQuery(rankQuery.itemQuery))) {
     return {
@@ -536,11 +539,18 @@ async function queryMarket(rawQuery, platform = DEFAULT_PLATFORM, crossplay = DE
 
   // 90 天真实成交统计（网站图表同源）：中位价/日均成交量/当前卖价偏离；按查询等级过滤，失败静默降级
   let stats90 = null;
+  let trendSeries = [];
   try {
     const statsResponse = await getJson(`${MARKET_BASE}/v1/items/${resolved.match.slug}/statistics`, headers);
     const closed = statsResponse?.payload?.statistics_closed?.['90days'] || [];
     let rows = closed.filter((row) => (selectedRank != null ? row.mod_rank === selectedRank : row.mod_rank == null));
     if (!rows.length) rows = closed.filter((row) => (row.mod_rank ?? 0) === (selectedRank ?? 0));
+    trendSeries = rows.map((row) => ({
+      at: row.datetime || row.created_at || row.date || null,
+      median: Number(row.median),
+      volume: Number(row.volume) || 0,
+    })).filter((row) => row.at && Number.isFinite(row.median))
+      .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
     if (rows.length >= 3) {
       const medians = rows.map((row) => Number(row.median)).filter(Number.isFinite).sort((a, b) => a - b);
       const median = medians[Math.floor(medians.length / 2)];
@@ -621,8 +631,12 @@ async function queryMarket(rawQuery, platform = DEFAULT_PLATFORM, crossplay = DE
     sell,
     buy,
     stats90,
+    trendSeries,
     setParts,
+    viewMode,
+    marketQuery,
     contactTemplate: buildWhisper(sell[0]),
+    contactTemplates: sell.map(buildWhisper).filter(Boolean),
   };
 }
 
@@ -1323,6 +1337,48 @@ function buildMarketCard(data) {
   return { html: cardDocument(content, height), width: 600, height, key: `market-v11-${item.slug}-${stats ? 's' : 'ns'}-${item.iconDataUri ? 'i' : 'x'}${effectLines.length}e${effRows}-r${sellCount}${buyCount}-sp${setParts.length}.${priced.length}` };
 }
 
+function buildMarketTrendCard(data) {
+  const item = data.item || {};
+  const points = (Array.isArray(data.trendSeries) ? data.trendSeries : []).slice(-90);
+  const width = 600;
+  const height = 414;
+  const svgHeight = 286;
+  const left = 54;
+  const right = 24;
+  const top = 18;
+  const bottom = 45;
+  const chartW = width - left - right;
+  const chartH = svgHeight - top - bottom;
+  const values = points.map((point) => Number(point.median)).filter(Number.isFinite);
+  const rawMin = values.length ? Math.min(...values) : 0;
+  const rawMax = values.length ? Math.max(...values) : 1;
+  const pad = Math.max(1, (rawMax - rawMin) * 0.12);
+  const min = Math.max(0, rawMin - pad);
+  const max = rawMax + pad;
+  const span = Math.max(1, max - min);
+  const xy = points.map((point, index) => ({
+    x: left + (points.length <= 1 ? chartW / 2 : (index / (points.length - 1)) * chartW),
+    y: top + chartH - ((Number(point.median) - min) / span) * chartH,
+  }));
+  const polyline = xy.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(' ');
+  const area = xy.length ? `${left},${top + chartH} ${polyline} ${left + chartW},${top + chartH}` : '';
+  const grid = [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+    const y = top + chartH * ratio;
+    const price = Math.round((max - span * ratio) * 10) / 10;
+    return `<line x1="${left}" y1="${y}" x2="${left + chartW}" y2="${y}" stroke="#414650" stroke-width="1"/><text x="${left - 9}" y="${y + 4}" fill="#9aa3ad" font-size="11" text-anchor="end">${escapeHtml(price)}</text>`;
+  }).join('');
+  const firstDate = points[0]?.at ? new Date(points[0].at).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }) : '—';
+  const lastDate = points.at(-1)?.at ? new Date(points.at(-1).at).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }) : '—';
+  const latest = points.at(-1)?.median;
+  const totalVolume = points.reduce((sum, point) => sum + (Number(point.volume) || 0), 0);
+  const chart = points.length >= 2
+    ? `<svg width="600" height="${svgHeight}" viewBox="0 0 600 ${svgHeight}" style="display:block"><defs><linearGradient id="trend-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#63d8b1" stop-opacity=".34"/><stop offset="1" stop-color="#63d8b1" stop-opacity="0"/></linearGradient></defs>${grid}<polygon points="${area}" fill="url(#trend-fill)"/><polyline points="${polyline}" fill="none" stroke="#73e0b9" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/><circle cx="${xy.at(-1).x}" cy="${xy.at(-1).y}" r="5" fill="#ff87b4" stroke="#25282e" stroke-width="2"/><text x="${left}" y="${top + chartH + 28}" fill="#9aa3ad" font-size="11">${escapeHtml(firstDate)}</text><text x="${left + chartW}" y="${top + chartH + 28}" fill="#9aa3ad" font-size="11" text-anchor="end">${escapeHtml(lastDate)}</text></svg>`
+    : `<div style="height:286px;display:grid;place-items:center;color:#9aa3ad">近 90 天成交样本不足，暂时无法绘制走势</div>`;
+  const content = `<div class="card"><div class="head" style="height:94px"><div class="eyebrow">星际战甲市场 · 近 90 天成交走势</div><div class="title" style="font-size:25px">${escapeHtml(item.zhName || item.name || '未知物品')}</div><div class="chips"><div class="chip"><small>最新中位</small>${latest == null ? '—' : currency('plat', latest, { size: 12, color: '#ff87b4', weight: 800 })}</div><div class="chip"><small>区间成交</small>${escapeHtml(totalVolume)} 笔</div></div></div>${chart}<div class="foot"><span>每日成交中位价 · 非挂单报价</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
+  const seriesKey = points.map((point) => `${point.at}:${point.median}:${point.volume}`).join('|');
+  return { html: cardDocument(content, height), width, height, key: `market-trend-v3-${item.slug}-${createHash('sha1').update(seriesKey).digest('hex').slice(0, 10)}` };
+}
+
 function buildRelicCard(data) {
   const relic = data.relic;
   const rarityLabel = { common: '常见', uncommon: '罕见', rare: '稀有' };
@@ -1632,7 +1688,7 @@ async function renderCard(data, cardDir) {
       if (!data.headIconDataUri) data.headIconDataUri = await primeWarframePartIconDataUri(null, imageTarget);
     } catch { /* 无图降级 */ }
   }
-  const card = data.kind === 'market' ? buildMarketCard(data)
+  const card = data.kind === 'market' ? (data.viewMode === 'trend' ? buildMarketTrendCard(data) : buildMarketCard(data))
     : data.kind === 'help' ? buildHelpCard(data.helpTopic)
       : data.kind === 'relic-farm' ? buildRelicFarmCard(data)
       : data.mode === 'reverse' ? buildRelicReverseCard(data) : buildRelicCard(data);
@@ -1671,6 +1727,7 @@ function compactFollowup(data) {
     return `当前裂缝 ${data.total} 条${filter}`;
   }
   if (data.kind === 'market') {
+    if (data.viewMode === 'trend') return `${data.item?.zhName || data.item?.name || '该物品'}近 90 天成交走势`;
     // 只发纯 /w 模板：插件随图文字只放行 /w 开头的内容，且用户长按复制即可直接粘进游戏
     return data.contactTemplate || null;
   }

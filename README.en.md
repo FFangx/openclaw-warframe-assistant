@@ -49,7 +49,7 @@ Dark cards · official Simplified Chinese terminology · in-game currency icons 
 
 ## What it can do
 
-- **Market prices:** `wm 悟空p` and `wm 赋能充沛 满级` show live warframe.market buy/sell orders, 90-day trade medians, and an in-game whisper template.
+- **Market prices:** `wm 悟空p` and `wm 赋能充沛 满级` show live warframe.market buy/sell orders, 90-day trade medians, and an in-game whisper template. QQ direct messages also offer copy buttons for sellers 2–5 and a closed-trade trend chart.
 - **Relics and acquisition routes:** `遗物 前x1` shows all six rewards and refinement expectations; `遗物 战刃` searches backwards from a reward; `获取 Wukong Prime 系统蓝图` gives a detailed route for one component; and `获取 Caliban p` summarizes all four Warframe components.
 - **World state:** `裂缝` lists normal, Steel Path, and Railjack fissures with speed, comfort, endurance, and bonus-reward labels. `裂缝 九重天` keeps only Void Storms. In an authorized private chat, each mission is paired with a compatible relic from the user's inventory. Arbitration, alerts, invasions, Sorties, Steel Path Incursions, bounties, and Baro Ki'Teer are also covered.
 - **Subscriptions:** fourteen event categories are monitored at their natural refresh boundaries and deduplicated, including fissures, desirable Arbitrations, alerts, bounties, rotations, Baro, local drops, and weekly tasks.

@@ -16,7 +16,11 @@ const item = {
 };
 const detail = { ...item, maxRank: 5, tradingTax: 10_000 };
 const orders = {
-  sell: [{ id: 'sell-1', platinum: 12, quantity: 1, visible: true, user: { ingameName: 'SyntheticSeller', status: 'ingame' } }],
+  sell: [
+    { id: 'sell-1', platinum: 12, quantity: 1, visible: true, user: { ingameName: 'SyntheticSeller', status: 'ingame', locale: 'en' } },
+    { id: 'sell-2', platinum: 13, quantity: 1, visible: true, user: { ingameName: 'SecondSeller', status: 'online', locale: 'en' } },
+    { id: 'sell-3', platinum: 14, quantity: 1, visible: true, user: { ingameName: '第三位卖家', status: 'online', locale: 'zh-hans' } },
+  ],
   buy: [{ id: 'buy-1', platinum: 8, quantity: 1, visible: true, user: { ingameName: 'SyntheticBuyer', status: 'online' } }],
 };
 
@@ -40,7 +44,11 @@ test('wm main flow retries a transient detail timeout and returns current orders
       return json({ data: detail });
     }
     if (value.includes('/v2/orders/item/synthetic_arcane/top')) return json({ data: orders });
-    if (value.includes('/v1/items/synthetic_arcane/statistics')) return json({ payload: { statistics_closed: { '90days': [] } } });
+    if (value.includes('/v1/items/synthetic_arcane/statistics')) return json({ payload: { statistics_closed: { '90days': [
+      { datetime: '2026-09-11T00:00:00.000Z', median: 11, volume: 2, mod_rank: 5 },
+      { datetime: '2026-09-12T00:00:00.000Z', median: 12, volume: 3, mod_rank: 5 },
+      { datetime: '2026-09-13T00:00:00.000Z', median: 13, volume: 4, mod_rank: 5 },
+    ] } } });
     throw new Error(`unexpected URL ${value}`);
   };
 
@@ -49,6 +57,16 @@ test('wm main flow retries a transient detail timeout and returns current orders
   assert.equal(result.item.rank, 5);
   assert.equal(result.sell[0].platinum, 12);
   assert.equal(detailCalls, 2);
+  assert.equal(result.viewMode, 'quote');
+  assert.equal(result.contactTemplates.length, 3);
+  assert.match(result.contactTemplates[1], /^\/w SecondSeller /u);
+  assert.match(result.contactTemplates[2], /^\/w 第三位卖家 你好/u);
+
+  const trend = await queryMarket('合成赋能 满级 走势');
+  assert.equal(trend.ok, true);
+  assert.equal(trend.viewMode, 'trend');
+  assert.equal(trend.marketQuery, '合成赋能 满级');
+  assert.deepEqual(trend.trendSeries.map((point) => point.median), [11, 12, 13]);
 });
 
 test('wm order failures open an endpoint circuit and expose a sanitized offline diagnostic', async () => {

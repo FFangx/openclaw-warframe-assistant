@@ -16,6 +16,7 @@ import { executeWishlistUseCase, wishlistNeedsImmediateInspection } from './wish
 import { createGatewayWishlistMailer } from './wishlist-gateway-mailer.mjs';
 import { createWishlistGateway } from './wishlist-gateway.mjs';
 import { createWishlistMetrics } from './wishlist-metrics.mjs';
+import { sendMarketKeyboard } from './qq-market-keyboard.mjs';
 
 const execFileAsync = promisify(execFile);
 const pluginDir = path.dirname(fileURLToPath(import.meta.url));
@@ -911,6 +912,19 @@ async function sendDirectQQReply(api: any, event: any, ctx: any, reply: any): Pr
       await recordDelivery(deliveryResultCategory(result));
       deliveryRecorded = true;
       throw new Error(`QQ delivery failed: ${String(result.error)}`);
+    }
+    if (!event.isGroup && reply?.raw?.data?.kind === 'market' && reply.raw.data.viewMode !== 'trend') {
+      try {
+        await sendMarketKeyboard({
+          data: reply.raw.data,
+          cfg: api.config,
+          accountId: ctx.accountId,
+          target,
+          replyToId: event.replyToId || ctx.replyToId,
+        });
+      } catch {
+        api.logger.warn?.('Warframe market keyboard delivery failed; primary quote remains available');
+      }
     }
     await recordDelivery(deliveryResultCategory(result));
     deliveryRecorded = true;
