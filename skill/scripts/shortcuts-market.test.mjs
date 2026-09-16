@@ -6,7 +6,7 @@ import test from 'node:test';
 
 const cacheDir = await mkdtemp(path.join(os.tmpdir(), 'warframe-market-resilience-'));
 process.env.WARFRAME_DATA_CACHE_DIR = cacheDir;
-const { buildMarketCard, queryMarket } = await import('./shortcuts.mjs');
+const { buildMarketCard, parseShortcutMessage, queryMarket, resolveMarketItem } = await import('./shortcuts.mjs');
 
 const originalFetch = globalThis.fetch;
 const json = (body, status = 200, headers = {}) => new Response(JSON.stringify(body), { status, headers });
@@ -23,6 +23,24 @@ const orders = {
   ],
   buy: [{ id: 'buy-1', platinum: 8, quantity: 1, visible: true, user: { ingameName: 'SyntheticBuyer', status: 'online' } }],
 };
+
+test('bare Warframe names resolve to the unique Prime set without hijacking exact market items', () => {
+  const catalog = [
+    { slug: 'wukong_prime_set', name: 'Wukong Prime Set', zhName: '悟空 Prime 一套', tags: ['warframe', 'prime', 'set'] },
+    { slug: 'wukong_prime_neuroptics_blueprint', name: 'Wukong Prime Neuroptics Blueprint', zhName: '悟空 Prime 头部神经光元蓝图', tags: ['warframe', 'prime', 'component'] },
+    { slug: 'wukong', name: 'Wukong', zhName: '同名普通商品', tags: ['mod'] },
+    { slug: 'rhino_prime_set', name: 'Rhino Prime Set', zhName: '犀牛 Prime 一套', tags: ['warframe', 'prime', 'set'] },
+  ];
+
+  assert.equal(resolveMarketItem(catalog.slice(0, 2), '悟空').match?.slug, 'wukong_prime_set');
+  assert.equal(resolveMarketItem(catalog.slice(0, 2), 'Wukong').match?.slug, 'wukong_prime_set');
+  assert.equal(resolveMarketItem(catalog.slice(0, 2), '猴子').match?.slug, 'wukong_prime_set');
+  assert.notEqual(resolveMarketItem(catalog.slice(0, 2), '悟空头').match?.slug, 'wukong_prime_set');
+  assert.equal(resolveMarketItem(catalog, 'Wukong').match?.slug, 'wukong');
+  assert.equal(resolveMarketItem(catalog, '犀牛').match?.slug, 'rhino_prime_set');
+  assert.deepEqual(parseShortcutMessage('wm悟空'), { command: 'market', query: '悟空' });
+  assert.deepEqual(parseShortcutMessage('wm 悟空'), { command: 'market', query: '悟空' });
+});
 
 test.after(async () => {
   globalThis.fetch = originalFetch;

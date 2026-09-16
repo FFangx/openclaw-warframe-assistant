@@ -30,7 +30,7 @@ test('命令别名只跳转模块，未知主题确定性提示', async () => {
   assert.deepEqual(parseShortcutMessage('帮助 wm')?.query, 'wm');
   const marketText = formatHelp(resolveHelpTopic('wm'));
   const marketCard = buildHelpCard(resolveHelpTopic('wm'));
-  assert.match(marketText, /wm 悟空p/u);
+  assert.match(marketText, /wm 悟空/u);
   assert.match(marketCard.html, /模块帮助 · 查价 · warframe\.market/u);
   assert.doesNotMatch(marketCard.html, /命令帮助/u);
   const denied = await runShortcut('帮助 不存在的主题');

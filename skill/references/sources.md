@@ -77,9 +77,9 @@ Language: zh-hans
 
 - 对 slug、英文名、简体中文官方名进行小写并移除空格、下划线、连字符后匹配
 - 先替换社区昵称，再将中文“套装”或“一套”转换为 `set`
-- 顺序：精确匹配 → Prime/set 推断 → 子串匹配
+- 顺序：普通商品精确匹配 → 唯一 Prime 战甲整套推断 → 子串匹配
 - 去重后只有一个子串候选时自动采用；多个候选时返回列表
-- 验收：`悟空 Prime 套装`、`悟空prime`、`Wukong Prime Set` 都必须解析为 `wukong_prime_set`
+- 验收：`悟空`、`wm悟空`、`悟空 Prime 套装`、`悟空prime`、`Wukong Prime Set` 都必须解析为 `wukong_prime_set`；裸战甲名推断只接受 Market `warframe + prime + set` 标签且不能覆盖普通商品精确命中
 
 ## 常用术语
 

@@ -83,7 +83,7 @@ const COMMAND_REGISTRY = freeze([
     helpTitle: '查价',
     helpSummary: '最低卖单·买单·90天行情',
     helpExamples: [
-      { command: 'wm 悟空p', description: '查看最低卖单、买单和 90 天行情' },
+      { command: 'wm 悟空', description: '裸战甲名自动查询对应 Prime 整套行情' },
       { command: 'wm 赋能充沛 满级', description: '按赋能等级查询对应市场价格' },
       { command: '悟空p多少钱', description: '自然语言问价也会进入同一查价流程' },
     ],

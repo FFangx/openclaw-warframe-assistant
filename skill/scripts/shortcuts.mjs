@@ -278,6 +278,14 @@ function itemSearchFields(item) {
   return [compact(item.slug), compact(item.name), compact(item.zhName || '')].filter(Boolean);
 }
 
+function primeWarframeSetBaseFields(item) {
+  const tags = new Set(item.tags || []);
+  if (!item.slug.endsWith('_prime_set') || !tags.has('warframe') || !tags.has('prime') || !tags.has('set')) return [];
+  return itemSearchFields(item)
+    .map((field) => field.replace(/(?:prime)?(?:set|一套|套装)$/iu, ''))
+    .filter(Boolean);
+}
+
 function dedupeItems(items) {
   return [...new Map(items.map((item) => [item.slug, item])).values()];
 }
@@ -355,6 +363,16 @@ function resolveMarketItem(items, rawQuery, allowFuzzy = true) {
   if (rawCompact && rawCompact !== q) {
     const rawExact = dedupeItems(items.filter((item) => itemSearchFields(item).includes(rawCompact)));
     if (rawExact.length === 1) return { match: rawExact[0], candidates: [], expanded };
+  }
+
+  // Warframe.Market 不流通普通战甲成品。裸战甲名只在它精确对应唯一一个
+  // `warframe + prime + set` 商品时路由到整套；普通商品精确命中仍享有更高优先级。
+  if (!primeQuery && !explicitComponent) {
+    const frameSets = dedupeItems(items.filter((item) => {
+      const bases = primeWarframeSetBaseFields(item);
+      return bases.includes(q) || (rawCompact && bases.includes(rawCompact));
+    }));
+    if (frameSets.length === 1) return { match: frameSets[0], candidates: [], expanded };
   }
 
   const candidates = dedupeItems(items.filter((item) =>
