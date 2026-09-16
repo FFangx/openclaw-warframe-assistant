@@ -691,7 +691,9 @@ export function buildDropsAlertCard(data) {
     const estimateBasis = drop.platinum == null ? ''
       : drop.marketBasis === 'daily-closed' ? '近期成交均价'
         : `${drop.marketBasis === 'today' ? '今日中位' : '90日中位'} · 日均 ${drop.dailyVolume ?? '—'} 笔交易${drop.marketStatsStale ? ' · 缓存' : ''}`;
-    const detailParts = [drop.isRelic ? (drop.vaulted ? '已入库' : '未入库') : '', drop.rarityZh, drop.condition, estimateBasis].filter(Boolean);
+    const rivenSubtype = drop.marketSubtype === 'revealed' ? '已揭示'
+      : drop.marketSubtype === 'unrevealed' ? '未揭示' : '';
+    const detailParts = [drop.isRelic ? (drop.vaulted ? '已入库' : '未入库') : '', drop.rarityZh, rivenSubtype, drop.condition, estimateBasis].filter(Boolean);
     const priceText = drop.platinum != null ? currency('plat', drop.platinum, { size: 11, weight: 800 }) : (drop.tradable ? '暂无可靠估值' : '不可交易');
     // 杜卡德优先占副行（Prime 部件固定价值比浮动市价更可靠），市价退到同行拼接
     const valueParts = [drop.ducats != null ? currency('ducat', drop.ducats * (Number(drop.gained) || 1), { size: 11, weight: 800 }) : '', priceText].filter(Boolean).join(' · ');
@@ -702,7 +704,7 @@ export function buildDropsAlertCard(data) {
   const hasDailyFallback = drops.some((drop) => drop.marketBasis === 'daily-closed');
   const estimateNote = hasDailyFallback ? '估值=成交中位；故障时用近期成交均价' : '估值=可靠成交中位';
   const content = `<div class="card"><div class="header" style="height:86px">${glyphOrIcon(data.glyphDataUri, 'target')}<div style="min-width:0"><div class="kicker">个人掉落 · 本机只读</div><div class="title" style="font-size:23px">入库新掉落 · ${total} 项</div></div><div class="header-meta"><strong style="color:#75dcca">仅用户私聊</strong><span>${escapeHtml(localTime(data.syncedAt))} 同步</span></div></div>${rows || empty}<div class="footer" style="height:34px"><span>${totalDucats ? `本批共可换 <strong style="color:#f0c765">${totalDucats}</strong> 杜卡德 · ` : ''}来源：本机账号快照</span><span>${total > drops.length ? `显示 ${drops.length}/${total} · ` : ''}${estimateNote}</span></div></div>`;
-  const keySeed = `drops-v9|${data.syncedAt}|${data.glyphDataUri ? 'g' : 'x'}|${drops.map((drop) => `${drop.uniqueName}:${drop.gained}:${drop.marketBasis || ''}:${drop.platinum ?? ''}:${drop.isRelic ? (drop.vaulted ? 'v' : 'u') : '-'}`).join('|')}`;
+  const keySeed = `drops-v10|${data.syncedAt}|${data.glyphDataUri ? 'g' : 'x'}|${drops.map((drop) => `${drop.uniqueName}:${drop.gained}:${drop.marketSubtype || '-'}:${drop.marketBasis || ''}:${drop.platinum ?? ''}:${drop.isRelic ? (drop.vaulted ? 'v' : 'u') : '-'}`).join('|')}`;
   return { html: documentShell(content, height), width: 600, height, key: `drops-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 

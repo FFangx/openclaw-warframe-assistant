@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  attachPrices, defaultDeltaLedgerPath, defaultOutboxPath, describeDrop, marketDisplayImagePath,
+  attachPrices, defaultDeltaLedgerPath, defaultOutboxPath, describeDrop, findDropMarketEntry, marketDisplayImagePath,
   monitorDrops, withLock,
 } from './drops.mjs';
 import { targetKeyOf } from './notification-outbox.mjs';
@@ -227,9 +227,9 @@ test('未接挑战与已显示挑战的裂罅都匹配 Veiled 商品，成交查
   const queries = [];
   const attachOptions = {
     slugs, priceIndex: {},
-    quoteFetcher: async (slug, rankZero) => {
+    quoteFetcher: async (slug, filter) => {
       queries.push(slug);
-      assert.equal(rankZero, false);
+      assert.ok(filter?.subtype === 'revealed' || filter?.subtype === 'unrevealed');
       return { platinum: 12, basis: '90days', dailyVolume: 100 };
     },
   };
@@ -237,6 +237,8 @@ test('未接挑战与已显示挑战的裂罅都匹配 Veiled 商品，成交查
   await attachPrices(drops.slice(0, 8), attachOptions);
   await attachPrices(drops.slice(8), attachOptions);
   assert.equal(queries.length, 15);
+  assert.equal(drops.filter((drop) => drop.marketSubtype === 'unrevealed').length, 8);
+  assert.equal(drops.filter((drop) => drop.marketSubtype === 'revealed').length, 7);
   for (const drop of drops) {
     assert.equal(drop.tradable, true);
     assert.equal(drop.platinum, 12);
@@ -244,7 +246,24 @@ test('未接挑战与已显示挑战的裂罅都匹配 Veiled 商品，成交查
   }
   const card = buildDropsAlertCard({ drops, syncedAt: SYNCED_AT });
   assert.doesNotMatch(card.html, /不可交易/u);
+  assert.match(card.html, /未揭示/u);
+  assert.match(card.html, /已揭示/u);
   assert.match(card.html, /90日中位/u);
+});
+
+test('裂罅掉落按 Veiled 商品身份取得 Market 专属图片', () => {
+  const entry = {
+    slug: 'pistol_riven_mod_(veiled)',
+    icon: 'items/images/en/pistol_riven_mod_(veiled).hash.png',
+    thumb: 'items/images/en/thumbs/pistol_riven_mod_(veiled).hash.128x128.png',
+  };
+  const slugs = new Map([['pistolrivenmod(veiled)', entry]]);
+  const matched = findDropMarketEntry(slugs, {
+    uniqueName: '/Lotus/Upgrades/Mods/Randomized/LotusPistolRandomModRare',
+    englishName: 'Pistol Riven Mod',
+  });
+  assert.equal(matched, entry);
+  assert.equal(marketDisplayImagePath(matched), entry.thumb);
 });
 
 test('两种 Veiled 裂罅统计失败仍保持可交易，未知随机 Mod 不误套商品价', async () => {
@@ -273,8 +292,8 @@ test('两种 Veiled 裂罅统计失败仍保持可交易，未知随机 Mod 不�
     assert.equal(drop.platinum, undefined);
   }
   await attachPrices([raw], { ...options, priceIndex: { 'pistolrivenmod(veiled)': { p0: 9, p0Basis: 'closed' } } });
-  assert.equal(raw.platinum, 9);
-  assert.equal(raw.marketBasis, 'daily-closed');
+  assert.equal(raw.platinum, null);
+  assert.equal(raw.marketBasis, undefined);
 });
 
 test('无精确 Market 命中的 tradable:false 掉落保持不可交易、不查价', async () => {

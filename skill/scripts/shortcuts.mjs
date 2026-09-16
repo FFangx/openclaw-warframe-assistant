@@ -419,6 +419,7 @@ function pickOrders(orders, direction = 'sell') {
     quantity: Number(order.quantity),
     perTrade: order.perTrade == null ? null : Number(order.perTrade),
     rank: order.rank == null ? null : Number(order.rank),
+    subtype: order.subtype === 'revealed' || order.subtype === 'unrevealed' ? order.subtype : null,
     user: order.user?.ingameName || '未知玩家',
     reputation: order.user?.reputation ?? null,
     status: order.user?.status || 'unknown',
@@ -1137,6 +1138,10 @@ function statusLabel(status) {
   return status === 'ingame' ? '游戏中' : status === 'online' ? '在线' : '离线';
 }
 
+function marketSubtypeLabel(subtype) {
+  return subtype === 'revealed' ? '已揭示' : subtype === 'unrevealed' ? '未揭示' : '';
+}
+
 function formatTime(iso) {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return String(iso || '未知');
@@ -1294,7 +1299,7 @@ function cardDocument(content, height, width = 600) {
   </style></head><body>${content}</body></html>`;
 }
 
-function buildMarketCard(data) {
+export function buildMarketCard(data) {
   const item = data.item;
   const ranked = item.rank != null;
   // 词条效果只对 MOD/赋能上卡（tags 判定，flavor 介绍文不上）：+/- 行优先；赋能句式描述按句号拆条
@@ -1314,8 +1319,12 @@ function buildMarketCard(data) {
   };
   const sellerPriceWidth = priceAnchorWidth(data.sell[0]?.platinum ?? 0, 13);
   const buyerPriceWidth = priceAnchorWidth(data.buy[0]?.platinum ?? 0, 13);
-  const sellerRows = data.sell.slice(0, 5).map((order) => `<tr><td class="name">${escapeHtml(order.user)} <span class="status">${escapeHtml(statusLabel(order.status))}</span></td><td class="rep">${escapeHtml(order.reputation ?? '—')}</td><td class="qty">${escapeHtml(order.quantity)}</td>${rankCell(order)}<td class="price"><span class="market-price-value" style="width:${sellerPriceWidth}">${currency('plat', order.platinum, { size: 13, color: '#ff87b4' })}</span></td></tr>`).join('');
-  const buyerRows = data.buy.slice(0, 3).map((order) => `<tr class="buy"><td class="name">${escapeHtml(order.user)} <span class="status">${escapeHtml(statusLabel(order.status))}</span></td><td class="rep">${escapeHtml(order.reputation ?? '—')}</td><td class="qty">${escapeHtml(order.quantity)}</td>${rankCell(order)}<td class="price"><span class="market-price-value" style="width:${buyerPriceWidth}">${currency('plat', order.platinum, { size: 13, color: '#61e0b5' })}</span></td></tr>`).join('');
+  const subtypeBadge = (order) => {
+    const label = marketSubtypeLabel(order.subtype);
+    return label ? ` <span style="display:inline-block;padding:1px 4px;border-radius:3px;background:rgba(59,172,166,.16);color:#2f7f80;font-size:9px;font-weight:800">${label}</span>` : '';
+  };
+  const sellerRows = data.sell.slice(0, 5).map((order) => `<tr><td class="name">${escapeHtml(order.user)} <span class="status">${escapeHtml(statusLabel(order.status))}</span>${subtypeBadge(order)}</td><td class="rep">${escapeHtml(order.reputation ?? '—')}</td><td class="qty">${escapeHtml(order.quantity)}</td>${rankCell(order)}<td class="price"><span class="market-price-value" style="width:${sellerPriceWidth}">${currency('plat', order.platinum, { size: 13, color: '#ff87b4' })}</span></td></tr>`).join('');
+  const buyerRows = data.buy.slice(0, 3).map((order) => `<tr class="buy"><td class="name">${escapeHtml(order.user)} <span class="status">${escapeHtml(statusLabel(order.status))}</span>${subtypeBadge(order)}</td><td class="rep">${escapeHtml(order.reputation ?? '—')}</td><td class="qty">${escapeHtml(order.quantity)}</td>${rankCell(order)}<td class="price"><span class="market-price-value" style="width:${buyerPriceWidth}">${currency('plat', order.platinum, { size: 13, color: '#61e0b5' })}</span></td></tr>`).join('');
   const columns = ranked
     ? '<col style="width:40%"><col style="width:15%"><col style="width:12%"><col style="width:13%"><col style="width:20%">'
     : '<col style="width:46%"><col style="width:18%"><col style="width:14%"><col style="width:22%">';
@@ -1365,7 +1374,8 @@ function buildMarketCard(data) {
   // chips 收进 flex 流且固定右上（垂直居中时多行词条会撞框，2026-08-06 赋能·速攻实锤）
   const content = `<div class="card"><div class="head" style="height:${headH}px;display:flex;gap:14px;align-items:center">${iconHtml}<div style="min-width:0;flex:1"><div class="eyebrow">星际战甲市场 · 跨平台交易</div><div class="title" style="font-size:${titleSize}px">${escapeHtml(item.zhName)}</div>${effectsHtml}</div><div class="chips" style="position:static;flex:0 0 auto;align-self:flex-start;margin-top:16px"><div class="chip"><small>杜卡德</small>${item.ducats == null ? '—' : currency('ducat', item.ducats, { size: 12, color: '#f3d188', weight: 700 })}</div><div class="chip"><small>交易税</small>${item.tradingTax == null ? '—' : currency('credit', item.tradingTax, { size: 12, color: '#f3d188', weight: 700 })}</div></div></div>${partsBlock}<table><colgroup>${columns}</colgroup><thead class="market-head"><tr><th class="seller-col">卖家</th><th class="rep-col">信誉</th><th class="qty-col">数量</th>${rankHeader}<th class="price-col">价格</th></tr></thead><tbody>${sellerRows || emptySellRow}<tr class="section"><td class="seller-col">买家</td><td class="rep-col">信誉</td><td class="qty-col">数量</td>${ranked ? '<td class="qty-col">等级</td>' : ''}<td class="price-col">价格</td></tr>${buyerRows || emptyBuyRow}</tbody></table>${actions}<div class="foot"><span>${footLeft}</span><span>${escapeHtml(formatTime(data.fetchedAt))}</span></div></div>`;
   // key 带 v9 + 图/词条/行数/散件特征：模板改版必须打散渲染缓存，否则吃陈旧图
-  return { html: cardDocument(content, height), width: 600, height, key: `market-v11-${item.slug}-${stats ? 's' : 'ns'}-${item.iconDataUri ? 'i' : 'x'}${effectLines.length}e${effRows}-r${sellCount}${buyCount}-sp${setParts.length}.${priced.length}` };
+  const subtypeKey = [...data.sell, ...data.buy].map((order) => order.subtype || '-').join('');
+  return { html: cardDocument(content, height), width: 600, height, key: `market-v12-${item.slug}-${stats ? 's' : 'ns'}-${item.iconDataUri ? 'i' : 'x'}${effectLines.length}e${effRows}-r${sellCount}${buyCount}-st${subtypeKey}-sp${setParts.length}.${priced.length}` };
 }
 
 function buildMarketTrendCard(data) {

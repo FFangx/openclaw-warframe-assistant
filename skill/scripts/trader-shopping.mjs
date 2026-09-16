@@ -247,9 +247,16 @@ const statisticRank = (rankFilter) => {
   return rankFilter === true ? 0 : null;
 };
 
+const statisticSubtype = (rankFilter) => {
+  const subtype = rankFilter && typeof rankFilter === 'object' ? String(rankFilter.subtype || '') : '';
+  return subtype === 'revealed' || subtype === 'unrevealed' ? subtype : null;
+};
+
 const validStatisticRows = (rows, rankFilter) => (Array.isArray(rows) ? rows : []).filter((row) => {
   const rank = statisticRank(rankFilter);
+  const subtype = statisticSubtype(rankFilter);
   if (rank != null && Number(row?.mod_rank) !== rank) return false;
+  if (subtype && row?.subtype !== subtype) return false;
   return Number.isFinite(Number(row?.median)) && Number(row?.volume) > 0 && !Number.isNaN(new Date(row?.datetime).getTime());
 });
 

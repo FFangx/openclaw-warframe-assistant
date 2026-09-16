@@ -6,7 +6,7 @@ import test from 'node:test';
 
 const cacheDir = await mkdtemp(path.join(os.tmpdir(), 'warframe-market-resilience-'));
 process.env.WARFRAME_DATA_CACHE_DIR = cacheDir;
-const { queryMarket } = await import('./shortcuts.mjs');
+const { buildMarketCard, queryMarket } = await import('./shortcuts.mjs');
 
 const originalFetch = globalThis.fetch;
 const json = (body, status = 200, headers = {}) => new Response(JSON.stringify(body), { status, headers });
@@ -17,8 +17,8 @@ const item = {
 const detail = { ...item, maxRank: 5, tradingTax: 10_000 };
 const orders = {
   sell: [
-    { id: 'sell-1', platinum: 12, quantity: 1, visible: true, user: { ingameName: 'SyntheticSeller', status: 'ingame', locale: 'en' } },
-    { id: 'sell-2', platinum: 13, quantity: 1, visible: true, user: { ingameName: 'SecondSeller', status: 'online', locale: 'en' } },
+    { id: 'sell-1', platinum: 12, quantity: 1, subtype: 'unrevealed', visible: true, user: { ingameName: 'SyntheticSeller', status: 'ingame', locale: 'en' } },
+    { id: 'sell-2', platinum: 13, quantity: 1, subtype: 'revealed', visible: true, user: { ingameName: 'SecondSeller', status: 'online', locale: 'en' } },
     { id: 'sell-3', platinum: 14, quantity: 1, visible: true, user: { ingameName: '第三位卖家', status: 'online', locale: 'zh-hans' } },
   ],
   buy: [{ id: 'buy-1', platinum: 8, quantity: 1, visible: true, user: { ingameName: 'SyntheticBuyer', status: 'online' } }],
@@ -62,6 +62,11 @@ test('wm main flow retries a transient detail timeout and returns current orders
   assert.equal(result.ok, true);
   assert.equal(result.item.rank, 5);
   assert.equal(result.sell[0].platinum, 12);
+  assert.equal(result.sell[0].subtype, 'unrevealed');
+  assert.equal(result.sell[1].subtype, 'revealed');
+  const card = buildMarketCard(result);
+  assert.match(card.html, /未揭示/u);
+  assert.match(card.html, /已揭示/u);
   assert.equal(detailCalls, 2);
   assert.equal(result.viewMode, 'quote');
   assert.equal(result.contactTemplates.length, 3);

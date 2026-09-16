@@ -143,6 +143,25 @@ test('summarizeTradeStatistics：无有效数据返回 null', () => {
   assert.equal(result, null);
 });
 
+test('summarizeTradeStatistics：裂罅成交只统计指定的揭示状态', () => {
+  const payload = statisticsPayload(
+    [
+      { ...todayRow(2, 8, 12), subtype: 'unrevealed' },
+      { ...todayRow(3, 30, 12), subtype: 'revealed' },
+    ],
+    [
+      { ...dayRow(10, 9, 90), subtype: 'unrevealed' },
+      { ...dayRow(11, 40, 90), subtype: 'revealed' },
+    ],
+  );
+  const unrevealed = summarizeTradeStatistics(payload, { subtype: 'unrevealed' }, now);
+  const revealed = summarizeTradeStatistics(payload, { subtype: 'revealed' }, now);
+  assert.equal(unrevealed.platinum, 8);
+  assert.equal(unrevealed.median90, 9);
+  assert.equal(revealed.platinum, 30);
+  assert.equal(revealed.median90, 40);
+});
+
 test('gradeBaroItem：分级表命中、类型兜底与中文名匹配', async () => {
   const { gradeBaroItem, loadBaroTier } = await import('./trader-shopping.mjs');
   assert.equal(gradeBaroItem({ slug: 'primed_continuity', tradable: true, uniqueName: '/Lotus/Mods/PrimedContinuity', nameEn: 'Primed Continuity' }), 'S');

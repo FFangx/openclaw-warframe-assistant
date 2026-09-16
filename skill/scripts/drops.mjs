@@ -345,6 +345,13 @@ function genericRivenMarketName(drop) {
     : null;
 }
 
+function genericRivenSubtype(drop) {
+  if (drop.marketSubtype === 'revealed' || drop.marketSubtype === 'unrevealed') return drop.marketSubtype;
+  const match = /^\/Lotus\/Upgrades\/Mods\/Randomized\/([^/]+)$/u.exec(drop.uniqueName || '');
+  if (!match || !GENERIC_RIVEN_PATH_TAILS.has(match[1])) return null;
+  return match[1].startsWith('Raw') ? 'unrevealed' : 'revealed';
+}
+
 function findDropMarketEntry(slugs, drop) {
   return findMarketEntry(slugs, genericRivenMarketName(drop) || drop.englishName);
 }
@@ -384,6 +391,7 @@ async function attachPrices(drops, options = {}) {
     if (entry) {
       if (!drop.tradable) drop.tradable = true;
       drop.marketSlug = entry.slug;
+      drop.marketSubtype = genericRivenSubtype(drop);
       // Market 的 zh-hans 名比本地词典更贴近交易场景，命中时优先展示
       if (entry.zhName && drop.displayName.startsWith('未收录')) drop.displayName = entry.zhName;
     }
@@ -399,7 +407,8 @@ async function attachPrices(drops, options = {}) {
     if (!drop.marketSlug) return;
     try {
       // 未开封紫卡成交行没有 mod_rank；按普通 Mod 的 0 级筛选会把全部样本滤掉。
-      const quote = await quoteFetcher(drop.marketSlug, !genericRivenMarketName(drop) && (drop.isMod || drop.isArcane));
+      const subtype = genericRivenSubtype(drop);
+      const quote = await quoteFetcher(drop.marketSlug, subtype ? { subtype } : (drop.isMod || drop.isArcane));
       drop.platinum = quote?.platinum ?? null;
       drop.marketBasis = quote?.basis ?? null;
       drop.dailyVolume = quote?.dailyVolume ?? null;
@@ -411,6 +420,8 @@ async function attachPrices(drops, options = {}) {
   try { priceIndex = await priceIndexPromise; } catch { priceIndex = {}; }
   for (const drop of priceable) {
     if (drop.platinum != null) continue;
+    // 批量成交索引没有 Market subtype 维度，裂罅不能用混合价兜底。
+    if (genericRivenSubtype(drop)) continue;
     const fallback = priceIndex?.[priceIndexKey(genericRivenMarketName(drop) || drop.englishName)];
     // 掉落均为刚入库的 0 级 MOD/赋能；只接受真实 closed 成交行，不拿最低卖单冒充估值。
     if (fallback?.p0Basis !== 'closed' || !Number.isFinite(Number(fallback.p0))) continue;
@@ -793,7 +804,7 @@ async function main() {
 
 export {
   monitorDrops, dropMatches, countInventory, loadCatalog, describeDrop, defaultAlecaDir,
-  marketSlugMap, findMarketEntry, marketDisplayImagePath, marketDisplayImageUrl, attachPrices,
+  marketSlugMap, findMarketEntry, findDropMarketEntry, marketDisplayImagePath, marketDisplayImageUrl, attachPrices,
   withLock, defaultOutboxPath, defaultDeltaLedgerPath,
 };
 
