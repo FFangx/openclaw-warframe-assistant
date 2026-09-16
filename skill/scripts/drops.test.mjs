@@ -204,6 +204,79 @@ test('AlecaFrame tradable:false 假阴性：精确 Market 命中即可交易并�
   assert.equal(drop.displayName, '格拉努之劲敌');
 });
 
+test('未接挑战与已显示挑战的裂罅都匹配 Veiled 商品，成交查询不按等级过滤', async () => {
+  const cases = [
+    ['RawRifleRandomMod', 'Rifle'], ['LotusRifleRandomModRare', 'Rifle'],
+    ['RawShotgunRandomMod', 'Shotgun'], ['LotusShotgunRandomModRare', 'Shotgun'],
+    ['RawPistolRandomMod', 'Pistol'], ['LotusPistolRandomModRare', 'Pistol'],
+    ['RawMeleeRandomMod', 'Melee'], ['PlayerMeleeWeaponRandomModRare', 'Melee'],
+    ['RawModularMeleeRandomMod', 'Zaw'], ['LotusModularMeleeRandomModRare', 'Zaw'],
+    ['RawModularPistolRandomMod', 'Kitgun'], ['LotusModularPistolRandomModRare', 'Kitgun'],
+    ['RawArchgunRandomMod', 'Archgun'], ['LotusArchgunRandomModRare', 'Archgun'],
+    ['RawSentinelWeaponRandomMod', 'Companion Weapon'],
+  ];
+  const drops = cases.map(([tail, name]) => ({
+    uniqueName: `/Lotus/Upgrades/Mods/Randomized/${tail}`,
+    englishName: `${name} Riven Mod`, displayName: `${name} 裂罅 Mod`,
+    gained: 1, tradable: false, isMod: true,
+  }));
+  const slugs = new Map(cases.map(([, name]) => [
+    `${name} Riven Mod (Veiled)`.toLowerCase().replace(/\s+/gu, ''),
+    { slug: `${name.toLowerCase().replace(/ /gu, '_')}_riven_mod_(veiled)` },
+  ]));
+  const queries = [];
+  const attachOptions = {
+    slugs, priceIndex: {},
+    quoteFetcher: async (slug, rankZero) => {
+      queries.push(slug);
+      assert.equal(rankZero, false);
+      return { platinum: 12, basis: '90days', dailyVolume: 100 };
+    },
+  };
+  // 单张卡最多查 12 行；分两批覆盖目录中的全部 15 个路径身份。
+  await attachPrices(drops.slice(0, 8), attachOptions);
+  await attachPrices(drops.slice(8), attachOptions);
+  assert.equal(queries.length, 15);
+  for (const drop of drops) {
+    assert.equal(drop.tradable, true);
+    assert.equal(drop.platinum, 12);
+    assert.match(drop.marketSlug, /_riven_mod_\(veiled\)$/u);
+  }
+  const card = buildDropsAlertCard({ drops, syncedAt: SYNCED_AT });
+  assert.doesNotMatch(card.html, /不可交易/u);
+  assert.match(card.html, /90日中位/u);
+});
+
+test('两种 Veiled 裂罅统计失败仍保持可交易，未知随机 Mod 不误套商品价', async () => {
+  const makeDrop = (tail) => ({
+    uniqueName: `/Lotus/Upgrades/Mods/Randomized/${tail}`,
+    englishName: 'Pistol Riven Mod', displayName: '手枪裂罅 Mod', gained: 1,
+    tradable: false, isMod: true,
+  });
+  const raw = makeDrop('RawPistolRandomMod');
+  const challengeShown = makeDrop('LotusPistolRandomModRare');
+  const unknown = makeDrop('RawUnknownRandomMod');
+  const options = {
+    slugs: new Map([['pistolrivenmod(veiled)', { slug: 'pistol_riven_mod_(veiled)' }]]),
+    quoteFetcher: async () => { throw new Error('offline'); },
+    priceIndex: {},
+  };
+  await attachPrices([raw, challengeShown, unknown], options);
+  for (const drop of [raw, challengeShown]) {
+    assert.equal(drop.tradable, true);
+    assert.equal(drop.platinum, null);
+    assert.equal(drop.marketSlug, 'pistol_riven_mod_(veiled)');
+    assert.match(buildDropsAlertCard({ drops: [drop], syncedAt: SYNCED_AT }).html, /暂无可靠估值/u);
+  }
+  for (const drop of [unknown]) {
+    assert.equal(drop.marketSlug, undefined);
+    assert.equal(drop.platinum, undefined);
+  }
+  await attachPrices([raw], { ...options, priceIndex: { 'pistolrivenmod(veiled)': { p0: 9, p0Basis: 'closed' } } });
+  assert.equal(raw.platinum, 9);
+  assert.equal(raw.marketBasis, 'daily-closed');
+});
+
 test('无精确 Market 命中的 tradable:false 掉落保持不可交易、不查价', async () => {
   const key = (name) => String(name).toLowerCase().replace(/\s+/gu, '');
   const slugs = new Map([[key("Granum's Nemesis"), { slug: 'granums_nemesis', zhName: '格拉努之劲敌' }]]);

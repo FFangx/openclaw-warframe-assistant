@@ -323,6 +323,32 @@ function findMarketEntry(slugs, englishName) {
   return slugs.get(key) || slugs.get(`${key}blueprint`) || null;
 }
 
+// DE 的裂罅有三态：Raw/???（挑战未显示）、Veiled（挑战已显示但未完成）、
+// Unveiled（挑战完成、武器与词条已显示）。前两态都按 Market 的 (Veiled)
+// 普通商品交易。下面只接受本机目录实证的通用类型路径；成品紫卡的价值必须按
+// 武器和词条走拍卖市场，不能仅凭通用英文名套用未开封均价。
+const GENERIC_RIVEN_PATH_TAILS = new Set([
+  'RawRifleRandomMod', 'LotusRifleRandomModRare',
+  'RawShotgunRandomMod', 'LotusShotgunRandomModRare',
+  'RawPistolRandomMod', 'LotusPistolRandomModRare',
+  'RawMeleeRandomMod', 'PlayerMeleeWeaponRandomModRare',
+  'RawModularMeleeRandomMod', 'LotusModularMeleeRandomModRare',
+  'RawModularPistolRandomMod', 'LotusModularPistolRandomModRare',
+  'RawArchgunRandomMod', 'LotusArchgunRandomModRare',
+  'RawSentinelWeaponRandomMod',
+]);
+
+function genericRivenMarketName(drop) {
+  const match = /^\/Lotus\/Upgrades\/Mods\/Randomized\/([^/]+)$/u.exec(drop.uniqueName || '');
+  return match && GENERIC_RIVEN_PATH_TAILS.has(match[1]) && / Riven Mod$/u.test(drop.englishName || '')
+    ? `${drop.englishName} (Veiled)`
+    : null;
+}
+
+function findDropMarketEntry(slugs, drop) {
+  return findMarketEntry(slugs, genericRivenMarketName(drop) || drop.englishName);
+}
+
 async function mapLimit(values, limit, mapper) {
   const results = new Array(values.length);
   let index = 0;
@@ -353,7 +379,7 @@ async function attachPrices(drops, options = {}) {
   // 查价覆盖卡片实际展示的全部行（MAX_CARD_ROWS），其余行不浪费请求。
   const priceable = [];
   for (const drop of drops.filter((drop) => drop.englishName).slice(0, MAX_PRICED_ITEMS)) {
-    const entry = findMarketEntry(slugs, drop.englishName);
+    const entry = findDropMarketEntry(slugs, drop);
     if (!drop.tradable && !entry) continue;
     if (entry) {
       if (!drop.tradable) drop.tradable = true;
@@ -372,7 +398,8 @@ async function attachPrices(drops, options = {}) {
     // 无精确条目的可交易掉落不查行情接口（没有 slug），只走下面真实 closed 成交索引兜底
     if (!drop.marketSlug) return;
     try {
-      const quote = await quoteFetcher(drop.marketSlug, drop.isMod || drop.isArcane);
+      // 未开封紫卡成交行没有 mod_rank；按普通 Mod 的 0 级筛选会把全部样本滤掉。
+      const quote = await quoteFetcher(drop.marketSlug, !genericRivenMarketName(drop) && (drop.isMod || drop.isArcane));
       drop.platinum = quote?.platinum ?? null;
       drop.marketBasis = quote?.basis ?? null;
       drop.dailyVolume = quote?.dailyVolume ?? null;
@@ -384,7 +411,7 @@ async function attachPrices(drops, options = {}) {
   try { priceIndex = await priceIndexPromise; } catch { priceIndex = {}; }
   for (const drop of priceable) {
     if (drop.platinum != null) continue;
-    const fallback = priceIndex?.[priceIndexKey(drop.englishName)];
+    const fallback = priceIndex?.[priceIndexKey(genericRivenMarketName(drop) || drop.englishName)];
     // 掉落均为刚入库的 0 级 MOD/赋能；只接受真实 closed 成交行，不拿最低卖单冒充估值。
     if (fallback?.p0Basis !== 'closed' || !Number.isFinite(Number(fallback.p0))) continue;
     drop.platinum = Number(fallback.p0);
@@ -663,7 +690,7 @@ async function monitorDrops(options = {}) {
         let slugs = null;
         try { slugs = await marketSlugMap(); } catch { slugs = null; }
         await Promise.all(matched.slice(0, MAX_CARD_ROWS).map(async (drop) => {
-          const wmEntry = slugs ? findMarketEntry(slugs, drop.englishName) : null;
+          const wmEntry = slugs ? findDropMarketEntry(slugs, drop) : null;
           drop.iconDataUri = await primeWarframePartIconDataUri(drop.uniqueName, drop.englishName);
           if (!drop.iconDataUri) {
             const marketImageUrl = marketDisplayImageUrl(wmEntry);
