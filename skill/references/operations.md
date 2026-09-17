@@ -19,7 +19,7 @@ SKILL.md 瘦身移入（2026-08-07）。这些规则的执行主体是脚本与 
 ### Warframe.Market 愿望单
 
 - 愿望单使用独立的 `state/warframe-wishlist.json`，仅接受 QQ 私聊；历史群聊愿望保留但不再扫描或操作。账本保存商品、愿望价、等级条件、状态、订单去重 ID，以及命中后最长 1 小时的目标订单跟踪元数据；不保存卖家名，也不登录 Market。
-- Gateway 生命周期内全插件只建立一条公开 `wss://ws.warframe.market/socket` / `wfm` 新订单订阅，并以内存 itemId 索引过滤；新愿望建立、改价、恢复或撤销终止状态后立即执行一次 item top 校准。已有合价卖单时只选当前最低价，补发愿望命中卡；图片、文案与五个 QQ 按钮合并为一条消息，取消只在管理面板提供。
+- Gateway 生命周期内全插件只建立一条公开 `wss://ws.warframe.market/socket` / `wfm` 新订单订阅，并以内存 itemId 索引过滤；新愿望建立、改价、恢复或撤销终止状态后立即执行一次 item top 校准。已有合价卖单时只选当前最低价，补发愿望命中卡；图片、含完整 `/w` 的文案与五个 QQ 按钮合并为一条消息。按钮为查询当前价格、已购、改价、暂停、取消愿望；不再重复提供联系卖家。
 - 每个 QQ 会话另有一条 10 分钟命令型 cron，仅请求该会话当前商品的 `/v2/orders/item/{slug}/top` 做漏单/重连校准；REST 请求起点至少相隔 400ms，低于公开 3 req/s 上限。
 - 新订单按 `platinum / perTrade` 计算单件价格，只匹配可见 sell 单和准确等级。每个愿望只跟踪当前最低价订单；命中后按 10s（0～5m）→30s（5～30m）→2m（30～60m）自适应轮询，最长 1 小时。首次缺失 2 秒后精确复核；只有两次成功缺失才判撤下，429/超时不判撤下。新低价订单切换并重置 1 小时；同订单改价不重置；Market 故障跨过到期点则通知最终状态未知。
 - **主动命中通知（生产 `deliver` 子命令与 Gateway 实时命中）已迁入 R3 共享 Outbox**（`state/warframe-delivery-outbox.json`）：命中结果确定后先原子入队，再提交 wishlist 账本（seenOrderIds/lastMatchAt/calibration/trackedOrders），再在 wishlist 锁外投递。业务键 = 脱敏 targetKey + 稳定「orderIdentity × 命中 wishId 集合」的 SHA-256 语义，REST 与 WS 自动去重；提醒使用 10 分钟业务 TTL，终态立即擦除 payload。私聊 Gateway 用单一 `rich` part 原子承载图片、文案和键盘；一体图片请求失败时只降级为一个文本＋键盘气泡，键盘也失败时再降级为带管理入口的单条文字，禁止重新调用普通媒体发送造成图片/文字分裂。cron 继续兼容 media/text parts。任一目标入队失败不提交 seen；账本已提交但投递失败则下轮先补投 pending。原始 target/seller/owner/order/wish id 不进入业务键原文、墓碑、指标或尝试日志。

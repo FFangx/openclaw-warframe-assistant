@@ -27,19 +27,7 @@ export function buildWishlistKeyboard(result, options = {}) {
   }
   if (!wish) return null;
   const rows = [];
-  if (hit?.order) {
-    const order = hit.order || {};
-    const item = wish.itemName || wish.slug || wish.zhName || '';
-    const rank = order.rank == null ? '' : ` (rank ${order.rank})`;
-    const total = Number.isFinite(Number(order.platinum)) ? Number(order.platinum) : Number(order.unitPrice || 0);
-    const whisper = String(hit.contactTemplate || result.contactTemplate || `/w ${order.seller || ''} Hi! I want to buy: "${item}${rank}" for ${total} platinum. (warframe.market)`).trim();
-    rows.push({ buttons: [
-      whisper ? commandButton('wish-contact', '联系卖家', whisper, false) : null,
-      callback(options, 'query', wish, '查询当前价格', 'wish-query'),
-    ].filter(Boolean) });
-  } else {
-    rows.push({ buttons: [callback(options, 'query', wish, '查询当前价格', 'wish-query')] });
-  }
+  rows.push({ buttons: [callback(options, 'query', wish, '查询当前价格', 'wish-query')] });
   if (result?.command === 'bought') rows.push({ buttons: [callback(options, 'undo_bought', wish, '撤销已购', 'wish-undo-bought')] });
   else if (result?.command === 'cancel') rows.push({ buttons: [callback(options, 'undo_cancel', wish, '撤销取消', 'wish-undo-cancel')] });
   else {
@@ -48,9 +36,9 @@ export function buildWishlistKeyboard(result, options = {}) {
       commandButton('wish-reprice', '改价', `改价 ${wish.id} `, true),
       callback(options, wish.status === 'paused' ? 'resume' : 'pause', wish, wish.status === 'paused' ? '继续' : '暂停', 'wish-toggle'),
     ].filter(Boolean) });
-    // 命中卡严格保持最初冻结的五个操作。QQ 实机在加入第六个按钮后会
-    // 静默丢弃整组 keyboard；取消仍在愿望管理面板中提供。
-    if (!hit?.order) rows.push({ buttons: [callback(options, 'cancel', wish, '取消愿望', 'wish-cancel')] });
+    // /w 已完整出现在命中文案中，不再重复提供“联系卖家”。命中卡与
+    // 管理面板统一为五个操作，并保持 QQ 实机可稳定呈现的数量边界。
+    rows.push({ buttons: [callback(options, 'cancel', wish, '取消愿望', 'wish-cancel')] });
   }
   return { content: { rows: rows.filter((row) => row.buttons.length) } };
 }

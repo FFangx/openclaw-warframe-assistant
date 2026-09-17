@@ -5,12 +5,12 @@ import { createWishlistInteractionStore } from './qq-wishlist-interactions.mjs';
 
 const wish = { id: 'W3K7', zhName: '物品 A', itemName: 'Item A', maxPrice: 20, rankMode: 'exact', rank: 0, status: 'active', updatedAt: '2026-09-17T10:00:00.000Z' };
 
-test('hit keyboard keeps contact, exact-price query and management actions in one message', () => {
+test('hit keyboard avoids the redundant contact action and keeps five management actions', () => {
   const keyboard = buildWishlistKeyboard({ kind: 'wishlist', hits: [{ wish, order: { seller: 'seller', platinum: 18, unitPrice: 18, rank: 0 } }] }, { accountId: 'default', senderId: 'user-a' });
   const labels = keyboard.content.rows.flatMap((row) => row.buttons.map((button) => button.render_data.label));
-  assert.deepEqual(labels, ['联系卖家', '查询当前价格', '已购', '改价', '暂停']);
-  assert.equal(labels.length, 5, 'QQ 命中卡不得加入第六个按钮');
-  assert.equal(keyboard.content.rows[0].buttons[0].action.enter, false);
+  assert.deepEqual(labels, ['查询当前价格', '已购', '改价', '暂停', '取消愿望']);
+  assert.equal(labels.length, 5, 'QQ 命中卡必须保持五个按钮');
+  assert.equal(labels.includes('联系卖家'), false, '/w 文案已经提供联系信息');
 });
 
 test('hit card uses the same one-request Markdown image, text and keyboard contract as wm', async () => {
