@@ -75,7 +75,7 @@ function wishSummaryRow(wish, index) {
 
 function subscriptionLine(data) {
   const wish = data.wish || data;
-  return `<div class="section"><span class="section-badge">${escapeHtml(shortId(wish.id))}</span><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(itemLabel(wish))}${escapeHtml(rankLabel(wish))}</span><small>≤ ${currency('plat', Number(wish.maxPrice) || 0, { size: 10, weight: 850 })}</small></div>
+  return `<div class="section"><span class="section-badge">已保存</span><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(itemLabel(wish))}${escapeHtml(rankLabel(wish))}</span><small>≤ ${currency('plat', Number(wish.maxPrice) || 0, { size: 10, weight: 850 })}</small></div>
     <div style="position:relative;z-index:1;height:84px;display:flex;flex-direction:column;justify-content:center;padding:0 18px;background:rgba(255,255,255,.018)"><div style="font-size:15px;font-weight:800;color:${STATUS[wish.status || 'active']?.color || '#75dcca'}">${escapeHtml(data.message || '愿望单已更新')}</div><div style="margin-top:7px;font-size:11px;color:#9ca7b1">${escapeHtml(data.detail || '发现符合条件的新卖单后立即通知')}</div></div>`;
 }
 
@@ -117,7 +117,7 @@ function hitRow(hit, index) {
   return `<div style="position:relative;z-index:1;height:90px;display:grid;grid-template-columns:32px minmax(0,1fr) 134px;gap:10px;align-items:center;padding:8px 16px;border-bottom:1px solid rgba(240,199,101,.34);background:${index % 2 ? 'rgba(255,255,255,.035)' : 'rgba(255,255,255,.014)'}">
     <div style="width:28px;height:28px;border-radius:50%;display:grid;place-items:center;background:rgba(240,199,101,.16);color:#f0c765;font-size:12px;font-weight:900">${index + 1}</div>
     <div style="min-width:0"><div style="font-size:14px;font-weight:830;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(name)} <span style="font-size:10px;color:#8f9aa6;font-weight:650">${escapeHtml(quantity)}</span></div><div style="margin-top:4px;font-size:10px;color:#9ca7b1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">卖家 ${escapeHtml(seller)} · 状态 ${escapeHtml(sellerStatus)}${order.rank != null ? ` · 等级 ${escapeHtml(order.rank)}` : ''}${ownerText}</div><div style="margin-top:5px;font-size:9px;color:#8ab4f8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">私聊模板见图片下方</div></div>
-    <div style="text-align:right"><div style="font-size:16px;font-weight:900;color:#f0c765">${currency('plat', Number.isFinite(price) ? price : 0, { size: 12, weight: 900 })}<span style="font-size:9px;color:#9ca7b1;font-weight:650"> /件</span></div><div style="margin-top:3px;font-size:10px;color:#8f9aa6">上限 ${Number.isFinite(maxPrice) ? `${escapeHtml(maxPrice)}p` : '—'}</div><div style="margin-top:3px;font-size:10px;color:#8f9aa6">${escapeHtml(shortId(hit.wish?.id || hit.wishId))}</div></div>
+    <div style="text-align:right"><div style="font-size:16px;font-weight:900;color:#f0c765">${currency('plat', Number.isFinite(price) ? price : 0, { size: 12, weight: 900 })}<span style="font-size:9px;color:#9ca7b1;font-weight:650"> /件</span></div><div style="margin-top:3px;font-size:10px;color:#8f9aa6">上限 ${Number.isFinite(maxPrice) ? `${escapeHtml(maxPrice)}p` : '—'}</div><div style="margin-top:3px;font-size:10px;color:#8f9aa6">最长跟踪 1 小时</div></div>
   </div>`;
 }
 
@@ -126,13 +126,10 @@ export function buildWishlistHitCard(data = {}) {
   const hits = Array.isArray(data.hits) ? data.hits : [];
   const shown = hits.slice(0, 12);
   const body = `<div class="section"><span class="section-badge">命中 ${hits.length}</span>符合价格条件的新卖单 <small>${escapeHtml(localTime(data.detectedAt || new Date().toISOString()))}</small></div>${shown.length ? shown.map(hitRow).join('') : '<div style="position:relative;z-index:1;height:72px;display:grid;place-items:center;color:#8995a1;font-size:13px">暂无新命中</div>'}`;
-  const ids = shown.map((hit) => shortId(hit.wish?.id || hit.wishId));
-  const command = ids.length === 1
-    ? `已成功购入发送「已购 ${ids[0]}」，否则无需回复继续监控`
-    : `已成功购入分别发送「已购 ${ids.join('」「已购 ')}」，否则无需回复继续监控`;
+  const command = shown.length === 1 ? '可直接点“联系卖家 / 查询当前价格 / 已购 / 改价 / 暂停”' : '每项都按当前最低价命中；可从愿望单进入对应商品管理';
   const hint = `<div style="position:relative;z-index:1;min-height:52px;padding:11px 16px;display:flex;align-items:center;background:rgba(240,199,101,.10);border-top:1px solid rgba(240,199,101,.36);border-bottom:1px solid rgba(240,199,101,.36);color:#f3d88b;font-size:12px;font-weight:800;line-height:17px">${escapeHtml(command)}</div>`;
   const height = 84 + 30 + Math.max(shown.length, 1) * 90 + 52 + 34;
-  const footer = `<span>命中后不会自动核销 · 订单仅用于本次提醒</span><span>${hits.length > shown.length ? `显示 ${shown.length}/${hits.length}` : '实时监听'}</span>`;
+  const footer = `<span>不自动交易或聊天 · 撤下需二次确认</span><span>${hits.length > shown.length ? `显示 ${shown.length}/${hits.length}` : '持续跟踪'}</span>`;
   return baseCard('hit', '发现符合条件的卖单', '愿望单 · 命中推送', `<strong style="color:#f0c765">${hits.length} 条</strong><span>请手动确认购买</span>`, `${body}${hint}`, footer, height, `v3|${data.detectedAt}|${shown.map((hit) => `${hit.wishId || hit.wish?.id}|${hit.order?.id || hit.orderId}|${hit.order?.unitPrice ?? hit.order?.platinum}`).join('|')}`);
 }
 

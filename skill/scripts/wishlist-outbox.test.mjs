@@ -16,7 +16,7 @@ import {
 } from './wishlist.mjs';
 import { createConcurrencyGate, createTokenBucket, runCoalescedWishlistScan } from './wishlist-protection.mjs';
 
-const IDENTITY = { target: 'qqbot:group:test', ownerId: 'member-a', ownerName: '测试用户' };
+const IDENTITY = { target: 'qqbot:c2c:member-a', ownerId: 'member-a', ownerName: '测试用户' };
 const TARGET_B = 'qqbot:c2c:member-b';
 const CATALOG = [{ id: 'item-foo', slug: 'foo_prime_set', name: 'Foo Prime Set', zhName: '福 Prime 套装' }];
 const SELLER = 'seller-a';

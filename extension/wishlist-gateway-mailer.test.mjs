@@ -32,6 +32,14 @@ test('Gateway adapter mailer：媒体走 sendMedia（text 空）、文字走 sen
   assert.deepEqual(textCalls[0], { ...COMMON, to: TARGET, text: '愿望单命中 1 条新卖单。' });
 });
 
+test('Gateway rich part is delivered as one combined wishlist bubble', async () => {
+  const calls = [];
+  const mailer = createGatewayWishlistMailer(fakeAdapter(), TARGET, { ...COMMON, sendRich: async (payload) => { calls.push(payload); return { messageId: 'rich-1' }; } });
+  const payload = { mediaUrl: 'C:\\cards\\hit.png', text: '命中', hits: [{ wishId: 'W3K7' }] };
+  assert.deepEqual(await mailer({ kind: 'rich', value: JSON.stringify(payload) }), { ok: true, category: null });
+  assert.deepEqual(calls, [payload]);
+});
+
 test('Gateway adapter mailer：adapter 返回 error → provider_rejected；抛异常 → adapter_exception（不保存原始异常）', async () => {
   const mailer = createGatewayWishlistMailer(fakeAdapter({
     sendMedia: async () => ({ error: 'rate limited', messageId: undefined }),
@@ -67,7 +75,7 @@ test('index.ts 合同：愿望命中 Outbox 注入与恢复（服务端类别、
   assert.match(entry, /WISHLIST_OUTBOX_FILE_NAME/u);
   assert.match(entry, /createOutbox\(\{ filePath: path\.resolve\(path\.dirname\(wishlistState\), routing\.outboxFileName\) \}\)/u);
   // live order 路径必须注入 Outbox，账本提交后由注入 mailer 逐 part 持久化（keyPrefix 只投本链）
-  assert.match(entry, /processWishlistLiveOrder\(order, wishlistState, subscriptionCardDir, \{ outbox \}\)/u);
+  assert.match(entry, /processWishlistLiveOrder\(orders, wishlistState, subscriptionCardDir, \{ outbox, richPayload: true \}\)/u);
   assert.match(entry, /await flushWishlistTargetPending\(api, String\(result\.target\)\)/u);
   assert.match(entry, /WISHLIST_KEY_PREFIX/u);
   assert.match(entry, /deliverPending\(\{ target, mailer, keyPrefix: routing\.keyPrefix \}\)/u);
@@ -76,7 +84,7 @@ test('index.ts 合同：愿望命中 Outbox 注入与恢复（服务端类别、
   const startBlock = entry.slice(entry.indexOf('async function startWishlistGateway'), entry.indexOf('async function stopWishlistGateway'));
   assert.ok(startBlock.indexOf('restoreWishlistPending(api)') < startBlock.indexOf('await gateway.start();'), '恢复必须在连接前');
   // 裸循环发送只允许留在交互 follow-up（建立后立即行情卡）路径，live order 路径不得使用
-  const liveBlock = entry.slice(entry.indexOf('processWishlistLiveOrder(order'), entry.indexOf('Warframe wishlist live order failed'));
+  const liveBlock = entry.slice(entry.indexOf('processWishlistLiveOrder(orders'), entry.indexOf('Warframe wishlist live order failed'));
   assert.equal(liveBlock.includes('sendWishlistGatewayResult'), false);
   assert.match(entry, /for \(const delivery of deliveries\) await sendWishlistGatewayResult\(api, delivery\)/u);
   assert.equal(entry.includes('for ${target}'), false, '日志不得包含原始 QQ target');

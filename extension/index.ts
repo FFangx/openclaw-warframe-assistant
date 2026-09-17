@@ -17,6 +17,8 @@ import { createGatewayWishlistMailer } from './wishlist-gateway-mailer.mjs';
 import { createWishlistGateway } from './wishlist-gateway.mjs';
 import { createWishlistMetrics } from './wishlist-metrics.mjs';
 import { sendMarketKeyboard } from './qq-market-keyboard.mjs';
+import { sendWishlistKeyboard } from './qq-wishlist-keyboard.mjs';
+import { wishlistInteractions } from './qq-wishlist-interactions.mjs';
 import { getMarketCardPreference, parseMarketCardPreferenceCommand, setMarketCardPreference } from './qq-market-card-preferences.mjs';
 import { marketTrendInteractions, QQ_MARKET_INTERACTION_BRIDGE } from './qq-market-trend-interactions.mjs';
 
@@ -228,6 +230,8 @@ async function removeWishlistCron(api: any, target: string): Promise<void> {
 // 20～30 秒保护轮询（恢复扫描与保护扫描共用同一单飞执行槽）。
 let wishlistGateway: ReturnType<typeof createWishlistGateway> | null = null;
 let wishlistGatewayRefresh: (() => Promise<void>) | null = null;
+let wishlistTrackingTimer: ReturnType<typeof setInterval> | null = null;
+let wishlistTrackingInFlight = false;
 
 // —— R4 第二切片：全局保护 REST 限流/并发（进程级单例，恢复与保护共用）——
 // 令牌桶默认容量 1/每 400ms 补 1（请求起点至少相隔 400ms，低于 Market
@@ -391,7 +395,20 @@ async function wishlistOutboxInstance(): Promise<any> {
 async function wishlistGatewayMailer(api: any, target: string): Promise<((part: any) => Promise<any>) | null> {
   const adapter = await api.runtime.channel.outbound.loadAdapter('qqbot');
   if (!adapter) return null;
-  return createGatewayWishlistMailer(adapter, target, { cfg: api.config, mediaLocalRoots: [subscriptionCardDir, cardDir] });
+  return createGatewayWishlistMailer(adapter, target, {
+    cfg: api.config, mediaLocalRoots: [subscriptionCardDir, cardDir],
+    sendRich: async (payload: any) => {
+      try {
+        const sent = await sendWishlistKeyboard({
+          result: { kind: 'wishlist', command: payload.wish ? 'tracking' : 'hit', wish: payload.wish, hits: payload.hits || [] }, cfg: api.config,
+          accountId: 'default', target, mediaUrl: payload.mediaUrl, content: payload.text,
+        });
+        if (sent.sent) return { messageId: sent.messageId || '' };
+      } catch { api.logger.warn?.('Warframe combined wishlist notification failed; using compatible delivery'); }
+      if (payload.mediaUrl && adapter.sendMedia) return adapter.sendMedia({ cfg: api.config, to: target, text: payload.text || '', mediaUrl: payload.mediaUrl, mediaLocalRoots: [subscriptionCardDir, cardDir] });
+      return adapter.sendText?.({ cfg: api.config, to: target, text: payload.text || '愿望单状态已更新。' });
+    },
+  });
 }
 
 // 恢复/投递指定 target 的愿望通知 pending（只投本链业务键前缀；Outbox 逐 part
@@ -419,7 +436,7 @@ async function restoreWishlistPending(api: any): Promise<void> {
     const ledger = await module.readWishlistLedger(wishlistState);
     const targets = [...new Set((ledger.wishes || [])
       .map((wish: any) => String(wish.target || '').trim().toLowerCase())
-      .filter(Boolean))];
+      .filter((target: string) => /^qqbot:c2c:/u.test(target)))];
     for (const target of targets) await flushWishlistTargetPending(api, target);
   } catch (error) {
     api.logger.warn?.(`Warframe wishlist pending restore failed: ${String(error)}`);
@@ -432,6 +449,12 @@ async function sendWishlistGatewayResult(api: any, result: any): Promise<void> {
   const adapter = await api.runtime.channel.outbound.loadAdapter('qqbot');
   if (!adapter) return;
   const common = { cfg: api.config, to: target, mediaLocalRoots: [subscriptionCardDir, cardDir] };
+  if (result.raw?.kind === 'wishlist') {
+    try {
+      const sent = await sendWishlistKeyboard({ result: result.raw, cfg: api.config, accountId: 'default', target, mediaUrl: result.mediaUrl, content: result.text });
+      if (sent.sent) return;
+    } catch { api.logger.warn?.('Warframe combined wishlist follow-up failed; using compatible delivery'); }
+  }
   if (result.mediaUrl && adapter.sendMedia) {
     const mediaResult = await adapter.sendMedia({ ...common, text: '', mediaUrl: result.mediaUrl });
     if (mediaResult?.error) throw new Error(`QQ wishlist media delivery failed: ${String(mediaResult.error)}`);
@@ -456,30 +479,12 @@ async function inspectCurrentWishlistNow(api: any, target: string, manageResult:
       forceRest: true,
       skipWebSocket: true,
       ownerId: String(manageResult?.wish?.ownerId || '').trim().toLowerCase(),
-      render: false,
+      render: true,
     });
     const hits = Array.isArray(result?.data?.hits) ? result.data.hits : [];
     if (!hits.length) return { ok: true, hitCount: 0, marketCards: 0, deliveries: [] };
-    const shortcuts = await import(pathToFileURL(shortcutScript).href);
-    const uniqueWishes = [...new Map(hits.map((hit: any) => [String(hit?.wishId || hit?.wish?.id || ''), hit?.wish])).values()].filter(Boolean);
-    let marketCards = 0;
-    const deliveries = [];
-    for (const wish of uniqueWishes as any[]) {
-      const market = await shortcuts.runShortcut(wishlistMarketCommand(wish), { cardDir: subscriptionCardDir });
-      const qualifying = (market?.data?.sell || []).filter((order: any) => {
-        const perTrade = Math.max(1, Number(order?.perTrade) || 1);
-        return Number(order?.platinum) / perTrade <= Number(wish.maxPrice);
-      });
-      if (!market?.ok || !market?.mediaUrl || !qualifying.length) continue;
-      const contact = String(market?.data?.contactTemplate || '').trim();
-      const text = [
-        `当前已有 ${qualifying.length} 条卖单符合愿望 ${String(wish.id || '')}（≤${Number(wish.maxPrice)}p），直接给你最新市场行情。愿望仍会继续监控。`,
-        contact,
-      ].filter(Boolean).join('\n');
-      deliveries.push({ target, mediaUrl: market.mediaUrl, text });
-      marketCards += 1;
-    }
-    return { ok: true, hitCount: hits.length, marketCards, deliveries };
+    const deliveries = [{ target, mediaUrl: result.mediaUrl, text: result.text, raw: { kind: 'wishlist', hits } }];
+    return { ok: true, hitCount: hits.length, marketCards: result.mediaUrl ? 1 : 0, deliveries };
   } catch (error) {
     // The wish is already durable and the singleton websocket remains active.
     // The 10-minute calibration cron will retry current listings later.
@@ -499,6 +504,7 @@ async function runWishlistCommandUseCase(api: any, request: any, enqueuePrimary:
       'manage', '--state', wishlistState, '--message', command.text,
       '--target', command.target, '--owner', command.actorId,
       '--owner-name', command.actorDisplayName, '--card-dir', command.cardDir || cardDir,
+      ...(command.expectedUpdatedAt ? ['--expected-updated-at', command.expectedUpdatedAt] : []),
     ], 30_000),
     syncCron: (target: string, action: string) => syncWishlistCronAction(api, target, action),
     refreshGateway: async () => { await wishlistGatewayRefresh?.(); },
@@ -537,7 +543,7 @@ async function startWishlistGateway(api: any): Promise<void> {
     loadItemIds: async (): Promise<Set<string>> => {
       const ledger = await wishlistModule.readWishlistLedger(wishlistState);
       return new Set((ledger.wishes || [])
-        .filter((wish: any) => wish.status === 'active' && wish.enabled)
+        .filter((wish: any) => wish.status === 'active' && wish.enabled && /^qqbot:c2c:/u.test(String(wish.target || '')))
         .map((wish: any) => String(wish.itemId || '').trim())
         .filter(Boolean));
     },
@@ -565,12 +571,58 @@ async function startWishlistGateway(api: any): Promise<void> {
   // 启动先恢复相关 target 的 wishlist pending，再刷新索引并连接
   await restoreWishlistPending(api);
   await gateway.start();
+  if (!wishlistTrackingTimer) {
+    wishlistTrackingTimer = setInterval(() => { void runWishlistTrackingSweep(api, wishlistModule); }, 2_000);
+    void runWishlistTrackingSweep(api, wishlistModule);
+  }
 }
 
 async function stopWishlistGateway(): Promise<void> {
   wishlistGateway?.stop();
   wishlistGateway = null;
   wishlistGatewayRefresh = null;
+  if (wishlistTrackingTimer) clearInterval(wishlistTrackingTimer);
+  wishlistTrackingTimer = null;
+}
+
+function wishlistTrackingText(event: any): string {
+  const name = String(event?.wish?.zhName || event?.wish?.itemName || '该商品');
+  const oldPrice = Number(event?.track?.currentPrice);
+  const nextPrice = Number(event?.replacement?.unitPrice ?? event?.order?.unitPrice);
+  if (event.type === 'removed_replaced') return `${name} 的命中卖单已撤下；同时发现新的最低价 ${nextPrice}p，已切换并重新跟踪 1 小时。`;
+  if (event.type === 'removed') return `${name} 的命中卖单经二次确认已从 Warframe.Market 撤下。`;
+  if (event.type === 'lower') return `${name} 出现更低卖单：${oldPrice}p → ${Number(event.replacement?.unitPrice)}p，已切换跟踪。`;
+  if (event.type === 'price_down' || event.type === 'price_up') return `${name} 的命中卖单改价：${oldPrice}p → ${nextPrice}p。`;
+  if (event.type === 'price_exceeded') return `${name} 的命中卖单已涨到 ${nextPrice}p，超过愿望上限，已停止跟踪这张卖单；愿望本身继续有效。`;
+  if (event.type === 'expired_unknown') return `${name} 的 1 小时跟踪已结束，但期间市场接口异常，无法确认卖单最终是否撤下。愿望本身继续有效。`;
+  return `${name} 的命中卖单已持续存在 1 小时，本次跟踪结束；愿望本身继续有效。`;
+}
+
+async function runWishlistTrackingSweep(api: any, wishlistModule: any): Promise<void> {
+  if (wishlistTrackingInFlight) return;
+  wishlistTrackingInFlight = true;
+  try {
+    const outbox = await wishlistOutboxInstance();
+    const routing = await wishlistRouting();
+    const result = await wishlistModule.runDueWishlistTracking(wishlistState, {
+      enqueueEvent: async (event: any) => {
+        const replacementHits = event.replacement ? [{ wish: event.wish, order: event.replacement }] : [];
+        const keyMaterial = [event.type, event.wishId, event.track?.orderId, event.track?.startedAt, event.order?.unitPrice, event.replacement?.id, event.replacement?.unitPrice];
+        const businessKey = `${routing.keyPrefix}tracking:${createHash('sha256').update(JSON.stringify(keyMaterial)).digest('hex')}`;
+        await outbox.enqueue({
+          businessKey, target: event.target,
+          parts: [{ kind: 'rich', value: JSON.stringify({ mediaUrl: null, text: wishlistTrackingText(event), hits: replacementHits, wish: event.wish }) }],
+          expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(), redactOnTerminal: true,
+        });
+      },
+    });
+    const targets = [...new Set((result.events || []).map((event: any) => String(event.target || '')).filter((target: string) => /^qqbot:c2c:/u.test(target)))];
+    for (const target of targets) await flushWishlistTargetPending(api, target);
+  } catch (error) {
+    api.logger.warn?.(`Warframe wishlist tracking sweep failed: ${String(error)}`);
+  } finally {
+    wishlistTrackingInFlight = false;
+  }
 }
 
 // 单例 WebSocket 的相关新订单 → R3 共享 Outbox 事务链（行情过滤由状态机
@@ -582,7 +634,12 @@ async function handleWishlistLiveOrder(api: any, wishlistModule: any, order: any
   try {
     const outbox = await wishlistOutboxInstance();
     const committedAt = Date.now();
-    const results = await wishlistModule.processWishlistLiveOrder(order, wishlistState, subscriptionCardDir, { outbox });
+    const normalized = wishlistModule.normalizeWishlistOrder(order);
+    const ledger = await wishlistModule.readWishlistLedger(wishlistState);
+    const relevant = (ledger.wishes || []).filter((wish: any) => wish.itemId === normalized.itemId && wish.status === 'active' && wish.enabled && /^qqbot:c2c:/u.test(String(wish.target || '')));
+    if (!relevant.length) return;
+    const orders = await wishlistModule.fetchTopOrdersForWishes(relevant, globalThis.fetch);
+    const results = await wishlistModule.processWishlistLiveOrder(orders, wishlistState, subscriptionCardDir, { outbox, richPayload: true });
     for (const result of results || []) {
       if (result?.outbox === true && result.target) {
         await flushWishlistTargetPending(api, String(result.target));
@@ -616,7 +673,7 @@ async function runWishlistRecoveryScan(api: any): Promise<any> {
   const module = await import(pathToFileURL(wishlistScript).href);
   const ledger = await module.readWishlistLedger(wishlistState);
   const active = (ledger.wishes || [])
-    .filter((wish: any) => wish.status === 'active' && wish.enabled)
+    .filter((wish: any) => wish.status === 'active' && wish.enabled && /^qqbot:c2c:/u.test(String(wish.target || '')))
     .filter((wish: any) => String(wish.target || '').trim() && String(wish.itemId || '').trim() && String(wish.slug || '').trim());
   if (!active.length) {
     return { ok: true, reason: 'no_active_wishes', targets: 0, groups: 0, fetched: 0, failedGroups: 0, marketAvailable: null };
@@ -635,6 +692,7 @@ async function runWishlistRecoveryScan(api: any): Promise<any> {
         forceRest: true,
         skipWebSocket: true,
         outbox,
+        richPayload: true,
         ...(mailer ? { mailer } : {}),
         restIncompleteError: info?.hasFailures
           ? `Warframe.Market 保护扫描部分请求失败（${Number(info.failedKeys?.length) || 0} 组），未标记完整校准`
@@ -894,6 +952,7 @@ async function sendDirectQQReply(api: any, event: any, ctx: any, reply: any): Pr
 
     let result: any;
     let needsSeparateMarketKeyboard = false;
+    const isPrivateWishlist = !event.isGroup && reply?.raw?.kind === 'wishlist';
     if (reply.mediaUrl) {
       if (!adapter.sendMedia) throw new Error('QQ outbound adapter cannot send media');
       adapterReady = true;
@@ -910,7 +969,20 @@ async function sendDirectQQReply(api: any, event: any, ctx: any, reply: any): Pr
           api.logger.warn?.('Warframe market card preference read failed; using compatible delivery');
         }
       }
-      if (isPrivateMarketQuote && combinedMarketCardEnabled) {
+      if (isPrivateWishlist) {
+        try {
+          const combined = await sendWishlistKeyboard({
+            result: reply.raw, cfg: api.config, accountId: ctx.accountId, target,
+            replyToId: event.replyToId || ctx.replyToId, mediaUrl: reply.mediaUrl,
+            content: String(reply.text || ''),
+          });
+          if (!combined.sent) throw new Error('wishlist keyboard was not applicable');
+          result = { messageId: combined.messageId || 'accepted' };
+        } catch {
+          api.logger.warn?.('Warframe combined wishlist reply failed; falling back to compatible delivery');
+          result = await adapter.sendMedia({ ...common, text: String(reply.text || ''), mediaUrl: reply.mediaUrl });
+        }
+      } else if (isPrivateMarketQuote && combinedMarketCardEnabled) {
         try {
           const combined = await sendMarketKeyboard({
             data: reply.raw.data,
@@ -935,10 +1007,19 @@ async function sendDirectQQReply(api: any, event: any, ctx: any, reply: any): Pr
     } else {
       if (!adapter.sendText) throw new Error('QQ outbound adapter cannot send text');
       adapterReady = true;
-      result = await adapter.sendText({
-        ...common,
-        text: String(reply.text || 'Warframe 快捷命令未能生成结果。'),
-      });
+      if (isPrivateWishlist) {
+        try {
+          const combined = await sendWishlistKeyboard({
+            result: reply.raw, cfg: api.config, accountId: ctx.accountId, target,
+            replyToId: event.replyToId || ctx.replyToId, content: String(reply.text || ''),
+          });
+          if (!combined.sent) throw new Error('wishlist keyboard was not applicable');
+          result = { messageId: combined.messageId || 'accepted' };
+        } catch {
+          api.logger.warn?.('Warframe wishlist keyboard delivery failed; primary text remains available');
+          result = await adapter.sendText({ ...common, text: String(reply.text || 'Warframe 快捷命令未能生成结果。') });
+        }
+      } else result = await adapter.sendText({ ...common, text: String(reply.text || 'Warframe 快捷命令未能生成结果。') });
     }
     if (result?.error) {
       await recordDelivery(deliveryResultCategory(result));
@@ -988,6 +1069,58 @@ function installMarketTrendInteractionBridge(api: any): () => void {
     const senderId = String(event?.user_openid || '').trim().toLowerCase();
     const buttonData = event?.data?.resolved?.button_data;
     const identity = { accountId, senderId };
+    const wishlistAction = wishlistInteractions.acquire(buttonData, identity);
+    if (wishlistAction.matched) {
+      void Promise.resolve(acknowledge(0)).catch(() => api.logger.warn?.('Warframe wishlist interaction ACK failed'));
+      void (async () => {
+        const ctx = { accountId, senderId, conversationId: senderId };
+        const ingressEvent = { channel: 'qqbot', content: '', conversationId: senderId, senderId, isGroup: false };
+        if (!wishlistAction.ok) {
+          await sendDirectQQReply(api, ingressEvent, ctx, { text: wishlistAction.reason === 'actor-mismatch' ? '这个按钮不属于当前玩家。' : wishlistAction.reason === 'busy' ? '这个操作正在处理中，请稍候。' : '这个按钮已失效，请重新打开愿望单。', isError: true });
+          return;
+        }
+        try {
+          const module = await import(pathToFileURL(wishlistScript).href);
+          const ledger = await module.readWishlistLedger(wishlistState);
+          const wish = (ledger.wishes || []).find((entry: any) => entry.id === wishlistAction.wishId && entry.ownerId === senderId && entry.target === `qqbot:c2c:${senderId}`);
+          if (!wish) throw new Error('wishlist item is unavailable');
+          if (wishlistAction.action === 'query') {
+            ingressEvent.content = wishlistMarketCommand(wish);
+            const reply = await handleFastCommand(api, ingressEvent, 'qq-wishlist-interaction');
+            if (!reply) throw new Error('wishlist market query produced no reply');
+            await sendDirectQQReply(api, ingressEvent, ctx, reply);
+            return;
+          }
+          if (wishlistAction.action === 'select') {
+            await sendDirectQQReply(api, ingressEvent, ctx, {
+              text: `${wish.zhName || wish.itemName} · 上限 ${wish.maxPrice}p`,
+              raw: { ok: true, kind: 'wishlist', command: 'select', wish },
+            });
+            return;
+          }
+          const commandMap: Record<string, string> = {
+            bought: '已购', pause: '暂停', resume: '继续', cancel: '取消',
+            undo_bought: '撤销已购', undo_cancel: '撤销取消',
+          };
+          const verb = commandMap[wishlistAction.action];
+          if (!verb) throw new Error('unknown wishlist interaction');
+          ingressEvent.content = `${verb} ${wish.id}`;
+          await runWishlistCommandUseCase(api, {
+            source: 'qq-wishlist-interaction', text: ingressEvent.content, channel: 'qqbot',
+            target: `qqbot:c2c:${senderId}`, actorId: senderId, actorDisplayName: senderId,
+            isGroup: false, cardDir: subscriptionCardDir, expectedUpdatedAt: wishlistAction.expectedUpdatedAt,
+          }, async (result: any) => {
+            await sendDirectQQReply(api, ingressEvent, ctx, { text: result.text, ...(result.mediaUrl ? { mediaUrl: result.mediaUrl } : {}), raw: result, isError: result.ok === false });
+            return { accepted: true, mediaDelivered: Boolean(result.mediaUrl) };
+          });
+        } finally {
+          wishlistInteractions.release(buttonData, identity);
+        }
+      })().catch((error) => {
+        api.logger.error(`Warframe wishlist interaction failed: ${String(error)}`);
+      });
+      return true;
+    }
     const resolved = marketTrendInteractions.acquire(buttonData, identity);
     if (!resolved.matched) return false;
     void Promise.resolve(acknowledge(0)).catch(() => {

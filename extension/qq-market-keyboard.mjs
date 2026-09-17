@@ -7,7 +7,7 @@ import { marketTrendInteractions } from './qq-market-trend-interactions.mjs';
 
 const QQBOT_PACKAGE_PREFIX = 'openclaw-qqbot-';
 
-function commandButton(id, label, data, enter) {
+export function commandButton(id, label, data, enter) {
   return {
     id,
     render_data: { label: String(label), visited_label: String(label), style: 1 },
@@ -21,7 +21,7 @@ function commandButton(id, label, data, enter) {
   };
 }
 
-function callbackButton(id, label, data) {
+export function callbackButton(id, label, data) {
   return {
     id,
     render_data: { label: String(label), visited_label: String(label), style: 1 },
@@ -64,7 +64,7 @@ function qqbotConfig(cfg, accountId) {
   return { appId, clientSecret };
 }
 
-async function loadNativeSender(openclawHome) {
+export async function loadNativeSender(openclawHome) {
   const base = path.join(openclawHome, 'npm', 'projects');
   const projects = (await readdir(base, { withFileTypes: true }))
     .filter((entry) => entry.isDirectory() && entry.name.startsWith(QQBOT_PACKAGE_PREFIX))
@@ -127,6 +127,37 @@ export async function sendMarketKeyboard(options) {
     result = await messageApi.sendMessage('c2c', match[1], '可选操作', creds, {
       ...(options.replyToId ? { msgId: String(options.replyToId) } : {}),
       inlineKeyboard: keyboard,
+    });
+  }
+  return { sent: true, messageId: result?.id || result?.message_id || '', version: sender.version || '' };
+}
+
+export async function sendQQKeyboardMessage(options) {
+  const match = String(options.target || '').match(/^qqbot:c2c:([^:]+)$/iu);
+  if (!match) return { sent: false, reason: 'not-c2c' };
+  if (!options.keyboard?.content?.rows?.length) return { sent: false, reason: 'not-applicable' };
+  const creds = qqbotConfig(options.cfg, options.accountId);
+  const configuredHome = options.openclawHome || process.env.OPENCLAW_HOME || os.homedir();
+  const stateDir = path.basename(configuredHome).toLowerCase() === '.openclaw' ? configuredHome : path.join(configuredHome, '.openclaw');
+  const sender = options.loadSender ? await options.loadSender() : await loadNativeSender(stateDir);
+  const messageApi = sender.getMessageApi(creds.appId);
+  let result;
+  if (options.mediaUrl) {
+    if (typeof messageApi?.client?.request !== 'function' || typeof messageApi?.tokenManager?.getAccessToken !== 'function') throw new Error('QQBot native Markdown sender is unavailable');
+    const token = await messageApi.tokenManager.getAccessToken(creds.appId, creds.clientSecret);
+    const uploaded = options.uploadImage ? await options.uploadImage(options.mediaUrl) : await uploadEphemeralR2Image(options.mediaUrl);
+    if (!uploaded?.url) throw new Error('Warframe ephemeral image upload did not return a URL');
+    const body = {
+      msg_type: 2,
+      markdown: { content: `![Warframe Wishlist](${uploaded.url})\n\n${String(options.content || '')}`.trim() },
+      keyboard: options.keyboard,
+      msg_seq: Math.floor(Math.random() * 65536),
+      ...(options.replyToId ? { msg_id: String(options.replyToId) } : {}),
+    };
+    result = await messageApi.client.request(token, 'POST', `/v2/users/${encodeURIComponent(match[1])}/messages`, body);
+  } else {
+    result = await messageApi.sendMessage('c2c', match[1], String(options.content || '可选操作'), creds, {
+      ...(options.replyToId ? { msgId: String(options.replyToId) } : {}), inlineKeyboard: options.keyboard,
     });
   }
   return { sent: true, messageId: result?.id || result?.message_id || '', version: sender.version || '' };

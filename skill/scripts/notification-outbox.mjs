@@ -97,7 +97,7 @@ function normalizeParts(parts) {
   for (const part of parts) {
     const kind = String(part?.kind || '');
     const value = String(part?.value ?? '');
-    if (kind !== 'media' && kind !== 'text') continue;
+    if (!['media', 'text', 'rich'].includes(kind)) continue;
     if (!value) continue;
     clean.push({ kind, value, transport: normalizeTransport(part?.transport) });
   }
@@ -130,7 +130,7 @@ function normalizeEntry(raw) {
   const redactOnTerminal = raw.redactOnTerminal === true;
   const terminalRedacted = redactOnTerminal && ['delivered', 'expired'].includes(String(raw.status || ''));
   if (!raw.parts.every((part) => (
-    part && ['media', 'text'].includes(String(part.kind || ''))
+    part && ['media', 'text', 'rich'].includes(String(part.kind || ''))
     && (terminalRedacted || String(part.value ?? ''))
   ))) return null;
   const parts = raw.parts.map((part) => ({

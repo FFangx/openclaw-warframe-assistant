@@ -15,7 +15,7 @@ import {
   subscribeToNewOrders,
 } from './wishlist.mjs';
 
-const identity = { target: 'qqbot:group:test', ownerId: 'member-a', ownerName: '测试用户' };
+const identity = { target: 'qqbot:c2c:member-a', ownerId: 'member-a', ownerName: '测试用户' };
 const catalog = [{ id: 'item-foo', slug: 'foo_prime_set', name: 'Foo Prime Set', zhName: '福 Prime 套装' }];
 
 async function fixture() {
@@ -79,7 +79,7 @@ test('scopes the ten-wish quota to the current target and owner', async () => {
   assert.equal(first.ok, true);
   const second = await manageWishlist(`愿望 ${many.slice(5).map((item) => `${item.zhName} 10`).join('；')}`, identity, state, localOptions);
   assert.equal(second.ok, true);
-  const otherTarget = await manageWishlist(`愿望 ${many[0].zhName} 10`, { ...identity, target: 'qqbot:private:other' }, state, localOptions);
+  const otherTarget = await manageWishlist(`愿望 ${many[0].zhName} 10`, { ...identity, target: 'qqbot:c2c:other', ownerId: 'other' }, state, localOptions);
   assert.equal(otherTarget.ok, true);
 });
 
@@ -149,7 +149,7 @@ test('websocket uses wfm protocol and deduplicates the same order', async () => 
   assert.deepEqual(sent.payload, { platform: 'pc', crossplay: true });
   assert.equal(result.ok, true);
   assert.equal(seen.length, 1);
-  assert.equal(applyWishlistOrders({ wishes: [{ id: 'WABCD', target: 't', ownerId: 'o', itemId: 'item-foo', maxPrice: 20, status: 'active', enabled: true, initialized: true }] }, [...seen, ...seen], { source: 'ws' }).hits.length, 1);
+  assert.equal(applyWishlistOrders({ wishes: [{ id: 'WABCD', target: 'qqbot:c2c:o', ownerId: 'o', itemId: 'item-foo', maxPrice: 20, status: 'active', enabled: true, initialized: true }] }, [...seen, ...seen], { source: 'ws' }).hits.length, 1);
 });
 
 test('monitor baselines first item-top calibration and only reports later unseen hits', async () => {

@@ -1,4 +1,4 @@
-const IMMEDIATE_ACTIONS = new Set(['create', 'createMany', 'reprice', 'resume']);
+const IMMEDIATE_ACTIONS = new Set(['create', 'createMany', 'reprice', 'resume', 'undo_bought', 'undo_cancel']);
 
 function normalizeId(value) {
   return String(value || '').trim().toLowerCase();
@@ -12,8 +12,8 @@ function qqIdentityError(request) {
   const channel = normalizeId(request?.channel);
   const target = normalizeId(request?.target);
   const actorId = normalizeId(request?.actorId);
-  if ((channel && channel !== 'qqbot') || !/^qqbot:(?:c2c|group):/u.test(target)) {
-    return '愿望单只允许从 QQ 会话发起。';
+  if ((channel && channel !== 'qqbot') || !/^qqbot:c2c:/u.test(target) || request?.isGroup === true) {
+    return '愿望单只允许在 QQ 私聊中使用。';
   }
   if (!target || !actorId) return '当前会话缺少可信 QQ 身份，不能修改愿望单。';
   return '';
@@ -51,6 +51,7 @@ export async function executeWishlistUseCase(request, ports) {
     isGroup: request.isGroup === true,
     source: normalizeText(request.source),
     cardDir: request.cardDir,
+    expectedUpdatedAt: normalizeText(request.expectedUpdatedAt),
   };
   const warnings = [];
   let result;

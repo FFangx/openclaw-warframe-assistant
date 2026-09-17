@@ -71,7 +71,7 @@ test('只有建立、批量建立、改价和恢复会在主反馈入队后立�
   assert.equal(wishlistNeedsImmediateInspection({ ok: false, command: 'create' }), false);
 });
 
-test('身份门拒绝非 QQ、缺 target 和缺 sender，群聊则按可信 sender 放行', async () => {
+test('身份门拒绝非 QQ、缺 target、缺 sender和群聊', async () => {
   for (const request of [
     { ...baseRequest, channel: 'web', target: 'web:user-a' },
     { ...baseRequest, target: '' },
@@ -84,8 +84,9 @@ test('身份门拒绝非 QQ、缺 target 和缺 sender，群聊则按可信 send
   }
   const { calls, ports } = harness();
   const outcome = await executeWishlistUseCase({ ...baseRequest, target: 'qqbot:group:room-a', isGroup: true }, ports);
-  assert.equal(outcome.ok, true);
-  assert.deepEqual(calls[0], ['manage', 'wishlist', 'qqbot:group:room-a', 'user-a']);
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.result.text, '愿望单只允许在 QQ 私聊中使用。');
+  assert.equal(calls.length, 0);
 });
 
 test('manage 失败不编排监控；cron 与行情失败不回滚愿望；主反馈失败不发跟随卡', async () => {

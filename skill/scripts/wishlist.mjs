@@ -26,6 +26,8 @@ const WS_EVENT_ROUTE = '@wfm|event/subscriptions/newOrder';
 const PLATFORM = 'pc';
 const CROSSPLAY = true;
 export const REST_INTERVAL_MS = 10 * 60 * 1000;
+export const TRACKING_WINDOW_MS = 60 * 60 * 1000;
+export const TRACKING_CONFIRM_MS = 2 * 1000;
 // 愿望命中通知的保守业务 TTL（R3 第四片）：市场快照 10 分钟就过期，
 // 逾期不盲发；Outbox 对每条记录再按默认 TTL（48h）封顶，10 分钟生效的
 // 是业务过期（expiresAt），不影响掉落/世界状态/周报的既有 TTL 行为。
@@ -45,7 +47,29 @@ const asIso = (value, fallback = new Date().toISOString()) => {
 };
 
 function emptyLedger() {
-  return { version: 1, updatedAt: null, wishes: [], calibration: { lastRestAt: null, lastError: null } };
+  return { version: 2, updatedAt: null, wishes: [], trackedOrders: [], calibration: { lastRestAt: null, lastError: null } };
+}
+
+function normalizeTrackedOrder(value) {
+  const track = value && typeof value === 'object' ? value : {};
+  const startedAt = asIso(track.startedAt);
+  return {
+    wishId: normalize(track.wishId).toUpperCase(),
+    target: normalizeId(track.target),
+    ownerId: normalizeId(track.ownerId),
+    itemId: normalize(track.itemId),
+    slug: normalize(track.slug),
+    orderId: normalize(track.orderId),
+    orderIdentity: normalize(track.orderIdentity),
+    initialPrice: Number.isFinite(Number(track.initialPrice)) ? Number(track.initialPrice) : null,
+    currentPrice: Number.isFinite(Number(track.currentPrice)) ? Number(track.currentPrice) : null,
+    startedAt,
+    lastConfirmedAt: track.lastConfirmedAt ? asIso(track.lastConfirmedAt) : startedAt,
+    expiresAt: track.expiresAt ? asIso(track.expiresAt) : new Date(Date.parse(startedAt) + TRACKING_WINDOW_MS).toISOString(),
+    nextCheckAt: track.nextCheckAt ? asIso(track.nextCheckAt) : new Date(Date.parse(startedAt) + trackingDelayMs(0)).toISOString(),
+    missingSince: track.missingSince ? asIso(track.missingSince) : null,
+    lastErrorAt: track.lastErrorAt ? asIso(track.lastErrorAt) : null,
+  };
 }
 
 function normalizeWish(value) {
@@ -82,9 +106,12 @@ function normalizeWish(value) {
 function normalizeLedger(value) {
   const input = value && typeof value === 'object' ? value : {};
   return {
-    version: 1,
+    version: 2,
     updatedAt: input.updatedAt ? asIso(input.updatedAt) : null,
     wishes: Array.isArray(input.wishes) ? input.wishes.map(normalizeWish).filter((wish) => wish.id && wish.itemId && wish.ownerId && wish.target) : [],
+    trackedOrders: Array.isArray(input.trackedOrders)
+      ? input.trackedOrders.map(normalizeTrackedOrder).filter((track) => track.wishId && track.orderId && track.target && track.ownerId && track.itemId)
+      : [],
     calibration: {
       lastRestAt: input.calibration?.lastRestAt ? asIso(input.calibration.lastRestAt) : null,
       lastError: input.calibration?.lastError ? normalize(input.calibration.lastError).slice(0, 300) : null,
@@ -168,9 +195,9 @@ export function parseWishlistCommand(message) {
   if (!text) return { kind: 'invalid', error: '愿望单命令不能为空。' };
   if (/^(?:愿望单|我的愿望单|愿望列表)$/u.test(text)) return { kind: 'summary' };
 
-  const actionMatch = text.match(/^(?:愿望\s*)?(已购|买到|改价|暂停|继续|恢复|取消)(?:\s+|$)(.*)$/u);
+  const actionMatch = text.match(/^(?:愿望\s*)?(撤销已购|撤销取消|已购|买到|改价|暂停|继续|恢复|取消)(?:\s+|$)(.*)$/u);
   if (actionMatch) {
-    const actionMap = { 已购: 'bought', 买到: 'bought', 改价: 'reprice', 暂停: 'pause', 继续: 'resume', 恢复: 'resume', 取消: 'cancel' };
+    const actionMap = { 撤销已购: 'undo_bought', 撤销取消: 'undo_cancel', 已购: 'bought', 买到: 'bought', 改价: 'reprice', 暂停: 'pause', 继续: 'resume', 恢复: 'resume', 取消: 'cancel' };
     const action = actionMap[actionMatch[1]];
     const rest = normalize(actionMatch[2]);
     if (!rest) return { kind: 'action', action, error: '请提供愿望短编号，例如「暂停 W3K7」。' };
@@ -232,16 +259,20 @@ function ownerWishes(ledger, identity) {
   return ledger.wishes.filter((wish) => wish.target === identity.target && wish.ownerId === identity.ownerId);
 }
 
-function findWish(wishes, selector) {
+function resolveWishSelector(wishes, selector) {
   const value = normalize(selector).replace(/^#/u, '').toUpperCase();
-  if (!value) return null;
+  if (!value) return { wish: null, candidates: [] };
   const exact = wishes.find((wish) => wish.id === value);
-  if (exact) return exact;
+  if (exact) return { wish: exact, candidates: [exact] };
   const prefixes = wishes.filter((wish) => wish.id.startsWith(value));
-  if (prefixes.length === 1) return prefixes[0];
-  if (prefixes.length > 1) return null;
-  if (/^\d+$/u.test(value)) return wishes[Number(value) - 1] || null;
-  return wishes.find((wish) => wishItemName(wish).toLowerCase() === value.toLowerCase() || wish.slug.toLowerCase() === value.toLowerCase()) || null;
+  if (prefixes.length === 1) return { wish: prefixes[0], candidates: prefixes };
+  if (prefixes.length > 1) return { wish: null, candidates: prefixes };
+  if (/^\d+$/u.test(value)) {
+    const wish = wishes[Number(value) - 1] || null;
+    return { wish, candidates: wish ? [wish] : [] };
+  }
+  const itemMatches = wishes.filter((wish) => wishItemName(wish).toLowerCase() === value.toLowerCase() || wish.slug.toLowerCase() === value.toLowerCase());
+  return { wish: itemMatches.length === 1 ? itemMatches[0] : null, candidates: itemMatches };
 }
 
 function activeWishCount(ledger, target = '') {
@@ -308,16 +339,18 @@ async function renderCard(card, cardDir, options = {}) {
 }
 
 function resultTextForCreate(wish, updated) {
-  return `${updated ? '愿望单已更新' : '愿望单已建立'}：${wishItemName(wish)}${wishRankText(wish)} ≤ ${formatPrice(wish.maxPrice)}p（编号 ${wish.id}）。发现符合条件的新卖单后立即通知。`;
+  return `${updated ? '愿望单已更新' : '愿望单已建立'}：${wishItemName(wish)}${wishRankText(wish)} ≤ ${formatPrice(wish.maxPrice)}p。发现符合条件的新卖单后立即通知。`;
 }
 
 function actionText(action, wish) {
   const name = wishItemName(wish);
-  if (action === 'bought') return `已记录 ${name}（${wish.id}）已购入；如需恢复同商品监控，请重新发送「愿望 ${name} ${formatPrice(wish.maxPrice)}」。`;
-  if (action === 'reprice') return `已将 ${name}（${wish.id}）的价格上限改为 ${formatPrice(wish.maxPrice)}p，继续监控。`;
-  if (action === 'pause') return `已暂停 ${name}（${wish.id}）。需要时发送「继续 ${wish.id}」恢复。`;
-  if (action === 'resume') return `已恢复 ${name}（${wish.id}）监控，价格上限 ${formatPrice(wish.maxPrice)}p。`;
-  return `已取消 ${name}（${wish.id}）愿望。历史记录已保留。`;
+  if (action === 'bought') return `已记录 ${name} 已购入。5 分钟内可以撤销。`;
+  if (action === 'reprice') return `已将 ${name} 的价格上限改为 ${formatPrice(wish.maxPrice)}p，继续监控。`;
+  if (action === 'pause') return `已暂停 ${name}。需要时可直接点“继续”。`;
+  if (action === 'resume') return `已恢复 ${name} 监控，价格上限 ${formatPrice(wish.maxPrice)}p。`;
+  if (action === 'undo_bought') return `已撤销 ${name} 的“已购”状态，并恢复监控。`;
+  if (action === 'undo_cancel') return `已撤销取消 ${name}，并恢复监控。`;
+  return `已取消 ${name} 愿望。历史记录已保留，5 分钟内可以撤销。`;
 }
 
 function whisperTextForHit(hit) {
@@ -332,10 +365,11 @@ function whisperTextForHit(hit) {
 
 function hitNotificationText(hits) {
   const ids = hits.map((hit) => hit.wishId).filter(Boolean);
-  const ack = ids.length === 1
-    ? `已成功购入发送「已购 ${ids[0]}」，否则无需回复继续监控。`
-    : `已成功购入分别发送「已购 ${ids.join('」「已购 ')}」，否则无需回复继续监控。`;
-  return `愿望单命中 ${hits.length} 条新卖单。\n${hits.map(whisperTextForHit).join('\n')}\n${ack}`;
+  const ack = ids.length === 1 ? `按钮不可用时可发送「已购 ${ids[0]}」。` : `按钮不可用时可按愿望单中的备用编号操作。`;
+  const headline = hits.length === 1
+    ? (hits[0]?.event === 'lower' ? '愿望单命中：发现更低卖单，已切换跟踪。' : '愿望单命中：当前最低价卖单。')
+    : `愿望单有 ${hits.length} 项命中当前最低价卖单。`;
+  return `${headline}\n已开始持续确认卖单状态，最长 1 小时。\n${hits.map(whisperTextForHit).join('\n')}\n${ack}`;
 }
 
 // ---------- 愿望命中通知 Outbox（R3 第四片：REST 校准 deliver + Gateway 实时命中） ----------
@@ -385,6 +419,7 @@ async function buildWishlistHitPayload(hits, cardDir, options = {}) {
   const card = buildWishlistHitCard({ hits, detectedAt });
   const mediaUrl = await renderCard(card, cardDir, options);
   const text = hitNotificationText(hits);
+  if (options.richPayload) return { mediaUrl, text, parts: [{ kind: 'rich', value: JSON.stringify({ mediaUrl, text, hits }) }] };
   if (mediaUrl) return { mediaUrl, text, parts: [{ kind: 'media', value: mediaUrl }, { kind: 'text', value: text }] };
   return { mediaUrl: null, text, parts: [{ kind: 'text', value: text }] };
 }
@@ -397,13 +432,15 @@ function wishIdentityKey(itemId, rankMode, rank, maxRank) {
 export async function manageWishlist(message, context = {}, statePath = DEFAULT_STATE, options = {}) {
   const identity = contextIdentity(context);
   if (!identity.target || !identity.ownerId) return { ok: false, kind: 'wishlist', error: '缺少可信 QQ 会话身份，不能修改愿望单。', text: '缺少可信 QQ 会话身份，不能修改愿望单。' };
+  if (!/^qqbot:c2c:/u.test(identity.target)) return { ok: false, kind: 'wishlist', error: 'private_only', text: '愿望单只允许在 QQ 私聊中使用。' };
   const parsed = parseWishlistCommand(message);
   if (parsed.kind === 'invalid' || parsed.error) return { ok: false, kind: 'wishlist', error: parsed.error, text: parsed.error };
 
   return withWishlistLock(statePath, async () => {
     const ledger = await readWishlistLedger(statePath);
     const local = ownerWishes(ledger, identity);
-    const now = new Date().toISOString();
+    const nowMs = typeof options.now === 'function' ? Number(options.now()) : Date.now();
+    const now = new Date(nowMs).toISOString();
     if (parsed.kind === 'summary') {
       const card = buildWishlistSummaryCard({ wishes: local, updatedAt: now });
       const mediaUrl = await renderCard(card, options.cardDir, options);
@@ -411,7 +448,7 @@ export async function manageWishlist(message, context = {}, statePath = DEFAULT_
       const text = visible.length
         ? `当前愿望单 ${visible.length} 项：${visible.map((wish) => `${wish.id} ${wishItemName(wish)}≤${formatPrice(wish.maxPrice)}p`).join('；')}`
         : '当前没有监控中的愿望。发送「愿望 商品 价格」开始。';
-      return { ok: true, kind: 'wishlist', command: 'summary', text, mediaUrl, ...(mediaUrl ? { trustedLocalMedia: true } : {}), cronAction: activeWishCount(ledger, identity.target) ? 'ensure' : 'remove' };
+      return { ok: true, kind: 'wishlist', command: 'summary', text, mediaUrl, ...(mediaUrl ? { trustedLocalMedia: true } : {}), wishes: visible, cronAction: activeWishCount(ledger, identity.target) ? 'ensure' : 'remove' };
     }
 
     if (parsed.kind === 'create' || parsed.kind === 'createMany') {
@@ -452,6 +489,7 @@ export async function manageWishlist(message, context = {}, statePath = DEFAULT_
           wish.rank = entry.rank; wish.rankMode = entry.rankMode; wish.maxRank = entry.maxRank;
           wish.status = 'active'; wish.enabled = true; wish.initialized = false;
           wish.seenOrderIds = []; wish.updatedAt = now;
+          ledger.trackedOrders = ledger.trackedOrders.filter((track) => track.wishId !== wish.id);
         } else {
           wish = normalizeWish({
             id: base32ShortId(`${identity.ownerId}|${identity.target}|${item.id}|${entry.key}|${now}|${changed.length}`, used),
@@ -472,27 +510,51 @@ export async function manageWishlist(message, context = {}, statePath = DEFAULT_
       const card = buildWishlistSubscriptionCard({ wishes: changed, wish: changed[0], created: createdFlags.some(Boolean), actionText: action, updatedAt: now });
       const mediaUrl = await renderCard(card, options.cardDir, options);
       const text = changed.length > 1
-        ? `愿望单已保存：${changed.map((wish) => `${wishItemName(wish)}${wishRankText(wish)} ≤ ${formatPrice(wish.maxPrice)}p（${wish.id}）`).join('；')}。发现符合条件的新卖单后立即通知。`
+        ? `愿望单已保存：${changed.map((wish) => `${wishItemName(wish)}${wishRankText(wish)} ≤ ${formatPrice(wish.maxPrice)}p`).join('；')}。发现符合条件的新卖单后立即通知。`
         : resultTextForCreate(changed[0], createdFlags[0]);
       return { ok: true, kind: 'wishlist', command: parsed.kind, text, mediaUrl, ...(mediaUrl ? { trustedLocalMedia: true } : {}), wish: changed[0], wishes: changed, cronAction: 'ensure' };
     }
 
-    const wish = findWish(local, parsed.selector);
-    if (!wish) return { ok: false, kind: 'wishlist', error: 'not_found', text: `没有找到愿望编号「${parsed.selector || '—'}」。发送「愿望单」查看短编号。` };
+    const resolvedWish = resolveWishSelector(local, parsed.selector);
+    const wish = resolvedWish.wish;
+    if (!wish && resolvedWish.candidates.length > 1) {
+      return {
+        ok: false, kind: 'wishlist', error: 'ambiguous_selector', candidates: resolvedWish.candidates,
+        text: `「${parsed.selector}」对应多个愿望：${resolvedWish.candidates.map((entry) => `${wishItemName(entry)}${wishRankText(entry)}（${entry.id}）`).join('、')}。请选择具体一项。`,
+      };
+    }
+    if (!wish) return { ok: false, kind: 'wishlist', error: 'not_found', text: `没有找到愿望「${parsed.selector || '—'}」。发送「愿望单」查看。` };
+    if (options.expectedUpdatedAt && asIso(options.expectedUpdatedAt) !== wish.updatedAt) {
+      return { ok: false, kind: 'wishlist', error: 'stale_action', text: '这条愿望刚刚发生过变化，旧按钮已失效。请重新打开愿望单。' };
+    }
     if (parsed.action === 'reprice') {
+      if (['bought', 'cancelled'].includes(wish.status)) return { ok: false, kind: 'wishlist', error: 'invalid_state', text: '这项愿望已经结束，请重新建立愿望。' };
       if (!Number.isFinite(parsed.price) || parsed.price <= 0 || parsed.price > 900000) return { ok: false, kind: 'wishlist', error: 'invalid_price', text: '价格需要是 1～900000 之间的白金数。' };
       wish.maxPrice = parsed.price;
       wish.status = 'active'; wish.enabled = true; wish.initialized = false;
       wish.seenOrderIds = []; wish.updatedAt = now;
     } else if (parsed.action === 'bought') {
+      if (!['active', 'paused'].includes(wish.status)) return { ok: false, kind: 'wishlist', error: 'invalid_state', text: '这项愿望已经结束，请重新打开愿望单。' };
       wish.status = 'bought'; wish.enabled = false; wish.boughtAt = now; wish.updatedAt = now;
     } else if (parsed.action === 'pause') {
+      if (wish.status !== 'active') return { ok: false, kind: 'wishlist', error: 'invalid_state', text: '这项愿望当前不能暂停，请重新打开愿望单。' };
       wish.status = 'paused'; wish.enabled = false; wish.updatedAt = now;
     } else if (parsed.action === 'resume') {
+      if (wish.status !== 'paused') return { ok: false, kind: 'wishlist', error: 'invalid_state', text: '只有已暂停的愿望可以继续；已购或已取消的愿望请重新建立。' };
       wish.status = 'active'; wish.enabled = true; wish.initialized = false;
       wish.seenOrderIds = []; wish.updatedAt = now;
     } else if (parsed.action === 'cancel') {
+      if (!['active', 'paused'].includes(wish.status)) return { ok: false, kind: 'wishlist', error: 'invalid_state', text: '这项愿望已经结束，请重新打开愿望单。' };
       wish.status = 'cancelled'; wish.enabled = false; wish.updatedAt = now;
+    } else if (parsed.action === 'undo_bought' || parsed.action === 'undo_cancel') {
+      const expectedStatus = parsed.action === 'undo_bought' ? 'bought' : 'cancelled';
+      if (wish.status !== expectedStatus) return { ok: false, kind: 'wishlist', error: 'stale_action', text: '这项愿望的状态已经变化，无法再撤销。请重新打开愿望单。' };
+      if (nowMs - Date.parse(wish.updatedAt) > 5 * 60 * 1000) return { ok: false, kind: 'wishlist', error: 'undo_expired', text: '撤销窗口已超过 5 分钟；如需继续，请重新建立愿望。' };
+      wish.status = 'active'; wish.enabled = true; wish.initialized = false;
+      wish.seenOrderIds = []; wish.boughtAt = null; wish.updatedAt = now;
+    }
+    if (['bought', 'pause', 'cancel', 'reprice', 'resume', 'undo_bought', 'undo_cancel'].includes(parsed.action)) {
+      ledger.trackedOrders = ledger.trackedOrders.filter((track) => track.wishId !== wish.id);
     }
     await writeWishlistLedger(statePath, ledger);
     const card = buildWishlistSubscriptionCard({ wish, actionText: actionText(parsed.action, wish), detail: parsed.action === 'bought' ? '命中提醒不会自动核销；本条愿望已按你的确认标记为已购入。' : undefined, updatedAt: now });
@@ -510,12 +572,13 @@ function orderPayload(value) {
   const type = normalize(order.type || order.orderType || 'sell').toLowerCase();
   const seller = normalize(order.user?.ingameName || order.user?.ingame_name || order.ingameName || order.seller);
   const createdAt = order.createdAt || order.created_at || order.updatedAt || order.updated_at || null;
+  const updatedAt = order.updatedAt || order.updated_at || createdAt || null;
   return {
     id: normalize(order.id), itemId, type, platinum: Number.isFinite(platinum) ? platinum : null,
     perTrade: safePerTrade, unitPrice: Number.isFinite(platinum) ? platinum / safePerTrade : null,
     quantity: order.quantity == null ? null : Number(order.quantity), rank: order.rank == null ? null : Number(order.rank),
     visible: order.visible !== false, seller: seller || '未知玩家', status: normalize(order.user?.status || order.status || 'unknown'),
-    createdAt: createdAt ? asIso(createdAt) : null,
+    createdAt: createdAt ? asIso(createdAt) : null, updatedAt: updatedAt ? asIso(updatedAt) : null,
   };
 }
 
@@ -548,39 +611,92 @@ export function matchesWishlistOrder(wish, order) {
     && normalizedOrder.unitPrice <= normalizedWish.maxPrice;
 }
 
+function sellerStatusPriority(status) {
+  return ({ ingame: 0, 'in-game': 0, online: 1, invisible: 2, offline: 3, unavailable: 4 })[normalize(status).toLowerCase()] ?? 5;
+}
+
+export function compareWishlistOrders(left, right) {
+  const a = orderPayload(left);
+  const b = orderPayload(right);
+  return (Number(a.unitPrice) - Number(b.unitPrice))
+    || (sellerStatusPriority(a.status) - sellerStatusPriority(b.status))
+    || ((Date.parse(b.updatedAt || b.createdAt || '') || 0) - (Date.parse(a.updatedAt || a.createdAt || '') || 0))
+    || a.id.localeCompare(b.id);
+}
+
+export function lowestWishlistOrder(wish, orders) {
+  return (Array.isArray(orders) ? orders : []).map(orderPayload).filter((order) => matchesWishlistOrder(wish, order)).sort(compareWishlistOrders)[0] || null;
+}
+
+export function trackingDelayMs(ageMs) {
+  if (ageMs < 5 * 60 * 1000) return 10 * 1000;
+  if (ageMs < 30 * 60 * 1000) return 30 * 1000;
+  return 2 * 60 * 1000;
+}
+
+function trackForHit(wish, order, now) {
+  const normalized = orderPayload(order);
+  const stamp = asIso(now);
+  return normalizeTrackedOrder({
+    wishId: wish.id, target: wish.target, ownerId: wish.ownerId,
+    itemId: wish.itemId, slug: wish.slug,
+    orderId: normalized.id, orderIdentity: orderIdentity(normalized),
+    initialPrice: normalized.unitPrice, currentPrice: normalized.unitPrice,
+    startedAt: stamp, lastConfirmedAt: stamp,
+    expiresAt: new Date(Date.parse(stamp) + TRACKING_WINDOW_MS).toISOString(),
+    nextCheckAt: new Date(Date.parse(stamp) + trackingDelayMs(0)).toISOString(),
+  });
+}
+
+function setTrackedOrder(ledger, wish, order, now) {
+  ledger.trackedOrders = ledger.trackedOrders.filter((track) => track.wishId !== wish.id);
+  ledger.trackedOrders.push(trackForHit(wish, order, now));
+}
+
 /** Apply a batch and return transient hits; seller names are never persisted. */
 export function applyWishlistOrders(ledgerInput, orders, { source = 'ws', now = new Date().toISOString(), target = '', ownerId = '', notifyInitial = false } = {}) {
   const ledger = normalizeLedger(ledgerInput);
   const hits = [];
   const list = Array.isArray(orders) ? orders : [];
   for (const wish of ledger.wishes) {
+    if (!/^qqbot:c2c:/u.test(wish.target)) continue;
     if (target && wish.target !== normalizeId(target)) continue;
     if (ownerId && wish.ownerId !== normalizeId(ownerId)) continue;
     if (wish.status !== 'active' || !wish.enabled) continue;
     const relevant = list.map(orderPayload).filter((order) => order.itemId === wish.itemId);
+    const candidate = lowestWishlistOrder(wish, relevant);
+    const currentTrack = ledger.trackedOrders.find((track) => track.wishId === wish.id) || null;
     if (source === 'ws' && relevant.length) wish.initialized = true;
     if (source === 'rest' && !wish.initialized) {
       for (const order of relevant) {
         const id = orderIdentity(order);
-        if (notifyInitial && !wish.seenOrderIds.includes(id) && matchesWishlistOrder(wish, order)) {
-          wish.lastMatchAt = asIso(now);
-          hits.push({ wishId: wish.id, wish: { id: wish.id, itemId: wish.itemId, itemName: wish.itemName, zhName: wish.zhName, slug: wish.slug, maxPrice: wish.maxPrice, rank: wish.rank, rankMode: wish.rankMode, maxRank: wish.maxRank, ownerName: wish.ownerName }, order });
-        }
         wish.seenOrderIds.push(id);
+      }
+      if (notifyInitial && candidate) {
+        wish.lastMatchAt = asIso(now);
+        hits.push({ event: 'hit', wishId: wish.id, wish: { id: wish.id, itemId: wish.itemId, itemName: wish.itemName, zhName: wish.zhName, slug: wish.slug, maxPrice: wish.maxPrice, rank: wish.rank, rankMode: wish.rankMode, maxRank: wish.maxRank, ownerName: wish.ownerName, status: wish.status, updatedAt: asIso(now) }, order: candidate });
+        setTrackedOrder(ledger, wish, candidate, now);
       }
       wish.seenOrderIds = [...new Set(wish.seenOrderIds)].slice(-MAX_SEEN_PER_WISH);
       wish.initialized = true;
       wish.updatedAt = asIso(now);
       continue;
     }
+    const candidateIdentity = candidate ? orderIdentity(candidate) : '';
+    const candidateSeen = candidateIdentity && wish.seenOrderIds.includes(candidateIdentity);
     for (const order of relevant) {
       const id = orderIdentity(order);
-      const seen = wish.seenOrderIds.includes(id);
-      if (!seen) wish.seenOrderIds.push(id);
-      if (!seen && matchesWishlistOrder(wish, order) && (source === 'ws' || source === 'rest')) {
-        wish.lastMatchAt = asIso(now);
-      hits.push({ wishId: wish.id, wish: { id: wish.id, itemId: wish.itemId, itemName: wish.itemName, zhName: wish.zhName, slug: wish.slug, maxPrice: wish.maxPrice, rank: wish.rank, rankMode: wish.rankMode, maxRank: wish.maxRank, ownerName: wish.ownerName }, order });
-      }
+      if (!wish.seenOrderIds.includes(id)) wish.seenOrderIds.push(id);
+    }
+    const trackedPrice = Number(currentTrack?.currentPrice);
+    const candidatePrice = Number(candidate?.unitPrice);
+    const shouldReplace = candidate && currentTrack && candidate.id !== currentTrack.orderId && Number.isFinite(candidatePrice)
+      && (!Number.isFinite(trackedPrice) || candidatePrice < trackedPrice);
+    const shouldStart = candidate && !currentTrack && !candidateSeen;
+    if (shouldStart || shouldReplace) {
+      wish.lastMatchAt = asIso(now);
+      hits.push({ event: shouldReplace ? 'lower' : 'hit', wishId: wish.id, wish: { id: wish.id, itemId: wish.itemId, itemName: wish.itemName, zhName: wish.zhName, slug: wish.slug, maxPrice: wish.maxPrice, rank: wish.rank, rankMode: wish.rankMode, maxRank: wish.maxRank, ownerName: wish.ownerName, status: wish.status, updatedAt: asIso(now) }, order: candidate });
+      setTrackedOrder(ledger, wish, candidate, now);
     }
     wish.seenOrderIds = [...new Set(wish.seenOrderIds)].slice(-MAX_SEEN_PER_WISH);
     wish.updatedAt = asIso(now);
@@ -589,7 +705,7 @@ export function applyWishlistOrders(ledgerInput, orders, { source = 'ws', now = 
 }
 
 function activeItemIds(ledger, target, ownerId = '') {
-  return new Set(ledger.wishes.filter((wish) => wish.target === target && (!ownerId || wish.ownerId === ownerId) && wish.status === 'active' && wish.enabled).map((wish) => wish.itemId));
+  return new Set(ledger.wishes.filter((wish) => /^qqbot:c2c:/u.test(wish.target) && wish.target === target && (!ownerId || wish.ownerId === ownerId) && wish.status === 'active' && wish.enabled).map((wish) => wish.itemId));
 }
 
 export async function fetchTopOrdersForItem(wish, fetchImpl) {
@@ -627,6 +743,150 @@ export async function fetchTopOrdersForWishes(wishes, fetchImpl = globalThis.fet
     batches.push(await fetchTopOrdersForItem(wish, fetchImpl));
   }
   return batches.flat();
+}
+
+export async function fetchWishlistOrderById(track, fetchImpl = globalThis.fetch, wish = null) {
+  if (typeof fetchImpl !== 'function') throw new Error('当前 Node 运行时没有可用的 fetch。');
+  const response = await fetchImpl(`${MARKET_BASE}/v2/order/${encodeURIComponent(track.orderId)}`, {
+    method: 'GET',
+    headers: {
+      Platform: wish?.platform || PLATFORM, Crossplay: String(wish?.crossplay !== false), Language: 'zh-hans', Accept: 'application/json',
+      'User-Agent': 'OpenClaw-Warframe-Assistant/1.1.6 (+https://github.com/FFangx/openclaw-warframe-assistant)',
+    },
+    signal: typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(8_000) : undefined,
+  });
+  if (response?.status === 404) return null;
+  if (!response?.ok) throw new Error(`Warframe.Market order HTTP ${response?.status || 'error'}`);
+  const payload = await response.json();
+  const order = payload?.data || payload?.payload || payload;
+  return order?.id ? orderPayload(order) : null;
+}
+
+function trackingEvent(type, wish, track, order = null, replacement = null) {
+  return {
+    type, target: track.target, ownerId: track.ownerId, wishId: wish.id,
+    wish: { ...wish }, track: { ...track },
+    ...(order ? { order: orderPayload(order) } : {}),
+    ...(replacement ? { replacement: orderPayload(replacement) } : {}),
+  };
+}
+
+/**
+ * Reconcile due hit targets. A missing order is never announced from a failed
+ * request: the first successful absence schedules one exact recheck two
+ * seconds later, and only the second successful absence can close the track.
+ */
+export async function runDueWishlistTracking(statePath = DEFAULT_STATE, options = {}) {
+  const nowMs = typeof options.now === 'function' ? Number(options.now()) : Date.now();
+  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  const fetchExact = options.fetchOrder || ((track, wish) => fetchWishlistOrderById(track, fetchImpl, wish));
+  const fetchTop = options.fetchTop || ((wish) => fetchTopOrdersForItem(wish, fetchImpl));
+  let lastRequestStart = 0;
+  const throttle = async () => {
+    if (options.fetchOrder || options.fetchTop) return;
+    const wait = Math.max(0, 400 - (Date.now() - lastRequestStart));
+    if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
+    lastRequestStart = Date.now();
+  };
+  const snapshot = await readWishlistLedger(statePath);
+  const due = snapshot.trackedOrders.filter((track) => Date.parse(track.nextCheckAt) <= nowMs || Date.parse(track.expiresAt) <= nowMs);
+  const observations = [];
+  for (const track of due) {
+    const wish = snapshot.wishes.find((entry) => entry.id === track.wishId);
+    if (!wish || wish.status !== 'active' || !wish.enabled || !/^qqbot:c2c:/u.test(wish.target)) {
+      observations.push({ track, wish, inactive: true });
+      continue;
+    }
+    if (Date.parse(track.expiresAt) <= nowMs) {
+      observations.push({ track, wish, expired: true });
+      continue;
+    }
+    try {
+      await throttle();
+      const exact = await fetchExact(track, wish);
+      let topOrders = [];
+      let topError = null;
+      if (exact || track.missingSince) {
+        try { await throttle(); topOrders = await fetchTop(wish); } catch (error) { topError = String(error?.message || error); }
+      }
+      observations.push({ track, wish, exact, topOrders, topError });
+    } catch (error) {
+      observations.push({ track, wish, error: String(error?.message || error) });
+    }
+  }
+
+  return withWishlistLock(statePath, async () => {
+    const ledger = await readWishlistLedger(statePath);
+    const events = [];
+    const recordEvent = async (event) => {
+      if (typeof options.enqueueEvent === 'function') await options.enqueueEvent(event);
+      events.push(event);
+    };
+    for (const observed of observations) {
+      const index = ledger.trackedOrders.findIndex((entry) => entry.wishId === observed.track.wishId && entry.orderId === observed.track.orderId && entry.startedAt === observed.track.startedAt);
+      if (index < 0) continue;
+      const track = ledger.trackedOrders[index];
+      const wish = ledger.wishes.find((entry) => entry.id === track.wishId);
+      if (!wish || observed.inactive) {
+        ledger.trackedOrders.splice(index, 1);
+        continue;
+      }
+      if (observed.expired) {
+        const unknown = Boolean(track.lastErrorAt && Date.parse(track.lastErrorAt) >= Date.parse(track.lastConfirmedAt));
+        await recordEvent(trackingEvent(unknown ? 'expired_unknown' : 'expired', wish, track));
+        ledger.trackedOrders.splice(index, 1);
+        continue;
+      }
+      if (observed.error) {
+        track.lastErrorAt = new Date(nowMs).toISOString();
+        track.nextCheckAt = new Date(Math.min(Date.parse(track.expiresAt), nowMs + trackingDelayMs(nowMs - Date.parse(track.startedAt)))).toISOString();
+        continue;
+      }
+      const exact = observed.exact ? orderPayload(observed.exact) : null;
+      if (!exact || !exact.visible || !/^(?:sell|sellorder|sell_order)$/u.test(exact.type)) {
+        if (!track.missingSince) {
+          track.missingSince = new Date(nowMs).toISOString();
+          track.nextCheckAt = new Date(nowMs + TRACKING_CONFIRM_MS).toISOString();
+          continue;
+        }
+        const replacement = lowestWishlistOrder(wish, observed.topOrders || []);
+        await recordEvent(trackingEvent(replacement ? 'removed_replaced' : 'removed', wish, track, null, replacement));
+        ledger.trackedOrders.splice(index, 1);
+        if (replacement) {
+          const replacementIdentity = orderIdentity(replacement);
+          if (!wish.seenOrderIds.includes(replacementIdentity)) wish.seenOrderIds.push(replacementIdentity);
+          ledger.trackedOrders.push(trackForHit(wish, replacement, new Date(nowMs).toISOString()));
+        }
+        continue;
+      }
+
+      const lower = lowestWishlistOrder(wish, observed.topOrders || []);
+      if (lower && lower.id !== track.orderId && Number(lower.unitPrice) < Number(exact.unitPrice)) {
+        await recordEvent(trackingEvent('lower', wish, track, exact, lower));
+        ledger.trackedOrders.splice(index, 1);
+        const identity = orderIdentity(lower);
+        if (!wish.seenOrderIds.includes(identity)) wish.seenOrderIds.push(identity);
+        ledger.trackedOrders.push(trackForHit(wish, lower, new Date(nowMs).toISOString()));
+        continue;
+      }
+      if (!matchesWishlistOrder(wish, exact)) {
+        await recordEvent(trackingEvent('price_exceeded', wish, track, exact));
+        ledger.trackedOrders.splice(index, 1);
+        continue;
+      }
+      if (Number(exact.unitPrice) !== Number(track.currentPrice)) {
+        await recordEvent(trackingEvent(Number(exact.unitPrice) < Number(track.currentPrice) ? 'price_down' : 'price_up', wish, track, exact));
+        track.currentPrice = exact.unitPrice;
+      }
+      track.orderIdentity = orderIdentity(exact);
+      track.lastConfirmedAt = new Date(nowMs).toISOString();
+      track.lastErrorAt = null;
+      track.missingSince = null;
+      track.nextCheckAt = new Date(Math.min(Date.parse(track.expiresAt), nowMs + trackingDelayMs(nowMs - Date.parse(track.startedAt)))).toISOString();
+    }
+    await writeWishlistLedger(statePath, ledger);
+    return { ok: true, checked: observations.length, events };
+  });
 }
 
 function wsAddListener(socket, event, listener) {
@@ -700,7 +960,7 @@ export async function monitorWishlist(targetValue, statePath = DEFAULT_STATE, ca
   const nowMs = typeof options.now === 'function' ? options.now() : Date.now();
   let ledger = await readWishlistLedger(statePath);
   const ownerId = normalizeId(options.ownerId || options.owner || '');
-  const active = ledger.wishes.filter((wish) => wish.target === target && (!ownerId || wish.ownerId === ownerId) && wish.status === 'active' && wish.enabled);
+  const active = ledger.wishes.filter((wish) => /^qqbot:c2c:/u.test(wish.target) && wish.target === target && (!ownerId || wish.ownerId === ownerId) && wish.status === 'active' && wish.enabled);
   // 1) 先补投欠账（R3 第四片）：账本已提交但投递失败（或入队后进程被杀）的 pending，
   //    即使 REST 未到点/无新命中也会先补投；keyPrefix 限定只投本链业务键，
   //    不代投世界状态/周报/掉落记录（它们由各自的 deliver cron 负责）。
@@ -776,8 +1036,8 @@ export async function monitorWishlist(targetValue, statePath = DEFAULT_STATE, ca
           // Reload under the lock: a live gateway event may have updated seen
           // IDs while the item-top HTTP request was in flight.
           const latest = await readWishlistLedger(statePath);
-          const applied = applyWishlistOrders(latest, orders, { source: 'rest', now: new Date().toISOString(), target, ownerId, notifyInitial: true });
-          const stamp = new Date().toISOString();
+          const applied = applyWishlistOrders(latest, orders, { source: 'rest', now: new Date(nowMs).toISOString(), target, ownerId, notifyInitial: true });
+          const stamp = new Date(nowMs).toISOString();
           const previousLastRestAt = latest.calibration.targets?.[target]?.lastRestAt || null;
           const calibrationLastRestAt = restIncompleteError ? previousLastRestAt : stamp;
           applied.ledger.calibration = {
@@ -878,16 +1138,17 @@ export async function monitorWishlist(targetValue, statePath = DEFAULT_STATE, ca
 // seller 数据只存在于瞬时 payload（Outbox pending 的 redactOnTerminal 终态擦除），
 // 永不写入 wishlist ledger。
 export async function processWishlistLiveOrder(order, statePath = DEFAULT_STATE, cardDir = null, options = {}) {
-  const normalized = orderPayload(order);
-  if (!normalized.itemId) return [];
+  const normalizedOrders = (Array.isArray(order) ? order : [order]).map(orderPayload).filter((entry) => entry.itemId);
+  if (!normalizedOrders.length) return [];
+  const itemIds = new Set(normalizedOrders.map((entry) => entry.itemId));
   const outbox = options.outbox || null;
   const useOutbox = Boolean(outbox);
   const nowMs = typeof options.now === 'function' ? options.now() : Date.now();
   const transaction = await withWishlistLock(statePath, async () => {
     const ledger = await readWishlistLedger(statePath);
-    const relevant = ledger.wishes.some((wish) => wish.itemId === normalized.itemId && wish.status === 'active' && wish.enabled);
+    const relevant = ledger.wishes.some((wish) => itemIds.has(wish.itemId) && /^qqbot:c2c:/u.test(wish.target) && wish.status === 'active' && wish.enabled);
     if (!relevant) return { applied: null, byTarget: new Map(), entries: [] };
-    const applied = applyWishlistOrders(ledger, [normalized], { source: 'ws', now: new Date(nowMs).toISOString() });
+    const applied = applyWishlistOrders(ledger, normalizedOrders, { source: 'ws', now: new Date(nowMs).toISOString() });
     const byTarget = new Map();
     for (const hit of applied.hits) {
       const target = ledger.wishes.find((wish) => wish.id === hit.wishId)?.target;
@@ -961,7 +1222,10 @@ async function main() {
     outputJson(await manageWishlist(args.message, {
       target, ownerId: normalizeId(args.owner), ownerName: normalize(args['owner-name']),
       personalAllowed: String(args['personal-allowed']).toLowerCase() !== 'false',
-    }, statePath, { cardDir: args['card-dir'] ? path.resolve(String(args['card-dir'])) : null }));
+    }, statePath, {
+      cardDir: args['card-dir'] ? path.resolve(String(args['card-dir'])) : null,
+      expectedUpdatedAt: args['expected-updated-at'] || '',
+    }));
     return;
   }
   if (command === 'monitor' || command === 'calibrate' || command === 'gateway_start') {

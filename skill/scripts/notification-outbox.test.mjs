@@ -61,6 +61,13 @@ test('入队记录包含 schemaVersion/业务键/内容哈希/parts/时间/尝�
   assert.equal(entry.deliveredAt, null);
 });
 
+test('rich part persists atomically for a combined image-copy-keyboard delivery', async () => {
+  const payload = JSON.stringify({ mediaUrl: 'C:\\cards\\hit.png', text: '命中', hits: [{ wishId: 'W3K7' }] });
+  const { entry } = await partEntry([{ kind: 'rich', value: payload }], clockAt());
+  assert.deepEqual(entry.parts.map((part) => part.kind), ['rich']);
+  assert.equal(entry.parts[0].value, payload);
+});
+
 test('内容哈希：内容相同哈希相同，任一 part 漂移哈希改变（且与业务键/目标解耦）', () => {
   const partsA = [{ kind: 'media', value: 'C:\\a.png' }, { kind: 'text', value: '文字' }];
   const partsB = [{ kind: 'media', value: 'C:\\a.png' }, { kind: 'text', value: '文字' }];

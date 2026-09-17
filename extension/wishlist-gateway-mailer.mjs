@@ -15,7 +15,10 @@ export function createGatewayWishlistMailer(adapter, target, common = {}) {
     if (!base.to) return { ok: false, category: 'missing_target' };
     let result;
     try {
-      if (part?.kind === 'media') {
+      if (part?.kind === 'rich') {
+        if (typeof common?.sendRich !== 'function') return { ok: false, category: 'adapter_unsupported' };
+        result = await common.sendRich(JSON.parse(String(part.value || '{}')));
+      } else if (part?.kind === 'media') {
         if (typeof adapter?.sendMedia !== 'function') return { ok: false, category: 'adapter_unsupported' };
         result = await adapter.sendMedia({ ...base, text: '', mediaUrl: part.value });
       } else {

@@ -48,11 +48,11 @@ test('愿望单帮助入口仍由注册表生成', () => {
   assert.match(card.html, /愿望单 · 市场盯价/u);
   assert.match(card.html, /愿望 商品 价格/u);
   assert.match(card.html, /已有合价单时立即返回行情/u);
-  assert.match(card.html, /已购\/取消 &lt;短编号&gt;/u);
-  assert.match(text, /愿望 商品 价格：建立目标价/u);
-  assert.match(text, /愿望单：查看全部愿望/u);
-  assert.match(text, /改价\/暂停\/继续 <短编号>：调整目标价/u);
-  assert.match(text, /已购\/取消 <短编号>：标记已购或删除愿望/u);
+  assert.match(card.html, /已购\/取消 &lt;物品或短编号&gt;/u);
+  assert.match(text, /愿望 商品 价格（仅用户私聊）：建立目标价/u);
+  assert.match(text, /愿望单（仅用户私聊）：查看全部愿望/u);
+  assert.match(text, /改价\/暂停\/继续 <物品或短编号>（仅用户私聊）：调整目标价/u);
+  assert.match(text, /已购\/取消 <物品或短编号>（仅用户私聊）：一键结束愿望/u);
 });
 
 test('订阅模块逐项说明全部订阅类型与管理指令', () => {
