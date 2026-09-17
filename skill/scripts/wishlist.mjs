@@ -364,12 +364,10 @@ function whisperTextForHit(hit) {
 }
 
 function hitNotificationText(hits) {
-  const ids = hits.map((hit) => hit.wishId).filter(Boolean);
-  const ack = ids.length === 1 ? `按钮不可用时可发送「已购 ${ids[0]}」。` : `按钮不可用时可按愿望单中的备用编号操作。`;
   const headline = hits.length === 1
     ? (hits[0]?.event === 'lower' ? '愿望单命中：发现更低卖单，已切换跟踪。' : '愿望单命中：当前最低价卖单。')
     : `愿望单有 ${hits.length} 项命中当前最低价卖单。`;
-  return `${headline}\n已开始持续确认卖单状态，最长 1 小时。\n${hits.map(whisperTextForHit).join('\n')}\n${ack}`;
+  return `${headline}\n已开始持续确认卖单状态，最长 1 小时。\n${hits.map(whisperTextForHit).join('\n')}`;
 }
 
 // ---------- 愿望命中通知 Outbox（R3 第四片：REST 校准 deliver + Gateway 实时命中） ----------

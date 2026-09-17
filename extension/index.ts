@@ -17,7 +17,7 @@ import { createGatewayWishlistMailer } from './wishlist-gateway-mailer.mjs';
 import { createWishlistGateway } from './wishlist-gateway.mjs';
 import { createWishlistMetrics } from './wishlist-metrics.mjs';
 import { sendMarketKeyboard } from './qq-market-keyboard.mjs';
-import { sendWishlistKeyboard } from './qq-wishlist-keyboard.mjs';
+import { sendWishlistKeyboard, sendWishlistKeyboardWithFallback } from './qq-wishlist-keyboard.mjs';
 import { wishlistInteractions } from './qq-wishlist-interactions.mjs';
 import { getMarketCardPreference, parseMarketCardPreferenceCommand, setMarketCardPreference } from './qq-market-card-preferences.mjs';
 import { marketTrendInteractions, QQ_MARKET_INTERACTION_BRIDGE } from './qq-market-trend-interactions.mjs';
@@ -399,14 +399,16 @@ async function wishlistGatewayMailer(api: any, target: string): Promise<((part: 
     cfg: api.config, mediaLocalRoots: [subscriptionCardDir, cardDir],
     sendRich: async (payload: any) => {
       try {
-        const sent = await sendWishlistKeyboard({
+        const sent = await sendWishlistKeyboardWithFallback({
           result: { kind: 'wishlist', command: payload.wish ? 'tracking' : 'hit', wish: payload.wish, hits: payload.hits || [] }, cfg: api.config,
           accountId: 'default', target, mediaUrl: payload.mediaUrl, content: payload.text,
         });
-        if (sent.sent) return { messageId: sent.messageId || '' };
+        if (sent.sent) {
+          if (sent.degraded) api.logger.warn?.('Warframe wishlist rich notification degraded to one text-and-keyboard bubble');
+          return { messageId: sent.messageId || '' };
+        }
       } catch { api.logger.warn?.('Warframe combined wishlist notification failed; using compatible delivery'); }
-      if (payload.mediaUrl && adapter.sendMedia) return adapter.sendMedia({ cfg: api.config, to: target, text: payload.text || '', mediaUrl: payload.mediaUrl, mediaLocalRoots: [subscriptionCardDir, cardDir] });
-      return adapter.sendText?.({ cfg: api.config, to: target, text: payload.text || '愿望单状态已更新。' });
+      return adapter.sendText?.({ cfg: api.config, to: target, text: `${payload.text || '愿望单状态已更新。'}\n按钮暂不可用，请发送「愿望单」进入管理。` });
     },
   });
 }
@@ -451,9 +453,19 @@ async function sendWishlistGatewayResult(api: any, result: any): Promise<void> {
   const common = { cfg: api.config, to: target, mediaLocalRoots: [subscriptionCardDir, cardDir] };
   if (result.raw?.kind === 'wishlist') {
     try {
-      const sent = await sendWishlistKeyboard({ result: result.raw, cfg: api.config, accountId: 'default', target, mediaUrl: result.mediaUrl, content: result.text });
-      if (sent.sent) return;
+      const sent = await sendWishlistKeyboardWithFallback({ result: result.raw, cfg: api.config, accountId: 'default', target, mediaUrl: result.mediaUrl, content: result.text });
+      if (sent.sent) {
+        if (sent.degraded) api.logger.warn?.('Warframe wishlist follow-up degraded to one text-and-keyboard bubble');
+        return;
+      }
     } catch { api.logger.warn?.('Warframe combined wishlist follow-up failed; using compatible delivery'); }
+  }
+  if (result.raw?.kind === 'wishlist') {
+    if (result.text && adapter.sendText) {
+      const textResult = await adapter.sendText({ ...common, text: `${result.text}\n按钮暂不可用，请发送「愿望单」进入管理。` });
+      if (textResult?.error) throw new Error(`QQ wishlist text delivery failed: ${String(textResult.error)}`);
+    }
+    return;
   }
   if (result.mediaUrl && adapter.sendMedia) {
     const mediaResult = await adapter.sendMedia({ ...common, text: '', mediaUrl: result.mediaUrl });
@@ -971,16 +983,17 @@ async function sendDirectQQReply(api: any, event: any, ctx: any, reply: any): Pr
       }
       if (isPrivateWishlist) {
         try {
-          const combined = await sendWishlistKeyboard({
+          const combined = await sendWishlistKeyboardWithFallback({
             result: reply.raw, cfg: api.config, accountId: ctx.accountId, target,
             replyToId: event.replyToId || ctx.replyToId, mediaUrl: reply.mediaUrl,
             content: String(reply.text || ''),
           });
           if (!combined.sent) throw new Error('wishlist keyboard was not applicable');
+          if (combined.degraded) api.logger.warn?.('Warframe wishlist reply degraded to one text-and-keyboard bubble');
           result = { messageId: combined.messageId || 'accepted' };
         } catch {
-          api.logger.warn?.('Warframe combined wishlist reply failed; falling back to compatible delivery');
-          result = await adapter.sendMedia({ ...common, text: String(reply.text || ''), mediaUrl: reply.mediaUrl });
+          api.logger.warn?.('Warframe combined wishlist reply failed; falling back to one text bubble');
+          result = await adapter.sendText({ ...common, text: `${String(reply.text || '愿望单状态已更新。')}\n按钮暂不可用，请发送「愿望单」进入管理。` });
         }
       } else if (isPrivateMarketQuote && combinedMarketCardEnabled) {
         try {

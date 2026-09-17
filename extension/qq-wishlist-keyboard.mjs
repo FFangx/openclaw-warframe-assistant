@@ -48,7 +48,9 @@ export function buildWishlistKeyboard(result, options = {}) {
       commandButton('wish-reprice', '改价', `改价 ${wish.id} `, true),
       callback(options, wish.status === 'paused' ? 'resume' : 'pause', wish, wish.status === 'paused' ? '继续' : '暂停', 'wish-toggle'),
     ].filter(Boolean) });
-    rows.push({ buttons: [callback(options, 'cancel', wish, '取消愿望', 'wish-cancel')] });
+    // 命中卡严格保持最初冻结的五个操作。QQ 实机在加入第六个按钮后会
+    // 静默丢弃整组 keyboard；取消仍在愿望管理面板中提供。
+    if (!hit?.order) rows.push({ buttons: [callback(options, 'cancel', wish, '取消愿望', 'wish-cancel')] });
   }
   return { content: { rows: rows.filter((row) => row.buttons.length) } };
 }
@@ -58,4 +60,19 @@ export async function sendWishlistKeyboard(options) {
   const keyboard = buildWishlistKeyboard(options.result, { accountId: options.accountId, senderId });
   if (!keyboard) return { sent: false, reason: 'not-applicable' };
   return sendQQKeyboardMessage({ ...options, keyboard });
+}
+
+export async function sendWishlistKeyboardWithFallback(options) {
+  try {
+    const primary = await sendWishlistKeyboard(options);
+    if (primary.sent || !options.mediaUrl) {
+      return { ...primary, mode: options.mediaUrl ? 'rich' : 'text-keyboard', degraded: false };
+    }
+  } catch (error) {
+    if (!options.mediaUrl) throw error;
+  }
+  // 图片一体载荷不可用时仍只发一个“文本＋按钮”气泡。不要再退回普通
+  // sendMedia，因为 QQ 会把图片和文字拆成两条并静默丢掉 keyboard。
+  const fallback = await sendWishlistKeyboard({ ...options, mediaUrl: undefined });
+  return { ...fallback, mode: 'text-keyboard', degraded: Boolean(fallback.sent) };
 }
