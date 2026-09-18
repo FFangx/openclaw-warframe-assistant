@@ -502,4 +502,11 @@ test('默认 mailer：无损 part 走 sendQQLosslessLocalImage，抛错映射固
   assert.deepEqual(await rejected({ kind: 'text', value: 'x' }), { ok: false, category: 'provider_rejected' });
   const noId = createSubscriptionsMailer(TARGET, { send: async () => '{"ok":true}' });
   assert.deepEqual(await noId({ kind: 'text', value: 'x' }), { ok: false, category: 'missing_message_id' });
+  // rich part（Gateway 富卡片：Markdown 图片＋键盘）绝不能被 CLI 当普通文字发出去
+  const gatewayOnly = createSubscriptionsMailer(TARGET, {
+    send: async (target, args) => { sent.push([target, args]); return 'notice\n{"messageId":"m-x"}'; },
+  });
+  const beforeRich = sent.length;
+  assert.deepEqual(await gatewayOnly({ kind: 'rich', value: '{"mediaUrl":"C:\\\\cards\\\\hit.png","text":"命中"}' }), { ok: false, category: 'rich_requires_gateway' });
+  assert.equal(sent.length, beforeRich, 'rich 载荷不经过 CLI 发送');
 });

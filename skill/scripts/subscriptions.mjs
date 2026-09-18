@@ -202,9 +202,14 @@ export function classifyQQSendOutput(stdout) {
 
 // 自己发消息并确认结果（与 deliverMonitorResult 的 sendQQDirect 同路）：媒体 part 走 --media，文字 part 走 --message；
 // 无损 part（transport=lossless，周报主卡）走 sendQQLosslessLocalImage（QQ /files + srv_send_msg=true 一步原图直发）。
+// `rich` part 是 Gateway 富卡片载荷（Markdown 图片＋原生键盘），CLI 进程既没有键盘桥接也没有交互
+// 回调，因此明确拒绝而不是当普通文字发出去——载荷 JSON 绝不能进聊天。
 // 抛错按固定脱敏类别返回，原始异常不落盘。send/sendLossless 为测试注入端口，生产默认不变。
 export function createSubscriptionsMailer(target, { send = sendQQDirect, sendLossless = sendQQLosslessLocalImage } = {}) {
   return async function mailer(part) {
+    if (part?.kind === 'rich') {
+      return { ok: false, category: 'rich_requires_gateway' };
+    }
     if (part?.transport === 'lossless') {
       try {
         await sendLossless(target, part.value);

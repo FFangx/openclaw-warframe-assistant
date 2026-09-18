@@ -14,7 +14,7 @@ import { pathToFileURL } from 'node:url';
 import { buildWishlistHitCard, buildWishlistSubscriptionCard, buildWishlistSummaryCard } from './wishlist-card.mjs';
 import { renderWarframeCard } from './warframe-cards.mjs';
 import { fetchMarketItems, resolveMarketItem } from './shortcuts.mjs';
-import { createSubscriptionsMailer, deliverMonitorResult } from './subscriptions.mjs';
+import { deliverMonitorResult } from './subscriptions.mjs';
 import { createOutbox, targetKeyOf } from './notification-outbox.mjs';
 import { OUTBOX_FILE_NAME, ROUTING_FAMILIES } from './notification-routing-contract.mjs';
 
@@ -1236,23 +1236,26 @@ async function main() {
     return;
   }
   if (command === 'deliver') {
-    // 生产校准链（R3 第四片）：先补投欠账 → 命中先原子入 Outbox → 提交 wishlist 账本
-    // → 锁外逐 part 投递（Outbox 自带跨进程锁，避免与 Gateway 进程互相覆盖）。
+    // 校准并入队，不投递：命中通知必须由 Gateway 插件投递，才能拿到 R2 Markdown
+    // 图片 URL、QQ 原生键盘与交互回调桥接；独立 CLI 只能发媒体与纯文字，正是
+    // 命中卡被拆成「图片一条 + 文字一条且没有按钮」的根因。生产校准已改由插件
+    // 进程内的低频调度直接调用 monitorWishlist（richPayload）；本子命令保留为
+    // 手动/排查入口，入队后由插件在下一拍或启动恢复时投递。
     const dryRun = String(args['dry-run']).toLowerCase() === 'true';
     const outboxPath = args['outbox-path'] ? path.resolve(String(args['outbox-path'])) : defaultOutboxPath(statePath);
     const outbox = dryRun ? null : createOutbox({ filePath: outboxPath });
     const result = await monitorWishlist(target, statePath, args['card-dir'] ? path.resolve(String(args['card-dir'])) : null, dryRun, {
       ownerId: normalizeId(args.owner),
       skipWebSocket: true,
-      ...(outbox ? { outbox, mailer: createSubscriptionsMailer(target) } : {}),
+      ...(outbox ? { outbox, richPayload: true } : {}),
     });
     if (dryRun) {
       process.stdout.write(result.output);
       return;
     }
     if (result.data?.outbox) {
-      const total = Number(result.data?.delivery?.sentParts || 0);
-      process.stdout.write(total > 0 ? `DIRECT_DELIVERED:${total}\n` : 'NO_REPLY\n');
+      const queued = Number(result.data?.hitCount || 0);
+      process.stdout.write(queued > 0 ? `ENQUEUED_FOR_GATEWAY:${queued}\n` : 'NO_REPLY\n');
       return;
     }
     let sent = 0;

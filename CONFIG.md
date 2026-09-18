@@ -10,10 +10,11 @@
 
 ## 愿望单实时监控调优（可选）
 
-openclaw.json → `plugins.config.warframe-fast-commands.wishlist`，全部可选、带默认与钳制边界；只影响愿望单 Gateway 断线保护轮询（R4），其余行为不变。
+openclaw.json → `plugins.config.warframe-fast-commands.wishlist`，全部可选、带默认与钳制边界；只影响愿望单实时监控（R4 断线保护轮询与插件内低频校准），其余行为不变。
 
 | 键 | 默认 | 说明 |
 |---|---|---|
+| `calibrationIntervalMs` | `600000`（10 分钟） | 插件内低频 REST 校准的到期间隔（钳制 60s～60min）。命中通知必须由 Gateway 侧投递，因此不再有按 QQ 会话建立的 CLI 校准 cron；恢复扫描与保护轮询是对断线/静默的即时响应，不受该值影响 |
 | `staleAfterMs` | `300000`（5 分钟） | WebSocket 连接健康但超过该时长没有任何消息帧 → 判定事件流静默，进入 REST 保护轮询。市场安静期只发新订单事件，阈值设短会频繁触发轮询 |
 | `protectionMinMs` | `20000` | 保护轮询间隔下限（与上限之间的随机抖动） |
 | `protectionMaxMs` | `30000` | 保护轮询间隔上限 |
@@ -50,9 +51,10 @@ openclaw.json → `plugins.config.warframe-fast-commands.wishlist`，全部可�
 - `state/warframe-weekly.json`——周常打卡与电波采样
 - `state/warframe-drops.json`——掉落监测的 mtime 闸门与同步时间（v3；基线与旧欠账字段已分别迁入 delta 账本与 Outbox）
 - `state/warframe-account-delta-ledger.json`——助手本地 delta 账本（R15 第五片，schemaVersion 1）：账号快照的**最小脱敏基线**（只含生成 delta 所需的库存数量组与周常字段，不含完整快照/账号 oid/令牌/路径）、有界 delta 事件（条数 512 / 总体积 256 KiB / 保留 7 天三重上限，裁剪记入 `lostSeq` 供消费者识别断档）与 `drops`/`weekly` 各自的消费游标；drops 与 weekly 从同一份事件、按同一 eventId 各自独立确认。原子写 + 同进程串行 + 跨进程文件锁（含陈旧锁回收）；文件损坏或 schema 超前时只读不动、只降级不上报假增量，需人工检查后处理。绝不使用 AlecaFrame 的 `deltas.dat`
-- `state/warframe-delivery-outbox.json`——通知 Outbox 四个切片：当前接入掉落提醒、世界状态订阅通知（裂缝/仲裁/警报/活动/商人/突击/侵袭/赏金/商店/商品/轮换的 deliver 路径）、weekly 主动周报（主周报无损原图 + 可选好货卡，逐 part 持久化 transport）与愿望单主动命中通知（REST 校准 deliver + Gateway 实时命中双源同键去重、10 分钟业务 TTL、`redactOnTerminal` 终态擦除敏感 payload），保存待投递/已投递通知、欠账补投、脱敏投递审计与幂等键墓碑（逾期与墓碑有界自动清理）
+- `state/warframe-delivery-outbox.json`——通知 Outbox 四个切片：当前接入掉落提醒、世界状态订阅通知（裂缝/仲裁/警报/活动/商人/突击/侵袭/赏金/商店/商品/轮换的 deliver 路径）、weekly 主动周报（主周报无损原图 + 可选好货卡，逐 part 持久化 transport）与愿望单主动命中通知（Gateway 实时命中、断线恢复/保护扫描与插件内低频校准三条产出链同键去重、统一单一 `rich` part、10 分钟业务 TTL、`redactOnTerminal` 终态擦除敏感 payload），保存待投递/已投递通知、欠账补投、脱敏投递审计与幂等键墓碑（逾期与墓碑有界自动清理）
 - `state/warframe-arbitration-cache.json` / `warframe-incursions-cache.json`——排期缓存（删了会自动重建）
-- `state/warframe-wishlist-metrics.json`——愿望单实时监控脱敏审计指标（R4）：断线时长、订单发现延迟、QQ 投递延迟、保护/扫描计数与 Market 可用性；只存时长/计数/类别，不含 target/订单/卖家等标识；自动维护，别手删
+- `state/warframe-wishlist-metrics.json`——愿望单实时监控脱敏审计指标（R4）：断线时长、订单发现延迟、QQ 投递延迟、保护/恢复/低频校准扫描计数与 Market 可用性；只存时长/计数/类别，不含 target/订单/卖家等标识；自动维护，别手删
+- `state/warframe-wishlist-card-preferences.json`——愿望卡开关（`愿望卡 开/关/状态`，默认开启）：只保存「QQ 账号域 + senderId」的 SHA-256 摘要与布尔值，不含原始 QQ 标识；删掉等价于恢复默认（一体卡）
 
 ## 部署标识与备份
 

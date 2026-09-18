@@ -548,6 +548,45 @@ test('defaultOutboxPath 与其他切片一致（与状态同目录 warframe-deli
   assert.equal(defaultOutboxPath(statePath), path.join(os.tmpdir(), 'state', 'warframe-delivery-outbox.json'));
 });
 
+test('REST 校准链 richPayload：命中只入队单一 rich part（图片＋文案＋键盘同一条消息）', async () => {
+  const { dir, state, outbox, clock, manage } = await fixture();
+  try {
+    await createWish(state, manage);
+    const calls = [];
+    const result = await monitorWishlist(IDENTITY.target, state, dir, false, {
+      ownerId: IDENTITY.ownerId,
+      skipWebSocket: true,
+      forceRest: true,
+      fetchOrders: async () => [ORDER],
+      outbox,
+      richPayload: true,
+      mailer: okMailer(calls),
+      now: clock.now,
+      renderCard: async () => 'C:\\cards\\hit.png',
+    });
+    assert.equal(result.data.outbox, true);
+    assert.equal(result.data.hitCount, 1);
+    // 与 wm/WS 完全同构：一个 rich part 承载图片、正文与按钮数据
+    assert.deepEqual(calls.map((part) => part.kind), ['rich']);
+    const payload = JSON.parse(calls[0].value);
+    assert.equal(payload.mediaUrl, 'C:\\cards\\hit.png');
+    assert.match(payload.text, /愿望单命中/u);
+    assert.equal(payload.hits.length, 1);
+    const store = await readStore(dir);
+    assert.deepEqual(store.entries[0].parts.map((part) => part.kind), ['rich']);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('deliver 子命令校准并入队、不投递：命中必须由 Gateway 富卡片投递器发出', async () => {
+  const source = await readFile(new URL('./wishlist.mjs', import.meta.url), 'utf8');
+  const deliverBlock = source.slice(source.indexOf("if (command === 'deliver')"), source.indexOf("if (command === 'gateway_stop')"));
+  assert.match(deliverBlock, /richPayload: true/u, '手动校准也产出与插件同构的 rich 载荷');
+  assert.equal(deliverBlock.includes('createSubscriptionsMailer'), false, 'CLI 不再自行投递愿望通知');
+  assert.equal(source.includes('createSubscriptionsMailer'), false, 'wishlist.mjs 不再引用 CLI mailer');
+});
+
 test('R4 合并扫描链：跨 target 同档愿望只发一次请求；per-target 匹配、Outbox 幂等与 10 分钟校准语义保持', async () => {
   const { dir, state, outbox, clock, manage } = await fixture();
   try {

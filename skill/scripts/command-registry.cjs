@@ -557,6 +557,28 @@ const COMMAND_REGISTRY = freeze([
     ],
   }),
   command({
+    commandId: 'wishlist-card-preference',
+    canonicalSyntax: '愿望卡 <开|关|状态>',
+    aliases: ['愿望卡', '愿望卡片'],
+    argumentSchema: { type: 'enum', required: false, values: ['开', '关', '状态'] },
+    privacyScope: 'userPrivate',
+    fastPath: true,
+    modelCallable: false,
+    executor: 'extension.wishlistCardPreference',
+    helpSectionId: 'wishlist',
+    helpTitle: '愿望卡',
+    helpSummary: '按玩家开启或关闭愿望富卡片的合并显示（默认开启）',
+    helpExamples: [
+      { command: '愿望卡 状态', description: '查看当前是合并显示还是分开发送' },
+      { command: '愿望卡 关', description: '改为先发文本＋按钮，再补一张图片' },
+      { command: '愿望卡 开', description: '恢复图片、文案和按钮合并在一条消息里' },
+    ],
+    nextActions: ['愿望单'],
+    matchers: [
+      { routes: ['shortcut-gate'], kind: 'regex', pattern: '^愿望(?:卡片?|通知卡)(?:\\s+(?:开|关|状态))?$', flags: 'iu' },
+    ],
+  }),
+  command({
     commandId: 'wishlist',
     canonicalSyntax: '愿望 <物品> <价格>｜愿望单｜改价/暂停/继续/已购/取消/撤销已购/撤销取消 <物品或短编号>',
     aliases: ['愿望', '愿望单', '我的愿望单', '愿望列表', '蹲价', '盯价', '订阅愿望'],

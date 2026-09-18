@@ -64,3 +64,36 @@ export async function sendWishlistKeyboardWithFallback(options) {
   const fallback = await sendWishlistKeyboard({ ...options, mediaUrl: undefined });
   return { ...fallback, mode: 'text-keyboard', degraded: Boolean(fallback.sent) };
 }
+
+// 愿望卡投递的唯一分流点：`merged` 为真时走一体卡（Markdown 图片＋正文＋
+// 键盘，同一条消息）；玩家用 `愿望卡 关` 关闭、偏好读取失败或没有图片时走
+// 兼容拆分——先发「文本＋键盘」气泡（可操作的那一条），再补一张图片。
+//
+// 顺序与重试语义：拆分模式先投按钮，图片失败只降级不重发，因此任何一次
+// 重试都不会重复已经成功的消息；一体模式失败时 `sendWishlistKeyboardWithFallback`
+// 已经降级为单个「文本＋按钮」气泡，这里不再重复尝试。
+// `sendMedia` 由调用方注入（需要 channel adapter），缺失时按无图片处理。
+export async function sendWishlistCard(options) {
+  const mediaUrl = String(options?.mediaUrl || '').trim();
+  const mergedEnabled = options?.merged !== false;
+  if (mediaUrl && mergedEnabled) {
+    const merged = await sendWishlistKeyboardWithFallback({ ...options, mediaUrl });
+    return {
+      ...merged,
+      mode: merged.sent ? (merged.degraded ? 'text-keyboard' : 'rich') : 'none',
+      imageSent: Boolean(merged.sent) && !merged.degraded,
+    };
+  }
+  const keyboard = await sendWishlistKeyboard({ ...options, mediaUrl: undefined });
+  if (!keyboard.sent) return { ...keyboard, mode: 'none', imageSent: false };
+  if (!mediaUrl || typeof options?.sendMedia !== 'function') {
+    return { ...keyboard, mode: 'text-keyboard', imageSent: false };
+  }
+  try {
+    await options.sendMedia(mediaUrl);
+    return { ...keyboard, mode: 'split', imageSent: true };
+  } catch {
+    // 图片失败只降级：已投递的按钮气泡不回滚、不重发，通知本身已经可操作。
+    return { ...keyboard, mode: 'split', degraded: true, imageSent: false };
+  }
+}

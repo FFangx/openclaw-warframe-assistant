@@ -11,7 +11,7 @@ export const SCHEDULE_CONTRACT = Object.freeze({
 
 const DOC_FACTS = Object.freeze([
   'scheduled 记录 `nextCheckAt`', '未到点只读本地状态输出 `NO_REPLY` 不联网',
-  '裂缝按最早 expiry', '虚空商人按到达/离开边界', '10 分钟命令型 cron',
+  '裂缝按最早 expiry', '虚空商人按到达/离开边界', '10 分钟插件内低频校准',
   'REST 请求起点至少相隔 400ms', '每周一 00:00 UTC 刷新', '上游已跨周',
   '每日一条 agent 型 cron', 'schedule-contract.mjs',
 ]);

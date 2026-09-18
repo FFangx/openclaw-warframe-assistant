@@ -17,9 +17,10 @@ import { createGatewayWishlistMailer } from './wishlist-gateway-mailer.mjs';
 import { createWishlistGateway } from './wishlist-gateway.mjs';
 import { createWishlistMetrics } from './wishlist-metrics.mjs';
 import { sendMarketKeyboard } from './qq-market-keyboard.mjs';
-import { sendWishlistKeyboard, sendWishlistKeyboardWithFallback } from './qq-wishlist-keyboard.mjs';
+import { sendWishlistCard } from './qq-wishlist-keyboard.mjs';
 import { wishlistInteractions } from './qq-wishlist-interactions.mjs';
 import { getMarketCardPreference, parseMarketCardPreferenceCommand, setMarketCardPreference } from './qq-market-card-preferences.mjs';
+import { WISHLIST_CARD_PREFERENCE_FILE, getWishlistCardMerged, parseWishlistCardPreferenceCommand, setWishlistCardMerged } from './qq-wishlist-card-preferences.mjs';
 import { marketTrendInteractions, QQ_MARKET_INTERACTION_BRIDGE } from './qq-market-trend-interactions.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -39,6 +40,8 @@ const personalUsecaseScript = path.resolve(pluginDir, '..', '..', '..', 'skills'
 const publicUsecaseScript = path.resolve(pluginDir, '..', '..', '..', 'skills', 'warframe-assistant', 'scripts', 'public-usecase.mjs');
 const subscriptionState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-subscriptions.json');
 const wishlistState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-wishlist.json');
+// 愿望卡总开关（`愿望卡 开/关/状态`）：与愿望账本同目录，键只存账号域+sender 摘要
+const wishlistCardPreferenceFile = path.resolve(path.dirname(wishlistState), WISHLIST_CARD_PREFERENCE_FILE);
 const dropsState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-drops.json');
 const weeklyState = path.resolve(pluginDir, '..', '..', '..', 'state', 'warframe-weekly.json');
 // 愿望命中通知与掉落/世界状态/周报共用同一个 R3 通知 Outbox（业务键前缀区分）
@@ -75,16 +78,19 @@ function qqTarget(event: { isGroup?: boolean; conversationId?: string; senderId?
   return null;
 }
 
+// 愿望卡图片端口：`sendWishlistCard` 的拆分模式用它补投单张图片；adapter 不支
+// 持媒体时返回 undefined，调用方按无图片处理（按钮气泡仍然照发）。
+function sendMediaFor(adapter: any, common: any): ((mediaUrl: string) => Promise<any>) | undefined {
+  if (typeof adapter?.sendMedia !== 'function') return undefined;
+  return (mediaUrl: string) => adapter.sendMedia({ ...common, text: '', mediaUrl });
+}
+
 function subscriptionDeclarationKey(target: string): string {
   return `warframe-assistant:subscriptions:qq:${createHash('sha1').update(target.toLowerCase()).digest('hex').slice(0, 16)}`;
 }
 
 function dropsDeclarationKey(target: string): string {
   return `warframe-assistant:drops:qq:${createHash('sha1').update(target.toLowerCase()).digest('hex').slice(0, 16)}`;
-}
-
-function wishlistDeclarationKey(target: string): string {
-  return `warframe-assistant:wishlist:qq:${createHash('sha1').update(target.toLowerCase()).digest('hex').slice(0, 16)}`;
 }
 
 // 本地 workspace 插件无权直调 gateway.request（仅 bundled/trusted 可用），
@@ -190,38 +196,35 @@ async function removeSubscriptionCron(api: any, target: string): Promise<void> {
   for (const job of existing) await runOpenclawCron(['rm', String(job.id)]);
 }
 
-// WebSocket 命中由 gateway_start 的单例连接负责；每个 QQ target 只保留
-// 一个低频 item-top 校准任务，避免 cron 为每个目标再开全局订单流。
-async function ensureWishlistCron(api: any, target: string): Promise<void> {
-  const existing = await findCronsByKey(api, wishlistDeclarationKey(target));
-  const commandArgv = ['node', wishlistScript, 'deliver', '--state', wishlistState, '--target', target, '--card-dir', subscriptionCardDir];
-  if (existing.length) {
-    for (const job of existing) {
-      const currentArgv = Array.isArray(job?.payload?.argv) ? job.payload.argv : [];
-      if (JSON.stringify(currentArgv) !== JSON.stringify(commandArgv)
-        || job?.delivery?.mode === 'announce'
-        || Number(job?.payload?.timeoutSeconds) !== 90) {
-        await runOpenclawCron([
-          'edit', String(job.id), '--command-argv', JSON.stringify(commandArgv),
-          '--timeout-seconds', '90', '--no-deliver', '--clear-channel', '--clear-to', '--no-best-effort-deliver',
-        ]);
-      }
-      if (job.enabled === false) await runOpenclawCron(['enable', String(job.id)]);
-    }
-    return;
-  }
-  await runOpenclawCron([
-    'add', '--name', 'Warframe 愿望单校准',
-    '--description', `每 10 分钟按 item top 校准当前 QQ 会话愿望单：${target}`,
-    '--declaration-key', wishlistDeclarationKey(target), '--every', '10m', '--session', 'isolated',
-    '--command-argv', JSON.stringify(commandArgv), '--output-max-bytes', '16384', '--timeout-seconds', '90',
-    '--no-deliver', '--json',
-  ]);
+// 愿望单低频 REST 校准改由插件进程内的调度承担（见 runWishlistCalibrationTick）：
+// 命中通知必须由 Gateway 侧投递，才能拿到 R2 Markdown 图片 URL、QQ 原生键盘和
+// 交互回调桥接；独立 CLI cron 只能发媒体与纯文字，正是命中卡被拆成
+// 「图片一条 + 文字一条且没有按钮」的根因。这里只保留退役逻辑，把旧版本按
+// target 建立的 `Warframe 愿望单校准` 任务幂等清掉，不再建立任何 wishlist cron。
+const WISHLIST_CRON_DECLARATION_PREFIX = 'warframe-assistant:wishlist:qq:';
+
+async function findWishlistCrons(): Promise<any[]> {
+  const payload = parseCliJson(await runOpenclawCron(['list', '--json']));
+  const jobs = Array.isArray(payload?.jobs) ? payload.jobs : Array.isArray(payload) ? payload : [];
+  return jobs.filter((job: any) => String(job?.declarationKey || '').startsWith(WISHLIST_CRON_DECLARATION_PREFIX));
 }
 
-async function removeWishlistCron(api: any, target: string): Promise<void> {
-  const existing = await findCronsByKey(api, wishlistDeclarationKey(target));
-  for (const job of existing) await runOpenclawCron(['rm', String(job.id)]);
+// 返回实际删除的任务数。启动/升级路径不允许被 cron 维护拖垮：失败只记脱敏
+// 警告（不含 QQ 标识），下一次管理动作或重启会重试同一次清理。
+async function retireWishlistCrons(api: any, reason: string): Promise<number> {
+  try {
+    const jobs = await findWishlistCrons();
+    let removed = 0;
+    for (const job of jobs) {
+      await runOpenclawCron(['rm', String(job.id)]);
+      removed += 1;
+    }
+    if (removed) api.logger.info?.(`Warframe retired ${removed} legacy wishlist calibration cron job(s) (${reason})`);
+    return removed;
+  } catch (error) {
+    api.logger.warn?.(`Warframe wishlist cron retirement failed (${reason}): ${String(error)}`);
+    return 0;
+  }
 }
 
 // 单例愿望 WebSocket 的健康状态机在 wishlist-gateway.mjs（可注入时钟/定时器/
@@ -232,6 +235,16 @@ let wishlistGateway: ReturnType<typeof createWishlistGateway> | null = null;
 let wishlistGatewayRefresh: (() => Promise<void>) | null = null;
 let wishlistTrackingTimer: ReturnType<typeof setInterval> | null = null;
 let wishlistTrackingInFlight = false;
+// C 切片：10 分钟低频 REST 校准由插件进程内的定时器承担（替代每个 target 一条
+// CLI cron）。定时器只是「检查节拍」，真正的扫描频率仍由账本里每个 target 的
+// lastRestAt 与 calibrationIntervalMs 决定，因此重启不会额外扫、也不会漏扫。
+let wishlistCalibrationTimer: ReturnType<typeof setInterval> | null = null;
+const WISHLIST_CALIBRATION_TICK_MS = 60_000;
+// 恢复扫描、保护轮询与低频校准共用同一个执行槽：三者都在同一进程里，重复
+// 并发只会白打 Market。恢复/保护扫描等待在飞的扫描结束后仍要执行（它们是对
+// 断线/静默的响应），低频校准节拍撞上在飞扫描时直接跳过，下一分钟再来。
+let wishlistScanInFlight = 0;
+let wishlistScanTail: Promise<any> = Promise.resolve();
 
 // —— R4 第二切片：全局保护 REST 限流/并发（进程级单例，恢复与保护共用）——
 // 令牌桶默认容量 1/每 400ms 补 1（请求起点至少相隔 400ms，低于 Market
@@ -267,6 +280,9 @@ function wishlistGatewayTuning(api: any): any {
     rateCapacity: clamp(raw?.rateCapacity, 1, 1, 10),
     rateRefillMs: clamp(raw?.rateRefillMs, 400, 250, 30_000),
     concurrencyLimit: clamp(raw?.concurrencyLimit, 2, 1, 5),
+    // 低频校准间隔（R4 目标的「十分钟」）：只影响插件内定时校准的到期判定，
+    // 恢复/保护扫描是对断线/静默的即时响应，不受它影响。
+    calibrationIntervalMs: clamp(raw?.calibrationIntervalMs, 10 * 60_000, 60_000, 60 * 60_000),
   };
 }
 
@@ -395,16 +411,19 @@ async function wishlistOutboxInstance(): Promise<any> {
 async function wishlistGatewayMailer(api: any, target: string): Promise<((part: any) => Promise<any>) | null> {
   const adapter = await api.runtime.channel.outbound.loadAdapter('qqbot');
   if (!adapter) return null;
+  const sendMedia = sendMediaFor(adapter, { cfg: api.config, to: target, mediaLocalRoots: [subscriptionCardDir, cardDir] });
   return createGatewayWishlistMailer(adapter, target, {
     cfg: api.config, mediaLocalRoots: [subscriptionCardDir, cardDir],
     sendRich: async (payload: any) => {
       try {
-        const sent = await sendWishlistKeyboardWithFallback({
-          result: { kind: 'wishlist', command: payload.wish ? 'tracking' : 'hit', wish: payload.wish, hits: payload.hits || [] }, cfg: api.config,
-          accountId: 'default', target, mediaUrl: payload.mediaUrl, content: payload.text,
+        const merged = await wishlistMergedCardEnabled(api, { accountId: 'default', target });
+        const sent = await sendWishlistCard({
+          result: { kind: 'wishlist', command: payload.wish ? 'tracking' : 'hit', wish: payload.wish, hits: payload.hits || [] },
+          cfg: api.config, accountId: 'default', target, mediaUrl: payload.mediaUrl, content: payload.text,
+          merged, sendMedia,
         });
         if (sent.sent) {
-          if (sent.degraded) api.logger.warn?.('Warframe wishlist rich notification degraded to one text-and-keyboard bubble');
+          if (sent.degraded) api.logger.warn?.(`Warframe wishlist notification degraded (mode=${String(sent.mode || 'unknown')})`);
           return { messageId: sent.messageId || '' };
         }
       } catch { api.logger.warn?.('Warframe combined wishlist notification failed; using compatible delivery'); }
@@ -453,9 +472,13 @@ async function sendWishlistGatewayResult(api: any, result: any): Promise<void> {
   const common = { cfg: api.config, to: target, mediaLocalRoots: [subscriptionCardDir, cardDir] };
   if (result.raw?.kind === 'wishlist') {
     try {
-      const sent = await sendWishlistKeyboardWithFallback({ result: result.raw, cfg: api.config, accountId: 'default', target, mediaUrl: result.mediaUrl, content: result.text });
+      const merged = await wishlistMergedCardEnabled(api, { accountId: 'default', target });
+      const sent = await sendWishlistCard({
+        result: result.raw, cfg: api.config, accountId: 'default', target, mediaUrl: result.mediaUrl, content: result.text,
+        merged, sendMedia: sendMediaFor(adapter, common),
+      });
       if (sent.sent) {
-        if (sent.degraded) api.logger.warn?.('Warframe wishlist follow-up degraded to one text-and-keyboard bubble');
+        if (sent.degraded) api.logger.warn?.(`Warframe wishlist follow-up degraded (mode=${String(sent.mode || 'unknown')})`);
         return;
       }
     } catch { api.logger.warn?.('Warframe combined wishlist follow-up failed; using compatible delivery'); }
@@ -505,9 +528,10 @@ async function inspectCurrentWishlistNow(api: any, target: string, manageResult:
   }
 }
 
-async function syncWishlistCronAction(api: any, target: string, action: string): Promise<void> {
-  if (action === 'ensure') await ensureWishlistCron(api, target);
-  else if (action === 'remove') await removeWishlistCron(api, target);
+// 愿望单不再维护 CLI cron：两种动作都只做幂等退役。插件内低频校准按账本里的
+// 活跃愿望自行判断是否该扫，新建/改价/恢复后的即时校准仍由愿望用例直接触发。
+async function syncWishlistCronAction(api: any, _target: string, action: string): Promise<void> {
+  await retireWishlistCrons(api, action);
 }
 
 async function runWishlistCommandUseCase(api: any, request: any, enqueuePrimary: (result: any) => Promise<any>): Promise<any> {
@@ -569,8 +593,8 @@ async function startWishlistGateway(api: any): Promise<void> {
     onOrder: async (order: any, activityAtIso?: string) => {
       await handleWishlistLiveOrder(api, wishlistModule, order, activityAtIso || null);
     },
-    recoveryScan: async () => { await runWishlistRecoveryScan(api); },
-    protectionScan: async () => { await runWishlistRecoveryScan(api); },
+    recoveryScan: async () => { await runWishlistScanShared(api); },
+    protectionScan: async () => { await runWishlistScanShared(api); },
     metricsSink: (event: any) => {
       void forwardWishlistGatewayMetrics(event);
     },
@@ -580,12 +604,17 @@ async function startWishlistGateway(api: any): Promise<void> {
   });
   wishlistGateway = gateway;
   wishlistGatewayRefresh = () => gateway.refresh();
+  // 升级迁移：清掉旧版本按 target 建立的 CLI 校准任务，命中卡必须由本进程投递
+  await retireWishlistCrons(api, 'startup');
   // 启动先恢复相关 target 的 wishlist pending，再刷新索引并连接
   await restoreWishlistPending(api);
   await gateway.start();
   if (!wishlistTrackingTimer) {
     wishlistTrackingTimer = setInterval(() => { void runWishlistTrackingSweep(api, wishlistModule); }, 2_000);
     void runWishlistTrackingSweep(api, wishlistModule);
+  }
+  if (!wishlistCalibrationTimer) {
+    wishlistCalibrationTimer = setInterval(() => { void runWishlistCalibrationTick(api); }, WISHLIST_CALIBRATION_TICK_MS);
   }
 }
 
@@ -595,6 +624,8 @@ async function stopWishlistGateway(): Promise<void> {
   wishlistGatewayRefresh = null;
   if (wishlistTrackingTimer) clearInterval(wishlistTrackingTimer);
   wishlistTrackingTimer = null;
+  if (wishlistCalibrationTimer) clearInterval(wishlistCalibrationTimer);
+  wishlistCalibrationTimer = null;
 }
 
 function wishlistTrackingText(event: any): string {
@@ -671,17 +702,20 @@ async function handleWishlistLiveOrder(api: any, wishlistModule: any, order: any
   }
 }
 
-// R4 恢复/保护扫描（恢复扫描只在断线后重新连接成功时由状态机触发一次；
-// 保护轮询在断线/静默流窗口按 20～30 秒节拍调用）——两个入口共用全局合并
-// 编排（runCoalescedWishlistScan）：先按去重后的 itemId+rank 把跨 target 的
+// R4 恢复/保护扫描 + 插件内低频校准——三个入口共用全局合并编排
+// （runCoalescedWishlistScan）：先按去重后的 itemId+rank 把跨 target 的
 // 相同 Market 请求合并为每组合并一次请求（全局令牌桶 + 并发上限），再逐
 // target 复用现有 REST 校准 + R3 Outbox + 同业务键去重链——命中先原子入队
-// 再提交 seen/calibration 账本；与 10 分钟校准 cron、实时 WS 命中共享同一
-// 业务键，不会重复提醒。QQ outbound 不可用时仍执行校准与入队（欠账留在
-// Outbox，下轮补投），绝不把「未投递」伪装成已投递。Market 完全不可用时
-// 抛出失败（网关留 lastScanError、下次恢复周期/保护轮询重试）并且 per-target
+// 再提交 seen/calibration 账本；与实时 WS 命中共享同一业务键，不会重复提醒。
+// 恢复扫描（断线后重连成功）与保护轮询（断线/静默窗口 20～30 秒节拍）是对
+// 故障的即时响应，一律 forceRest；低频校准按每个 target 的 lastRestAt 到期
+// 才扫，重启不会额外打 Market。QQ outbound 不可用时仍执行校准与入队（欠账
+// 留在 Outbox，下轮补投），绝不把「未投递」伪装成已投递。Market 完全不可用
+// 时抛出失败（网关留 lastScanError、下次恢复周期/保护轮询重试）并且 per-target
 // 走 restError 分支：不写新鲜 calibration，诚实报告。
-async function runWishlistRecoveryScan(api: any): Promise<any> {
+async function runWishlistRecoveryScan(api: any, options: { forceRest?: boolean } = {}): Promise<any> {
+  const forceRest = options.forceRest !== false;
+  const tuning = wishlistGatewayTuning(api);
   const module = await import(pathToFileURL(wishlistScript).href);
   const ledger = await module.readWishlistLedger(wishlistState);
   const active = (ledger.wishes || [])
@@ -689,6 +723,16 @@ async function runWishlistRecoveryScan(api: any): Promise<any> {
     .filter((wish: any) => String(wish.target || '').trim() && String(wish.itemId || '').trim() && String(wish.slug || '').trim());
   if (!active.length) {
     return { ok: true, reason: 'no_active_wishes', targets: 0, groups: 0, fetched: 0, failedGroups: 0, marketAvailable: null };
+  }
+  // 低频校准的到期门必须在任何 Market 请求之前：未到期就返回，绝不为「检查一下」
+  // 按分钟打一次 /top。恢复/保护扫描是故障响应，一律跳过这道门（forceRest）。
+  if (!forceRest) {
+    const nowMs = Date.now();
+    const due = active.some((wish: any) => {
+      const lastRestAt = Date.parse(String(ledger.calibration?.targets?.[wish.target]?.lastRestAt || ''));
+      return !Number.isFinite(lastRestAt) || nowMs - lastRestAt >= tuning.calibrationIntervalMs;
+    });
+    if (!due) return { ok: true, reason: 'not_due', targets: 0, groups: 0, fetched: 0, failedGroups: 0, marketAvailable: null };
   }
   const outbox = await wishlistOutboxInstance();
   const moduleProtection = await wishlistProtectionModuleInstance();
@@ -701,7 +745,8 @@ async function runWishlistRecoveryScan(api: any): Promise<any> {
     monitorTarget: async (target: string, targetWishes: any[], info: any) => {
       const mailer = await wishlistGatewayMailer(api, target);
       const monitorResult = await module.monitorWishlist(target, wishlistState, subscriptionCardDir, false, {
-        forceRest: true,
+        forceRest,
+        restIntervalMs: tuning.calibrationIntervalMs,
         skipWebSocket: true,
         outbox,
         richPayload: true,
@@ -737,6 +782,68 @@ async function runWishlistRecoveryScan(api: any): Promise<any> {
     api.logger.warn?.(`Warframe wishlist recovery scan partial failure: ${result.failedGroups}/${result.groups} 组失败（其余组正常）`);
   }
   return result;
+}
+
+// 三处扫描入口的唯一执行槽：同一时刻只允许一个合并扫描在跑（都在这一个进程里，
+// 并发只会白打 Market）。skipIfBusy 供低频校准节拍使用——撞上在飞扫描就跳过这
+// 一拍；恢复/保护扫描是对断线/静默的响应，排队等待后仍要执行。等待只吞掉前一次
+// 扫描的异常，本次扫描的错误照常抛给调用方（状态机记 lastScanError）。
+async function runWishlistScanShared(api: any, options: { forceRest?: boolean; skipIfBusy?: boolean } = {}): Promise<any> {
+  if (options.skipIfBusy && wishlistScanInFlight > 0) {
+    return { ok: true, reason: 'scan_in_flight', skipped: true, targets: 0, groups: 0, fetched: 0, failedGroups: 0, marketAvailable: null };
+  }
+  wishlistScanInFlight += 1;
+  const previous = wishlistScanTail;
+  const run = (async () => {
+    await previous;
+    return runWishlistRecoveryScan(api, { forceRest: options.forceRest !== false });
+  })();
+  wishlistScanTail = run.then(() => {}, () => {});
+  try {
+    return await run;
+  } finally {
+    wishlistScanInFlight -= 1;
+  }
+}
+
+// 低频校准节拍（默认每分钟检查一次）：是否真的请求 Market 由账本里每个 target
+// 的 lastRestAt 与 calibrationIntervalMs 决定（`forceRest: false`），所以重启
+// 不会额外扫描、也不会漏扫。Market 完全不可用时只记脱敏指标与警告，留
+// scanSummary 的组数供指标和下一拍重试，绝不让定时器产生未处理异常。
+async function runWishlistCalibrationTick(api: any): Promise<void> {
+  const startedAt = Date.now();
+  try {
+    const result = await runWishlistScanShared(api, { forceRest: false, skipIfBusy: true });
+    if (result?.skipped || ['no_active_wishes', 'scan_in_flight', 'not_due'].includes(String(result?.reason || ''))) return;
+    await wishlistMetricsInstance().recordScan({
+      at: new Date().toISOString(),
+      ok: true,
+      durationMs: Date.now() - startedAt,
+      scope: 'calibration',
+      groups: Number(result?.groups || 0),
+      fetched: Number(result?.fetched || 0),
+      failedGroups: Number(result?.failedGroups || 0),
+      error: '',
+    });
+    if (Number(result?.failedGroups || 0) > 0) {
+      api.logger.warn?.(`Warframe wishlist calibration partial failure: ${Number(result.failedGroups)}/${Number(result.groups)} 组失败（其余组正常）`);
+    }
+  } catch (error: any) {
+    const summary = error?.scanSummary || {};
+    try {
+      await wishlistMetricsInstance().recordScan({
+        at: new Date().toISOString(),
+        ok: false,
+        durationMs: Date.now() - startedAt,
+        scope: 'calibration',
+        groups: Number(summary.groups || 0),
+        fetched: Number(summary.fetched || 0),
+        failedGroups: Number(summary.failedGroups || 0),
+        error: String(error?.message || error),
+      });
+    } catch { /* 指标失败不影响校准重试 */ }
+    api.logger.warn?.(`Warframe wishlist calibration tick failed; retrying on next tick: ${String(error?.message || error)}`);
+  }
 }
 
 // 掉落监测：每分钟只做本地 mtime 检查，快照变化才解密 diff，不联网轮询
@@ -983,13 +1090,17 @@ async function sendDirectQQReply(api: any, event: any, ctx: any, reply: any): Pr
       }
       if (isPrivateWishlist) {
         try {
-          const combined = await sendWishlistKeyboardWithFallback({
+          const merged = await wishlistMergedCardEnabled(api, {
+            accountId: ctx.accountId,
+            senderId: event.senderId || ctx.senderId,
+          });
+          const combined = await sendWishlistCard({
             result: reply.raw, cfg: api.config, accountId: ctx.accountId, target,
             replyToId: event.replyToId || ctx.replyToId, mediaUrl: reply.mediaUrl,
-            content: String(reply.text || ''),
+            content: String(reply.text || ''), merged, sendMedia: sendMediaFor(adapter, common),
           });
           if (!combined.sent) throw new Error('wishlist keyboard was not applicable');
-          if (combined.degraded) api.logger.warn?.('Warframe wishlist reply degraded to one text-and-keyboard bubble');
+          if (combined.degraded) api.logger.warn?.(`Warframe wishlist reply degraded (mode=${String(combined.mode || 'unknown')})`);
           result = { messageId: combined.messageId || 'accepted' };
         } catch {
           api.logger.warn?.('Warframe combined wishlist reply failed; falling back to one text bubble');
@@ -1022,9 +1133,14 @@ async function sendDirectQQReply(api: any, event: any, ctx: any, reply: any): Pr
       adapterReady = true;
       if (isPrivateWishlist) {
         try {
-          const combined = await sendWishlistKeyboard({
+          const merged = await wishlistMergedCardEnabled(api, {
+            accountId: ctx.accountId,
+            senderId: event.senderId || ctx.senderId,
+          });
+          const combined = await sendWishlistCard({
             result: reply.raw, cfg: api.config, accountId: ctx.accountId, target,
             replyToId: event.replyToId || ctx.replyToId, content: String(reply.text || ''),
+            merged, sendMedia: sendMediaFor(adapter, common),
           });
           if (!combined.sent) throw new Error('wishlist keyboard was not applicable');
           result = { messageId: combined.messageId || 'accepted' };
@@ -1075,6 +1191,36 @@ async function marketCardPreferenceReply(api: any, event: any, ctx: any, command
       ? 'wm 单条选项卡已开启。之后私聊查价会把图片、1号卖家和选项按钮合并在一条消息里。发送“wm卡片 关”可恢复。'
       : 'wm 单条选项卡已关闭。之后私聊查价会继续使用兼容的分开发送。发送“wm卡片 开”可启用。',
   };
+}
+
+// 愿望卡总开关的读取端：默认「一体卡」（见 qq-wishlist-card-preferences.mjs）。
+// 偏好文件损坏、键缺失或没有可信发送者时按兼容拆分处理——拆分的按钮气泡同样
+// 可操作，绝不会因为偏好问题让通知卡投不出去。
+async function wishlistMergedCardEnabled(api: any, identity: { accountId?: string; senderId?: string; target?: string }): Promise<boolean> {
+  const accountId = String(identity?.accountId || 'default').trim() || 'default';
+  const senderId = String(identity?.senderId || String(identity?.target || '').match(/^qqbot:c2c:([^:]+)$/iu)?.[1] || '').trim();
+  if (!senderId) return false;
+  try {
+    return await getWishlistCardMerged({ accountId, senderId, filePath: wishlistCardPreferenceFile });
+  } catch {
+    api?.logger?.warn?.('Warframe wishlist card preference read failed; using compatible split delivery');
+    return false;
+  }
+}
+
+async function wishlistCardPreferenceReply(api: any, event: any, ctx: any, command: any): Promise<any> {
+  if (Boolean(event.isGroup || agentContextIsGroup(ctx))) {
+    return { text: '愿望卡设置仅支持 QQ 私聊。', isError: true };
+  }
+  const identity = { accountId: ctx.accountId, senderId: event.senderId || ctx.senderId };
+  let merged: boolean;
+  if (command.merged === null) merged = await getWishlistCardMerged({ ...identity, filePath: wishlistCardPreferenceFile });
+  else merged = await setWishlistCardMerged({ ...identity, merged: command.merged, filePath: wishlistCardPreferenceFile });
+  const label = merged
+    ? '一体卡：图片、文案和按钮合并在同一条消息里'
+    : '分开发送：先发文本＋按钮，再补一张图片';
+  if (command.merged === null) return { text: `愿望卡当前为${label}。发送“愿望卡 ${merged ? '关' : '开'}”可切换。` };
+  return { text: `愿望卡已切换为${label}。${merged ? '发送“愿望卡 关”可改为分开发送。' : '发送“愿望卡 开”可恢复一体卡。'}` };
 }
 
 function installMarketTrendInteractionBridge(api: any): () => void {
@@ -1594,8 +1740,9 @@ export default definePluginEntry({
       const content = String(event.content || event.body || '');
       if (!isQQChannel(event.channel)) return;
       const marketCardCommand = parseMarketCardPreferenceCommand(content);
+      const wishlistCardCommand = parseWishlistCardPreferenceCommand(content);
       // 非严格命令不在 ingress 猜意图，完整放行给模型调用 warframe_assistant。
-      if (!marketCardCommand && !isShortcut(content) && !isSubscriptionCommand(content)) return;
+      if (!marketCardCommand && !wishlistCardCommand && !isShortcut(content) && !isSubscriptionCommand(content)) return;
       api.logger.info(`Warframe before_dispatch matched: ${content.trim()}`);
       try {
         const ingressEvent = {
@@ -1612,6 +1759,12 @@ export default definePluginEntry({
           const reply = await marketCardPreferenceReply(api, ingressEvent, ctx, marketCardCommand);
           await sendDirectQQReply(api, event, ctx, reply);
           api.logger.info('Warframe market card preference updated before model');
+          return { handled: true };
+        }
+        if (wishlistCardCommand) {
+          const reply = await wishlistCardPreferenceReply(api, ingressEvent, ctx, wishlistCardCommand);
+          await sendDirectQQReply(api, event, ctx, reply);
+          api.logger.info('Warframe wishlist card preference updated before model');
           return { handled: true };
         }
         if (isWishlistCommand(content)) {
@@ -1638,6 +1791,9 @@ export default definePluginEntry({
       const marketCardCommand = isQQChannel(event.channel)
         ? parseMarketCardPreferenceCommand(event.content)
         : null;
+      const wishlistCardCommand = isQQChannel(event.channel)
+        ? parseWishlistCardPreferenceCommand(event.content)
+        : null;
       if (marketCardCommand) {
         try {
           const reply = await marketCardPreferenceReply(api, event, event, marketCardCommand);
@@ -1645,6 +1801,15 @@ export default definePluginEntry({
         } catch (error) {
           api.logger.error(`Warframe market card preference failed closed: ${String(error)}`);
           return { handled: true, reply: { text: 'wm 卡片设置暂时无法更新，请稍后重试。', isError: true } };
+        }
+      }
+      if (wishlistCardCommand) {
+        try {
+          const reply = await wishlistCardPreferenceReply(api, event, event, wishlistCardCommand);
+          return { handled: true, reply };
+        } catch (error) {
+          api.logger.error(`Warframe wishlist card preference failed closed: ${String(error)}`);
+          return { handled: true, reply: { text: '愿望卡设置暂时无法更新，请稍后重试。', isError: true } };
         }
       }
       if (isQQChannel(event.channel) && isWishlistCommand(event.content)) {
@@ -1672,7 +1837,8 @@ export default definePluginEntry({
       const channel = ctx.messageProvider || ctx.channel;
       const content = String(event.cleanedBody || '');
       const marketCardCommand = isQQChannel(channel) ? parseMarketCardPreferenceCommand(content) : null;
-      if (!marketCardCommand && !isShortcut(content) && !isSubscriptionCommand(content)) return;
+      const wishlistCardCommand = isQQChannel(channel) ? parseWishlistCardPreferenceCommand(content) : null;
+      if (!marketCardCommand && !wishlistCardCommand && !isShortcut(content) && !isSubscriptionCommand(content)) return;
       api.logger.info(
         `Warframe before_agent_reply matched: channel=${String(channel || 'unknown')} command=${content.trim()}`,
       );
@@ -1692,6 +1858,15 @@ export default definePluginEntry({
         } catch (error) {
           api.logger.error(`Warframe market card preference before_agent_reply failed closed: ${String(error)}`);
           return { handled: true, reply: { text: 'wm 卡片设置暂时无法更新，请稍后重试。', isError: true }, reason: 'warframe-market-card-preference-error' };
+        }
+      }
+      if (wishlistCardCommand) {
+        try {
+          const reply = await wishlistCardPreferenceReply(api, ingressEvent, ctx, wishlistCardCommand);
+          return { handled: true, reply, reason: 'warframe-wishlist-card-preference' };
+        } catch (error) {
+          api.logger.error(`Warframe wishlist card preference before_agent_reply failed closed: ${String(error)}`);
+          return { handled: true, reply: { text: '愿望卡设置暂时无法更新，请稍后重试。', isError: true }, reason: 'warframe-wishlist-card-preference-error' };
         }
       }
       if (isWishlistCommand(content)) {
