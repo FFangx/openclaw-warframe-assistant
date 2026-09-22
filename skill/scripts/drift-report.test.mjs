@@ -459,10 +459,12 @@ test('CLI health：单次只读输出脱敏聚合，source 为固定安全标签
       },
     }), 'utf8');
     const cliPath = fileURLToPath(new URL('./drift-report.mjs', import.meta.url));
+    const beforeExec = Date.now();
     const { stdout } = await promisify(execFile)(process.execPath, [cliPath, 'health', '--health', healthFile], {
       encoding: 'utf8',
       env: { ...process.env, WARFRAME_DATA_CACHE_DIR: cacheDir },
     });
+    const afterExec = Date.now();
     const output = JSON.parse(stdout);
     assert.equal(output.ok, true);
     assert.equal(output.command, 'health');
@@ -478,8 +480,9 @@ test('CLI health：单次只读输出脱敏聚合，source 为固定安全标签
     const open = output.aggregate.details.find((d) => d.endpoint === 'worldstate:primary:pc');
     assert.equal(open.circuitOpen, true);
     assert.equal(open.legacyState, true);
-    // 子进程内 now 比父进程捕获的 base 晚几毫秒，退避余量允许微小损耗
-    assert.ok(open.backoffMs > 899_000 && open.backoffMs <= 900_000, `backoffMs=${open.backoffMs}`);
+    // 子进程的时钟采样必在启动与退出之间；不要假设繁忙机器能在一秒内启动。
+    assert.ok(open.backoffMs >= base + 900_000 - afterExec && open.backoffMs <= base + 900_000 - beforeExec,
+      `backoffMs=${open.backoffMs}`);
     // 输出不得包含文件里混入的敏感字段，也不得包含本机文件路径
     assert.ok(!stdout.includes('LEAKME'));
     assert.ok(!stdout.includes('X-Api-Key'));
