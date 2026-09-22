@@ -492,6 +492,21 @@ const TIER_ADVICE = {
   C: { tag: 'premium', zh: '收藏向' },
 };
 
+// The official manifest has StoreItems paths; older mirrors may already strip that segment.
+export function baroItemCategory(uniqueName = '') {
+  const itemPath = stripStoreItem(uniqueName);
+  if (/\/(?:Upgrades\/)?Mods\//u.test(itemPath)) return 'mod';
+  if (/\/Weapons\//u.test(itemPath)) return 'weapon';
+  if (/\/(?:Projections|Relics)\//u.test(itemPath)) return 'relic';
+  return 'other';
+}
+
+export function isBaroPractical(row) {
+  if (row?.relicKind) return true;
+  // Legacy synthetic rows may not have a category; retain them until they are reclassified.
+  return row?.category == null || ['mod', 'weapon', 'relic'].includes(row.category);
+}
+
 // 分级：表命中 > 类型兜底（遗物 A、Mod/武器/部件 B、非交易 C）
 export function gradeBaroItem(row, overrides = null) {
   const table = overrides ?? loadBaroTier();
@@ -726,6 +741,7 @@ export async function appraiseTraderGoods(goods, options = {}) {
     }
     const base = {
       uniqueName: entry.uniqueName,
+      category: baroItemCategory(entry.uniqueName),
       nameEn: entry.item,
       zhName: meta?.zh || zhLocal || null,
       slug: meta?.slug ?? null,
@@ -773,6 +789,7 @@ export async function appraiseTraderGoods(goods, options = {}) {
       row.ratio = ratio != null ? Math.round(ratio * 100) / 100 : null;
       row.tier = gradeBaroItem(row, options.tierOverride ?? null);
       await enrichRelicRow(row);
+      if (row.relicKind) row.category = 'relic';
       return { ...row, advice: decidePractical(row, row.tier) };
     } catch {
       const row = {
@@ -784,6 +801,7 @@ export async function appraiseTraderGoods(goods, options = {}) {
       };
       row.tier = gradeBaroItem(row, options.tierOverride ?? null);
       await enrichRelicRow(row);
+      if (row.relicKind) row.category = 'relic';
       return { ...row, advice: decidePractical(row, row.tier) };
     }
   });
@@ -884,7 +902,7 @@ export async function traderShopping(input, options = {}) {
     } catch { /* 兑换估值失败时保留实用性分级推荐 */ }
   }
   // 购物车口径：所有「推荐买」（S 公认必买/A 强推）的杜卡德合计 vs 余额
-  const wantDucats = rows.filter((row) => ['must', 'good'].includes(row.advice.tag))
+  const wantDucats = rows.filter((row) => isBaroPractical(row) && ['must', 'good'].includes(row.advice.tag))
     .reduce((sum, row) => sum + row.ducats, 0);
   return {
     ...base,
@@ -962,7 +980,8 @@ export function formatTraderShopping(result) {
     return `奸商 ${result.character} 尚未到达。预计 ${beijingTime(result.activation)} 到 ${result.location}；到货后再来问「奸商买什么」。当前杜卡德余额 ${result.ducatBalance.toLocaleString('zh-CN')}。`;
   }
   const lines = [`【奸商购物推荐】${result.location}｜杜卡德余额 ${result.ducatBalance.toLocaleString('zh-CN')}`];
-  for (const row of result.rows.slice(0, 16)) {
+  const practical = result.rows.filter(isBaroPractical);
+  for (const row of practical) {
     const name = row.zhName || (row.tradable ? row.nameEn : '未收录物品');
     const basis = row.marketBasis === 'orders' ? `当前售价 ${row.platinum}p（${row.orderCount ?? 0} 单在售${row.orderLowSuspicious ? '·已剔除异常低单' : ''}）`
       : row.marketBasis === 'today' ? `今日成交中位 ${row.platinum}p（${row.todayVolume ?? 0} 笔）`
@@ -985,7 +1004,7 @@ export function formatTraderShopping(result) {
           : `｜奸商 ${credits}现金｜税 ${tax}`;
     lines.push(`${row.advice.zh}｜${name}｜${row.ducats}杜+${credits}现金｜${price}${route}${ratio}${row.owned ? '｜已有' : ''}`);
   }
-  if (result.rows.length > 16) lines.push(`其余 ${result.rows.length - 16} 件已在卡片中省略，优先保留会影响购买决策的项目。`);
+  if (practical.length < result.rows.length) lines.push(`已隐藏 ${result.rows.length - practical.length} 件其他类别商品。`);
   lines.push(`经济性推荐合计 ${result.wantDucats} 杜卡德${result.affordable ? '，余额够用' : `，还差 ${result.ducatShortfall} 杜卡德，可发「杜卡德 ${result.ducatShortfall}」生成兑换方案`}。市场路线优先当前售价（剔除异常低单），无卖单改用今日成交中位；90 天历史价不适用 Baro 期行情；补足杜卡德按激进口径（含已入库部件）估算；仅供参考。`);
   return lines.join('\n');
 }

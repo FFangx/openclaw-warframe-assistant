@@ -647,6 +647,8 @@ async function runWishlistTrackingSweep(api: any, wishlistModule: any): Promise<
   try {
     const outbox = await wishlistOutboxInstance();
     const routing = await wishlistRouting();
+    const trackingTextFor = typeof wishlistModule?.wishlistTrackingText === 'function'
+      ? wishlistModule.wishlistTrackingText : wishlistTrackingText;
     const result = await wishlistModule.runDueWishlistTracking(wishlistState, {
       enqueueEvent: async (event: any) => {
         const replacementHits = event.replacement ? [{ wish: event.wish, order: event.replacement }] : [];
@@ -654,7 +656,7 @@ async function runWishlistTrackingSweep(api: any, wishlistModule: any): Promise<
         const businessKey = `${routing.keyPrefix}tracking:${createHash('sha256').update(JSON.stringify(keyMaterial)).digest('hex')}`;
         await outbox.enqueue({
           businessKey, target: event.target,
-          parts: [{ kind: 'rich', value: JSON.stringify({ mediaUrl: null, text: wishlistTrackingText(event), hits: replacementHits, wish: event.wish }) }],
+          parts: [{ kind: 'rich', value: JSON.stringify({ mediaUrl: null, text: trackingTextFor(event), hits: replacementHits, wish: event.wish }) }],
           expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(), redactOnTerminal: true,
         });
       },

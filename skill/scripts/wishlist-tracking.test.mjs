@@ -4,7 +4,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { manageWishlist, monitorWishlist, readWishlistLedger, runDueWishlistTracking, trackingDelayMs } from './wishlist.mjs';
+import { manageWishlist, monitorWishlist, readWishlistLedger, runDueWishlistTracking, trackingDelayMs, wishlistTrackingText } from './wishlist.mjs';
 
 const BASE = Date.parse('2026-09-17T10:00:00.000Z');
 const IDENTITY = { target: 'qqbot:c2c:user-a', ownerId: 'user-a', ownerName: '玩家' };
@@ -30,6 +30,18 @@ test('adaptive schedule uses 10s, 30s and 2m bands', () => {
   assert.equal(trackingDelayMs(0), 10_000);
   assert.equal(trackingDelayMs(5 * 60_000), 30_000);
   assert.equal(trackingDelayMs(30 * 60_000), 120_000);
+});
+
+test('tracking notices preserve wish rank and cap, and give a fresh whisper only for a cheaper order', () => {
+  const wish = { itemName: 'Test Item', zhName: '测试商品', rankMode: 'max', maxPrice: 100 };
+  const track = { currentPrice: 95 };
+  const replacement = { seller: 'NewSeller', rank: 10, unitPrice: 85, platinum: 85 };
+  const lower = wishlistTrackingText({ type: 'lower', wish, track, replacement });
+  assert.match(lower, /满级（愿望上限 100p）/u);
+  assert.match(lower, /95p → 85p/u);
+  assert.match(lower, /\n\/w NewSeller .*85 platinum/u);
+  const removed = wishlistTrackingText({ type: 'removed', wish, track });
+  assert.doesNotMatch(removed, /\/w /u);
 });
 
 test('first absence waits 2s and only a second successful absence reports removal', async () => {

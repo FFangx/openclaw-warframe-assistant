@@ -177,6 +177,16 @@ test('gradeBaroItem：分级表命中、类型兜底与中文名匹配', async (
   assert.equal(table.items.primed_ammo_case, 'B');
 });
 
+test('Baro category keeps manifest Mod, weapon and relic paths while excluding cosmetics', async () => {
+  const { baroItemCategory, isBaroPractical } = await import('./trader-shopping.mjs');
+  assert.equal(baroItemCategory('/Lotus/StoreItems/Upgrades/Mods/PrimedTest'), 'mod');
+  assert.equal(baroItemCategory('/Lotus/Weapons/Tenno/TestWeapon'), 'weapon');
+  assert.equal(baroItemCategory('/Lotus/StoreItems/Types/Keys/Projections/TestRelic'), 'relic');
+  assert.equal(baroItemCategory('/Lotus/StoreItems/Types/Items/MiscItems/Decoration'), 'other');
+  assert.equal(isBaroPractical({ category: 'other', relicKind: true }), true);
+  assert.equal(isBaroPractical({ category: 'other' }), false);
+});
+
 test('appraiseTraderGoods：遗物奖励清单——官方中文名/库存持有与数量/单件市场，全有保持 B', async () => {
   const { appraiseTraderGoods } = await import('./trader-shopping.mjs');
   const relicDb = { rewardsByBase: new Map([['Axi M5', [
@@ -398,6 +408,20 @@ test('buildTraderShoppingCard：三列对比、实用性标签、需求度与库
   assert.match(card.html, /口碑分级/u);
   assert.match(card.html, /库存可动/u);
   assert.match(card.html, /1,385/u);
+});
+
+test('Baro card shows every practical item and the original owned label', async () => {
+  const { buildTraderShoppingCard } = await import('./warframe-cards.mjs');
+  const rows = Array.from({ length: 18 }, (_, index) => ({
+    uniqueName: `/Lotus/Upgrades/Mods/Test${index}`, category: 'mod', zhName: `测试 Mod ${index}`,
+    ducats: 100, credits: 100000, advice: { tag: 'skip', zh: '已有·跳过' }, owned: true,
+  }));
+  rows.push({ uniqueName: '/Lotus/Types/Decoration', category: 'other', zhName: '装饰品', advice: { tag: 'exclusive', zh: '收藏' } });
+  const card = buildTraderShoppingCard({ arrived: true, fetchedAt: '2026-09-18T00:00:00Z', ducatBalance: 100, wantDucats: 0, affordable: true, rows });
+  assert.match(card.html, /测试 Mod 17/u);
+  assert.match(card.html, /已有·跳过/u);
+  assert.doesNotMatch(card.html, /装饰品/u);
+  assert.equal(card.height, 86 + 30 + 22 + 18 * 106 + 34);
 });
 
 test('buildTraderShoppingCard：无卖单 → 今日成交中位作市场列对比价', async () => {

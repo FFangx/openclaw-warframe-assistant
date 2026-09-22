@@ -353,14 +353,39 @@ function actionText(action, wish) {
   return `已取消 ${name} 愿望。历史记录已保留，5 分钟内可以撤销。`;
 }
 
-function whisperTextForHit(hit) {
-  const order = hit.order || {};
-  const wish = hit.wish || {};
+export function wishlistWhisperText(wish = {}, order = {}) {
   const seller = normalize(order.seller || order.user?.ingameName || '未知玩家');
   const item = normalize(wish.itemName || wish.slug || wish.zhName || '未知商品');
   const rank = order.rank == null ? '' : ` (rank ${order.rank})`;
   const total = Number.isFinite(Number(order.platinum)) ? Number(order.platinum) : Number(order.unitPrice || 0);
   return `/w ${seller} Hi! I want to buy: "${item}${rank}" for ${formatPrice(total)} platinum. (warframe.market)`;
+}
+
+function whisperTextForHit(hit) {
+  return wishlistWhisperText(hit?.wish || {}, hit?.order || {});
+}
+
+export function wishlistTrackingText(event) {
+  const wish = event?.wish || {};
+  const name = String(wish.zhName || wish.itemName || '该商品');
+  const rank = wish.rankMode === 'max' ? ' · 满级'
+    : wish.rankMode === 'exact' && wish.rank != null ? ` · 等级${wish.rank}` : '';
+  const cap = Number(wish.maxPrice);
+  const status = `${rank}${Number.isFinite(cap) && cap > 0 ? `（愿望上限 ${formatPrice(cap)}p）` : ''}`;
+  const price = (value) => Number.isFinite(Number(value)) ? `${formatPrice(value)}p` : '价格未知';
+  const oldPrice = price(event?.track?.currentPrice);
+  const newOrder = event?.replacement || event?.order;
+  const newPrice = price(newOrder?.unitPrice);
+  const whisper = newOrder && ['lower', 'removed_replaced', 'price_down'].includes(event?.type)
+    ? `\n${wishlistWhisperText(wish, newOrder)}` : '';
+  if (event?.type === 'removed_replaced') return `${name}${status} 的命中卖单已撤下；发现新的最低价 ${newPrice}，已切换并重新跟踪 1 小时。${whisper}`;
+  if (event?.type === 'removed') return `${name}${status} 的命中卖单经二次确认已从 Warframe.Market 撤下。`;
+  if (event?.type === 'lower') return `${name}${status} 出现更低卖单：${oldPrice} → ${newPrice}，已切换跟踪（重新计时 1 小时）。${whisper}`;
+  if (event?.type === 'price_down') return `${name}${status} 的命中卖单改价：${oldPrice} → ${newPrice}。${whisper}`;
+  if (event?.type === 'price_up') return `${name}${status} 的命中卖单改价：${oldPrice} → ${newPrice}。`;
+  if (event?.type === 'price_exceeded') return `${name}${status} 的命中卖单已涨到 ${newPrice}，超过愿望上限，已停止跟踪这张卖单；愿望本身继续有效。`;
+  if (event?.type === 'expired_unknown') return `${name}${status} 的 1 小时跟踪已结束，但期间市场接口异常，无法确认卖单最终是否撤下。愿望本身继续有效。`;
+  return `${name}${status} 的命中卖单已持续存在 1 小时，本次跟踪结束；愿望本身继续有效。`;
 }
 
 function hitNotificationText(hits) {

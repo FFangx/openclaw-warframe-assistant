@@ -45,6 +45,25 @@ test('uploads a PNG with SigV4 and returns a 15-minute signed GET URL', async ()
   }
 });
 
+test('image URLs default to one day and cannot outlive the bucket retention', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'warframe-r2-ttl-test-'));
+  try {
+    for (const ttl of [undefined, '604800']) {
+      const source = { ...env };
+      if (ttl === undefined) delete source.WARFRAME_R2_URL_TTL_SECONDS;
+      else source.WARFRAME_R2_URL_TTL_SECONDS = ttl;
+      const result = await uploadEphemeralR2Image(new URL(import.meta.url), {
+        env: source, usagePath: path.join(tempDir, `usage-${ttl || 'default'}.json`),
+        now: new Date('2026-09-18T20:00:00.000Z'), fetchImpl: async () => ({ ok: true, status: 200 }),
+      });
+      assert.equal(result.ttlSeconds, 86400);
+      assert.equal(new URL(result.url).searchParams.get('X-Amz-Expires'), '86400');
+    }
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('requires a complete private R2 configuration', async () => {
   await assert.rejects(
     uploadEphemeralR2Image(new URL(import.meta.url), { env: {}, fetchImpl: async () => ({ ok: true }) }),

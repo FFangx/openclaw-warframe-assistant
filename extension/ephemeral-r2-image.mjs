@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 
-const DEFAULT_TTL_SECONDS = 15 * 60;
+const DEFAULT_TTL_SECONDS = 24 * 60 * 60;
 const QUOTA_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 export const EPHEMERAL_R2_LIMITS = Object.freeze({
   maxImageBytes: 1024 * 1024,
@@ -52,7 +52,8 @@ function normalizedConfig(source = process.env) {
   }
   if (!/^[a-z0-9-]+$/iu.test(bucket)) throw new Error('Warframe R2 bucket name is invalid');
   const requestedTtl = Number.parseInt(String(source.WARFRAME_R2_URL_TTL_SECONDS || DEFAULT_TTL_SECONDS), 10);
-  const ttlSeconds = Number.isFinite(requestedTtl) ? Math.min(3600, Math.max(60, requestedTtl)) : DEFAULT_TTL_SECONDS;
+  // The bucket removes wm/ objects after one day; longer signatures cannot keep them available.
+  const ttlSeconds = Number.isFinite(requestedTtl) ? Math.min(DEFAULT_TTL_SECONDS, Math.max(60, requestedTtl)) : DEFAULT_TTL_SECONDS;
   return { accountId, bucket, accessKeyId, secretAccessKey, ttlSeconds };
 }
 

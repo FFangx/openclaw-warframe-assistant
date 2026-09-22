@@ -5,6 +5,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { NEXT_ACTIONS_HEIGHT, renderNextActions } from './card-actions.mjs';
+import { isBaroPractical } from './trader-shopping.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -711,7 +712,7 @@ export function buildDropsAlertCard(data) {
 export function buildTraderShoppingCard(data) {
   const allRows = Array.isArray(data.rows) ? data.rows : [];
   // 完整货单可能超过 30 件；卡片只保留前 16 个决策优先项，避免 QQ 中生成过长图片。
-  const rows = allRows.slice(0, 16);
+  const rows = allRows.filter(isBaroPractical);
   const ADVICE_STYLE = {
     // 实用性推荐标签（2026-08-22：社区口碑分级）
     must: { zh: '公认必买', color: '#f0c765' }, good: { zh: '强推', color: '#75dcca' },
@@ -729,10 +730,11 @@ export function buildTraderShoppingCard(data) {
   const relicLineCount = (row) => (Array.isArray(row.relicRewards) ? row.relicRewards.length : 0);
   const noteH = 22;
   const heights = rows.map((row) => (relicLineCount(row) ? RELIC_BASE_H + relicLineCount(row) * RELIC_LINE_H : rowH));
-  const height = 86 + 30 + noteH + heights.reduce((sum, h) => sum + h, 0) + 34;
+  const height = 86 + 30 + noteH + Math.max(62, heights.reduce((sum, h) => sum + h, 0)) + 34;
   const body = rows.map((row, index) => {
     const rowHeight = heights[index];
     const advice = ADVICE_STYLE[row.advice?.tag] || ADVICE_STYLE.skip;
+    const adviceText = row.advice?.zh || advice.zh;
     const name = row.zhName || (row.tradable ? row.nameEn : (row.nameEn || '未收录物品'));
     // 布局：名称行 → 内容行（左=商品说明，右=三列紧凑组（补足|虚空商人|市场，顶部对齐））
     // 行内容在行高内垂直居中：市场列最底行（需求）与下边界的间距 ≈ 名称行顶部与上边界的间距。
@@ -804,12 +806,12 @@ export function buildTraderShoppingCard(data) {
     </div>`;
     const contentRow = `<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;margin-top:6px;align-items:start">${descBlock}${trio}</div>`;
     return `<div style="position:relative;z-index:1;height:${rowHeight}px;display:grid;grid-template-columns:60px 54px minmax(0,1fr);align-items:center;padding:0 16px;border-bottom:1px solid rgba(176,123,55,.40);background:${index % 2 ? 'rgba(255,255,255,.035)' : 'rgba(255,255,255,.014)'}">
-      <div style="width:50px;height:24px;border-radius:6px;display:grid;place-items:center;background:${advice.color};color:#14181d;font-size:11px;font-weight:900;white-space:nowrap">${advice.zh}</div>
+      <div style="width:58px;height:24px;border-radius:6px;display:grid;place-items:center;background:${advice.color};color:${row.advice?.tag === 'skip' ? '#fff' : '#14181d'};font-size:10px;font-weight:900;white-space:nowrap">${escapeHtml(adviceText)}</div>
       ${iconCell}
       <div style="min-width:0;padding-left:12px"><div style="font-size:15px;font-weight:820;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(name)}${row.owned ? ' <span style="font-size:10px;color:#8f9aa6;font-weight:700">已有</span>' : ''}${tierBadge}</div>${contentRow}${rewardsBlock}</div>
     </div>`;
   }).join('');
-  const empty = '<div style="position:relative;z-index:1;height:62px;display:grid;place-items:center;color:#8995a1;font-size:14px">奸商尚未到达，到货后再来问</div>';
+  const empty = `<div style="position:relative;z-index:1;height:62px;display:grid;place-items:center;color:#8995a1;font-size:14px">${data.arrived ? '本次货单没有 Mod、武器或遗物' : '奸商尚未到达，到货后再来问'}</div>`;
   const balance = Number(data.ducatBalance) || 0;
   const want = Number(data.wantDucats) || 0;
   const affordText = data.arrived
@@ -817,10 +819,10 @@ export function buildTraderShoppingCard(data) {
     : `预计 ${localDateTime(data.activation)} 到达`;
   const content = `<div class="card"><div class="header" style="height:86px">${headerIcon('baro')}<div style="min-width:0"><div class="kicker">奸商购物推荐 · 仅用户私聊</div><div class="title" style="font-size:23px">${escapeHtml(data.location || '虚空商人')}</div></div><div class="header-meta"><strong>余额 ${currency('ducat', balance, { size: 14 })}</strong><span>${escapeHtml(localTime(data.fetchedAt))}</span></div></div>
     <div class="section"><span class="section-badge">${rows.length}/${allRows.length} 件</span>奸商购物推荐 · 实用性分级<small>${data.arrived ? `当前 ${currency('ducat', balance, { size: 10, weight: 760 })}${data.safeDucatAvailable != null ? ` · 库存可动 ${currency('ducat', data.safeDucatAvailable, { size: 10, weight: 760 })}（含已入库）` : ''}` : '未到货'}</small></div>
-    <div style="height:${noteH}px;padding:5px 16px;display:flex;align-items:center;font-size:10px;color:#8f9aa6;background:#242b32;border-bottom:1px solid #48525d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">推荐=口碑分级（S 必买/A 强推/B 看需求）· 市场列=当前售价/今日中位 · 求购数=需求度 · 遗物行=奖励×库存×市场</div>
+    <div style="height:${noteH}px;padding:5px 16px;display:flex;align-items:center;font-size:10px;color:#8f9aa6;background:#242b32;border-bottom:1px solid #48525d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">仅显示 Mod/武器/遗物（全量） · 推荐=口碑分级 · 市场=当前售价/今日中位 · 遗物=奖励×库存×市场</div>
     ${body || empty}
     <div class="footer" style="height:34px"><span>${affordText}</span><span>MOD 按 0 级 · 补足=机会成本（含已入库）· 市场=当前售价 · 仅供参考</span></div></div>`;
-  const keySeed = `trader-shop15|${data.fetchedAt}|${allRows.map((row) => `${row.uniqueName}:${row.advice?.tag}:${row.tier ?? ''}:${row.platinum ?? ''}:${row.marketBasis ?? ''}:${row.orderLow ?? ''}:${row.orderCount ?? ''}:${row.orderLowSuspicious ? 1 : 0}:${row.todayMedian ?? ''}:${row.todayVolume ?? ''}:${row.buyCount ?? ''}:${row.buyQty ?? ''}:${row.ducatOpportunityPlat ?? ''}:${row.ducatPlanShortfall ?? ''}:${row.ducatPlanDucats ?? ''}:${row.relicRuns?.min ?? ''}:${row.relicRuns?.max ?? ''}:${row.relicParts?.missingCount ?? ''}:${row.relicParts?.missing?.join(',') ?? ''}:${row.description ?? ''}:${row.tradingTax ?? ''}:${(row.relicRewards ?? []).map((r) => `${r.slug}:${r.name}:${r.rarity ?? ''}:${r.owned ? r.count : 0}:${r.platinum ?? ''}:${r.ducats ?? ''}:${r.recentVolume ?? ''}`).join(',')}`).join('|')}`;
+  const keySeed = `trader-shop16|${data.fetchedAt}|${allRows.map((row) => `${row.uniqueName}:${row.category ?? ''}:${row.advice?.tag}:${row.advice?.zh ?? ''}:${row.tier ?? ''}:${row.platinum ?? ''}:${row.marketBasis ?? ''}:${row.orderLow ?? ''}:${row.orderCount ?? ''}:${row.orderLowSuspicious ? 1 : 0}:${row.todayMedian ?? ''}:${row.todayVolume ?? ''}:${row.buyCount ?? ''}:${row.buyQty ?? ''}:${row.ducatOpportunityPlat ?? ''}:${row.ducatPlanShortfall ?? ''}:${row.ducatPlanDucats ?? ''}:${row.relicRuns?.min ?? ''}:${row.relicRuns?.max ?? ''}:${row.relicParts?.missingCount ?? ''}:${row.relicParts?.missing?.join(',') ?? ''}:${row.description ?? ''}:${row.tradingTax ?? ''}:${(row.relicRewards ?? []).map((r) => `${r.slug}:${r.name}:${r.rarity ?? ''}:${r.owned ? r.count : 0}:${r.platinum ?? ''}:${r.ducats ?? ''}:${r.recentVolume ?? ''}`).join(',')}`).join('|')}`;
   return { html: documentShell(content, height), width: 600, height, key: `trader-shop-${createHash('sha1').update(keySeed).digest('hex').slice(0, 12)}` };
 }
 
