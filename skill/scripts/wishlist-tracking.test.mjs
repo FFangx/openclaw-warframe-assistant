@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { manageWishlist, monitorWishlist, readWishlistLedger, runDueWishlistTracking, trackingDelayMs, wishlistTrackingText } from './wishlist.mjs';
+import { clearStaleWishlistLock, manageWishlist, monitorWishlist, readWishlistLedger, runDueWishlistTracking, trackingDelayMs, wishlistTrackingText } from './wishlist.mjs';
 
 const BASE = Date.parse('2026-09-17T10:00:00.000Z');
 const IDENTITY = { target: 'qqbot:c2c:user-a', ownerId: 'user-a', ownerName: '玩家' };
@@ -42,6 +42,22 @@ test('tracking notices preserve wish rank and cap, and give a fresh whisper only
   assert.match(lower, /\n\/w NewSeller .*85 platinum/u);
   const removed = wishlistTrackingText({ type: 'removed', wish, track });
   assert.doesNotMatch(removed, /\/w /u);
+});
+
+test('stale lock from a dead Gateway is reclaimed; a live owner is retained', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'wishlist-stale-lock-'));
+  const state = path.join(dir, 'wishlist.json');
+  const lockPath = `${state}.lock`;
+  const old = new Date(Date.now() - 6 * 60_000);
+  await writeFile(lockPath, '');
+  await utimes(lockPath, old, old);
+  const created = await manageWishlist('愿望 物品 A 40', IDENTITY, state, options);
+  assert.equal(created.ok, true);
+  assert.equal(await clearStaleWishlistLock(state), false);
+  await writeFile(lockPath, JSON.stringify({ pid: process.pid, token: 'live' }));
+  await utimes(lockPath, old, old);
+  assert.equal(await clearStaleWishlistLock(state), false);
+  assert.equal(JSON.parse(await readFile(lockPath, 'utf8')).token, 'live');
 });
 
 test('first absence waits 2s and only a second successful absence reports removal', async () => {

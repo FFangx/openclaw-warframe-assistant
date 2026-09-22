@@ -8,7 +8,7 @@
 // performs a trade or chat action.
 
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { buildWishlistHitCard, buildWishlistSubscriptionCard, buildWishlistSummaryCard } from './wishlist-card.mjs';
@@ -136,21 +136,57 @@ async function writeWishlistLedger(statePath, ledger) {
   const normalized = normalizeLedger({ ...ledger, updatedAt: new Date().toISOString() });
   await mkdir(path.dirname(statePath), { recursive: true });
   const tempPath = `${statePath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
-  await rename(tempPath, statePath);
+  try {
+    await writeFile(tempPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await rename(tempPath, statePath);
+        break;
+      } catch (error) {
+        if (!['EPERM', 'EACCES', 'EBUSY'].includes(error?.code) || attempt >= 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 40 * 2 ** attempt));
+      }
+    }
+  } finally {
+    await unlink(tempPath).catch(() => {});
+  }
   return normalized;
+}
+
+const WISHLIST_STALE_LOCK_MS = 5 * 60 * 1000;
+
+export async function clearStaleWishlistLock(statePath, now = Date.now()) {
+  const lockPath = `${statePath}.lock`;
+  const before = await stat(lockPath).catch(() => null);
+  if (!before || now - before.mtimeMs < WISHLIST_STALE_LOCK_MS) return false;
+  let owner = null;
+  try { owner = JSON.parse(await readFile(lockPath, 'utf8')); } catch { /* legacy empty lock */ }
+  if (Number.isInteger(owner?.pid) && owner.pid > 0) {
+    try { process.kill(owner.pid, 0); return false; } catch (error) { if (error?.code !== 'ESRCH') return false; }
+  }
+  const current = await stat(lockPath).catch(() => null);
+  if (!current || current.mtimeMs !== before.mtimeMs || current.size !== before.size) return false;
+  try { await unlink(lockPath); return true; } catch (error) { if (error?.code === 'ENOENT') return false; throw error; }
 }
 
 async function withWishlistLock(statePath, fn) {
   const lockPath = `${statePath}.lock`;
   await mkdir(path.dirname(statePath), { recursive: true });
   let handle;
+  const token = randomBytes(12).toString('hex');
   for (let attempt = 0; attempt < 40; attempt += 1) {
     try {
       handle = await open(lockPath, 'wx');
+      try { await handle.writeFile(JSON.stringify({ pid: process.pid, token })); }
+      catch (error) {
+        await handle.close().catch(() => {});
+        await unlink(lockPath).catch(() => {});
+        throw error;
+      }
       break;
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
+      if (attempt === 0 || attempt % 8 === 0) await clearStaleWishlistLock(statePath);
       await new Promise((resolve) => setTimeout(resolve, 50 + attempt * 25));
     }
   }
@@ -159,7 +195,8 @@ async function withWishlistLock(statePath, fn) {
     return await fn();
   } finally {
     await handle.close().catch(() => {});
-    await unlink(lockPath).catch(() => {});
+    const current = await readFile(lockPath, 'utf8').catch(() => '');
+    if (current === JSON.stringify({ pid: process.pid, token })) await unlink(lockPath).catch(() => {});
   }
 }
 
