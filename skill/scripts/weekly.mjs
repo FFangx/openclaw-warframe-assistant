@@ -101,8 +101,12 @@ function cleanGameText(value) {
   return String(value || '').replace(/<[^>]+>/gu, '').replace(/\s+/gu, ' ').trim();
 }
 
-function officialTextZh(value, officialTextMap) {
-  const translated = officialTextMap?.get?.(String(value || '').normalize('NFKC').trim().toLowerCase()) || null;
+export function officialTextZh(value, officialTextMap) {
+  const raw = String(value || '').normalize('NFKC').trim();
+  // 回廊世界状态给的是 CeramicDagger 一类无空格标识，官方词典的英文值却是
+  // Ceramic Dagger。先精确匹配，再按 CamelCase 拆词匹配官方译文。
+  const translated = officialTextMap?.get?.(raw.toLowerCase())
+    || officialTextMap?.get?.(raw.replace(/([a-z\d])([A-Z])/gu, '$1 $2').toLowerCase()) || null;
   return translated ? cleanGameText(translated) : null;
 }
 
@@ -213,7 +217,7 @@ export function calendarUpgradeEntry(upgrade, upgradePath = null, calendarStateZ
     const learnedName = cleanGameText(learned.name);
     return {
       name: learned.provisional === true && !learnedName.endsWith('（暂译）') ? `${learnedName}（暂译）` : learnedName,
-      desc: cleanGameText(learned.desc || ''),
+      desc: cleanGameText(learned.desc || (learned.provisional === true ? '效果待官方资料确认' : '')),
       source: cleanGameText(learned.source || '学习词典'),
     };
   }
@@ -230,10 +234,8 @@ export function calendarUpgradeZh(upgrade, upgradePath = null, calendarStateZh =
 }
 
 // 渲染入口加载一次学习词典（失败静默降级空表，不影响主流程）
-let learnedCalendarUpgradesPromise = null;
 export function loadCalendarUpgradeLearned() {
-  learnedCalendarUpgradesPromise ??= getLearnedCalendarUpgradeEntries().catch(() => new Map());
-  return learnedCalendarUpgradesPromise;
+  return getLearnedCalendarUpgradeEntries().catch(() => new Map());
 }
 
 function fillCalendarCount(text, required) {
@@ -1323,7 +1325,7 @@ function buildMegaData(record, worldState, skipped = new Set(), autoResult = nul
     circuit: {
       // owned=拥有该具体战甲（AlecaFrame 绿勾语义：普通≠Prime，Suits uniqueName 精确比对）
       frames: frames.map((name) => ({ name, owned: Boolean(names?.uniqByName && suitSet?.has(names.uniqByName.get(name))) })),
-      weapons: weaponKeys.map((key) => ({ key, name: officialTextZh(key, officialTextMap) || staticData.incarnonZh[key] || '灵化武器（名称待词典同步）' })),
+      weapons: weaponKeys.map((key) => ({ key, name: officialTextZh(key, officialTextMap) || staticData.incarnonZh[key] || `${String(key).replace(/([a-z\d])([A-Z])/gu, '$1 $2')}（译名待核实）` })),
       normal: {
         number: taskNumber('circuit-normal'), done: done.has('circuit-normal'), skipped: skipped.has('circuit-normal'),
         progress: autoProgress['circuit-normal'] || '', track: circuitTrack(view, CIRCUIT_TRACKS.NORMAL, names),

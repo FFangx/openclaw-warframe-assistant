@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { ARCHIMEDEA_UNRESOLVED_DESC_ZH, archimedeaResearchProgress, calendarChallengeLine, calendarRewardZh, calendarUpgradeEntry, calendarUpgradeZh, evaluateAutoCheck, hasCompleteArchimedeas, hasCurrentWeeklyRotation, hasUnresolvedArchimedeaToken, localizeArchimedeaFaction, localizeArchimedeaModifier, nextReset, nightwaveChallengeZh, remindWeekly, sanitizeArchimedeaDescription, weekStart } from './weekly.mjs';
+import { ARCHIMEDEA_UNRESOLVED_DESC_ZH, archimedeaResearchProgress, calendarChallengeLine, calendarRewardZh, calendarUpgradeEntry, calendarUpgradeZh, evaluateAutoCheck, hasCompleteArchimedeas, hasCurrentWeeklyRotation, hasUnresolvedArchimedeaToken, localizeArchimedeaFaction, localizeArchimedeaModifier, nextReset, nightwaveChallengeZh, officialTextZh, remindWeekly, sanitizeArchimedeaDescription, weekStart } from './weekly.mjs';
 import { defaultDeltaLedgerPath } from './account-delta-ledger.mjs';
 import { calendarSection, labsSection } from './weekly-mega-card.mjs';
 
@@ -529,6 +529,20 @@ test('AI 日历暂译强制显示标记，可靠静态或社区译名出现后�
   const freeShot = calendarUpgradeEntry({ title: 'RefundBulletOnStatusProc' }, freeShotPath, null, { learnedEntries: freeShotLearned });
   assert.equal(freeShot.name, '免费一发（暂译）');
   assert.match(freeShot.desc, /10%几率/u);
+
+  const nameOnly = calendarUpgradeEntry({}, '/Lotus/Upgrades/Calendar/NameOnlyFixture', null, {
+    learnedEntries: new Map([['/lotus/upgrades/calendar/nameonlyfixture', {
+      name: '弹药消耗提升触发率', desc: '', source: 'AI 暂译（基于有据英文资料）', provisional: true,
+    }]]),
+  });
+  assert.equal(nameOnly.name, '弹药消耗提升触发率（暂译）');
+  assert.equal(nameOnly.desc, '效果待官方资料确认');
+});
+
+test('灵化武器 CamelCase 内部名能命中官方双语词典', () => {
+  const official = new Map([['ceramic dagger', '陶瓷匕首'], ['lex', '雷克斯']]);
+  assert.equal(officialTextZh('CeramicDagger', official), '陶瓷匕首');
+  assert.equal(officialTextZh('Lex', official), '雷克斯');
 });
 
 // —— 名称自动化：科研词缀尾段索引 / 日历状态中文表 / 官方语言键尾段 ——

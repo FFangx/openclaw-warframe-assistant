@@ -9,7 +9,8 @@
 // 本层把全链查无的未知路径排队进日历专属 inbox。每日 AI 任务先查可靠简中；查无但有完整
 // 有据英文名、效果和链接时，允许写入结构化 AI 暂译。英文依据仅限 DE 官方站点或精确的
 // WFCD warframe-worldstate-data 路径词典，不能把任意 GitHub 内容当作可信来源。暂译强制标记且可被后来取得的可靠
-// 简中提升替换；静态/社区结果始终优先。有据英文资料也不足时保持待查，不按内部路径猜译。
+// 简中提升替换；静态/社区结果始终优先。官方世界状态只有内部名、效果仍为 [PH] 时
+// 允许只做有标记的中文名称暂译，效果保持待核实；不得据内部名编造数值或完整效果。
 //
 // 词典文件：.cache/warframe-data/calendar-upgrade-zh.json
 //   { "version": 2, "entries": { "<path-lower>": { "name": "...", "desc": "...", "source": "...", "at": ms,
@@ -91,15 +92,10 @@ async function atomicWriteJson(file, payload) {
   }
 }
 
-let learnedPromise = null;
-async function loadLearned() {
-  learnedPromise ??= (async () => await readLearned())();
-  return learnedPromise;
-}
-
 // 返回 Map<路径小写, {name, desc, source}>（仅学习词典，不含种子/静态/社区表）
 export async function getLearnedCalendarUpgradeEntries() {
-  const entries = await loadLearned();
+  // 后台可能在同一 Gateway 进程存活期间把暂译提升为正式译文，不能永久缓存首读。
+  const entries = await readLearned();
   return new Map(Object.entries(entries).map(([key, entry]) => [key, {
     name: normalizeEntryText(entry.name || ''),
     desc: normalizeEntryText(entry.desc || ''),
@@ -219,7 +215,7 @@ function validateLearnInputs(key, name, desc) {
   return null;
 }
 
-const TRUSTED_ENGLISH_HOSTS = new Set(['warframe.com', 'www.warframe.com', 'forums.warframe.com', 'wiki.warframe.com']);
+const TRUSTED_ENGLISH_HOSTS = new Set(['warframe.com', 'www.warframe.com', 'api.warframe.com', 'forums.warframe.com', 'wiki.warframe.com']);
 function isTrustedEnglishEvidenceUrl(value) {
   try {
     const url = new URL(value || '');
@@ -236,11 +232,15 @@ function isTrustedEnglishEvidenceUrl(value) {
 function validateProvisionalInputs(options) {
   if (options.provisional !== true) return null;
   if (!/[A-Za-z]/u.test(options.englishName || '')) return 'AI 暂译必须提供有据英文名称（--english-name）';
-  if (!/[A-Za-z]/u.test(options.englishDesc || '')) return 'AI 暂译必须提供完整有据英文效果（--english-desc）';
   if (!isTrustedEnglishEvidenceUrl(options.evidenceUrl)) {
     return 'AI 暂译必须提供 DE 官方站点或 WFCD warframe-worldstate-data 精确仓库路径的 HTTPS 依据链接（--evidence-url）';
   }
-  if (!options.desc) return 'AI 暂译必须同时提供完整中文效果说明';
+  // 官方世界状态有时只有内部名，效果仍为 [PH]。此时允许只暂译名称，
+  // 但绝不根据内部名臆造数值/触发条件；扫描器会持续保留效果待查项。
+  if (!options.englishDesc && !options.desc) return null;
+  if (!/[A-Za-z]/u.test(options.englishDesc || '') || !options.desc) {
+    return 'AI 暂译效果必须同时提供完整有据英文效果和完整中文效果说明；否则两者都留空，仅暂译名称';
+  }
   return null;
 }
 
@@ -482,7 +482,7 @@ export async function scanCurrentCalendarUpgrades(options = {}) {
   for (const [key, candidate] of candidates) {
     const trusted = await Promise.resolve().then(() => coverageResolver(candidate.path)).catch(() => null);
     const learned = learnedEntries.get(key);
-    if ((trusted?.name && trusted?.desc) || (learned?.name && learned?.desc)) {
+    if ((trusted?.name && trusted?.desc) || (learned?.name && learned?.desc && learned.provisional !== true)) {
       covered += 1;
       continue;
     }

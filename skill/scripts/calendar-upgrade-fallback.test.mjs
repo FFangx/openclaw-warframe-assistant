@@ -198,6 +198,34 @@ test('AI 暂译必须绑定有据英文原文与受限可信链接，并可被�
   await clearPendingCalendarUpgrades();
 });
 
+test('官方只有内部名和 [PH] 效果时可仅暂译名称，且每日扫描继续追正式译文', async () => {
+  const upgradePath = '/Lotus/Upgrades/Calendar/StatusChancePerAmmoSpentFixture';
+  await clearPendingCalendarUpgrades();
+  const missingEvidence = await learnCalendarUpgradeVerified(upgradePath, '弹药消耗提升触发率', '', '任意来源', {
+    provisional: true, englishName: 'StatusChancePerAmmoSpent',
+  });
+  assert.equal(missingEvidence.ok, false);
+
+  const learned = await learnCalendarUpgradeVerified(upgradePath, '弹药消耗提升触发率', '', '任意来源', {
+    provisional: true, englishName: 'StatusChancePerAmmoSpent',
+    evidenceUrl: 'https://api.warframe.com/cdn/worldState.php',
+  });
+  assert.equal(learned.ok, true);
+  const rows = await getLearnedCalendarUpgradeEntries();
+  assert.equal(rows.get(upgradePath.toLowerCase()).desc, '');
+  assert.equal(rows.get(upgradePath.toLowerCase()).provisional, true);
+
+  const scanned = await scanCurrentCalendarUpgrades({
+    worldState: { calendar: { days: [{ events: [{ type: 'Override', upgrade: { title: 'StatusChancePerAmmoSpentFixture' } }] }] } },
+    resolveCoverage: async () => null, learnedEntries: rows,
+  });
+  assert.equal(scanned.queued, 1);
+  assert.equal((await readPendingCalendarUpgrades()).length, 1);
+  const promoted = await learnCalendarUpgradeVerified(upgradePath, '正式译名', '有据的正式效果。', '灰机wiki 1999日历');
+  assert.equal(promoted.outcome, 'promoted');
+  await clearPendingCalendarUpgrades();
+});
+
 test('100 项上限：满员且是新路径时挤掉最久未见的一条', async () => {
   await clearPendingCalendarUpgrades();
   const items = {};
